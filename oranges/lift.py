@@ -5,12 +5,17 @@
             lifter turns into calls of host hooks (imp_<name>).
   discover  lift/a64_lift.py: every entry (unwind-table starts, exports, init_array, relocated code pointers, BL
             targets) walked to the code reachable without crossing another entry. Jump tables recovered, PLT stubs
-            resolved through the GOT. oranges.lift_fixes adds Longshot's jump-table fixes.
+            resolved through the GOT. oranges.lift_fixes adds Longshot's jump-table fixes, oranges.insn the
+            instruction forms suyu's translator lacks (both installed by install()).
   translate (optional) suyu's per-instruction translator (lift/a64emit.cpp, built with the system clang++)
             over every distinct instruction word discovery reached, to count what it cannot translate.
 
-Writes <work>/image/{image.bin, image.json, functions.txt, report.json}. All of it is made from the game and stays
-local.
+  write     (optional) the C: <work>/gen/code_NNN.c (functions in address order, ~24 MB a file), a64_table.c (address
+            -> function, for indirect calls), a64_hooks.c, a64_fpx.h, and suyu's runtime pieces (a64_rtgen:
+            a64_suyu.h/.c). About a gigabyte.
+
+Writes <work>/image/{image.bin, image.json, functions.txt, report.json} (and <work>/gen). All of it is made from the
+game and stays local.
 """
 
 import bisect
@@ -22,9 +27,10 @@ from collections import Counter
 from pathlib import Path
 
 from . import kit  # noqa: F401  (sys.path)
-from . import lift_fixes
+from . import insn, lift_fixes
 
 import a64_lift  # noqa: E402  (the kit's)
+import a64_rtgen  # noqa: E402
 import nx_image  # noqa: E402
 
 
@@ -32,8 +38,14 @@ def build_image(exefs: str | os.PathLike, skip: tuple[str, ...] = ()) -> nx_imag
     return nx_image.NxImage(os.fspath(exefs), list(skip))
 
 
-def discover(img, max_insns: int = 0) -> a64_lift.Lifter:
+def install() -> None:
+    """oranges' additions to the kit, once: the jump-table fixes and the extra instruction forms"""
     lift_fixes.install()
+    insn.install()
+
+
+def discover(img, max_insns: int = 0) -> a64_lift.Lifter:
+    install()
     lifter = a64_lift.Lifter(img)
     lifter.discover(max_insns)
     return lifter
@@ -85,6 +97,7 @@ def translate_coverage(img, lifter) -> dict:
     """Run suyu's translator over every distinct word discovery reached: the words it cannot translate, by count of
     sites. Builds lift/liba64emit.so on first use (system clang++)."""
     import a64emit  # (the kit's; builds the library on first call)
+    install()
     sites: dict[int, list[int]] = {}
     for body, _ in lifter.funcs.values():
         for pc, (kind, word) in body.items():
@@ -99,8 +112,22 @@ def translate_coverage(img, lifter) -> dict:
                     for w, v in sorted(bad.items(), key=lambda kv: -len(set(kv[1])))[:40]]}
 
 
+def write_c(lifter, gen: str | os.PathLike) -> dict:
+    """Emit the lifted C and the runtime pieces into gen. Returns what emission counted."""
+    gen = os.fspath(gen)
+    install()
+    a64_rtgen.write(gen)
+    files = lifter.write(gen)
+    branches = sum(1 for b, _ in lifter.funcs.values() for k, _ in b.values() if k[0] == "br")
+    return {"files": len(files), "bytes": sum(os.path.getsize(f) for f in files),
+            "instructions": sum(len(b) for b, _ in lifter.funcs.values()),
+            "unhandled_words": len(lifter.unhandled), "unhandled_sites": sum(lifter.unhandled.values()),
+            "unhandled": {"%08x" % w: n for w, n in lifter.unhandled.most_common(40)},
+            "indirect_br": len(lifter.ijump), "br": branches, "bad_targets": lifter.stats["bad_target"]}
+
+
 def run(exefs: str | os.PathLike, work: str | os.PathLike, skip: tuple[str, ...] = (), translate: bool = False,
-        say=print) -> dict:
+        write: bool = False, say=print) -> dict:
     out = Path(work) / "image"
     t0 = time.monotonic()
     img = build_image(exefs, skip)
@@ -134,6 +161,12 @@ def run(exefs: str | os.PathLike, work: str | os.PathLike, skip: tuple[str, ...]
     if translate:
         report["translate"] = translate_coverage(img, lifter)
         report["seconds"]["translate"] = round(time.monotonic() - t2, 1)
+    if write:
+        t3 = time.monotonic()
+        report["emit"] = write_c(lifter, Path(work) / "gen")
+        report["seconds"]["emit"] = round(time.monotonic() - t3, 1)
+        say("emit: %d files, %.0f MB of C (%.1f s)" % (report["emit"]["files"], report["emit"]["bytes"] / 1e6,
+                                                     report["seconds"]["emit"]))
     with open(out / "report.json", "w") as f:
         json.dump(report, f, indent=1)
     return report

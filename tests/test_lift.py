@@ -58,3 +58,20 @@ def test_translator_covers_the_fake_code(exefs):
     img = lift.build_image(exefs)
     t = lift.translate_coverage(img, lift.discover(img))
     assert t["distinct_words"] == 1 and t["untranslatable_words"] == 0   # the nop (branches and svcs are the lifter's)
+
+
+@pytest.mark.skipif(not (shutil.which("clang") and shutil.which("clang++") and shutil.which("ld.lld")),
+                    reason="needs clang, clang++ and lld")
+def test_write_compile_link_run(exefs, tmp_path):
+    import subprocess
+
+    from oranges import build
+    work = tmp_path / "work"
+    report = lift.run(exefs, work, write=True, say=lambda *_: None)
+    assert report["emit"]["files"] >= 1 and report["emit"]["unhandled_words"] == 0
+    gen = work / "gen"
+    assert (gen / "a64_table.c").exists() and (gen / "a64_suyu.h").exists()
+    exe = build.build(work, jobs=2, say=lambda *_: None)
+    out = subprocess.run([str(exe)], capture_output=True, text=True, check=True).stdout
+    assert "6 lifted functions linked" in out
+    assert build.build(work, jobs=2, say=lambda *_: None) == exe   # (nothing to recompile the second time)

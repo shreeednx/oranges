@@ -1,6 +1,7 @@
 """oranges command line: python -m oranges <command> ..."""
 
 import argparse
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -124,7 +125,7 @@ def cmd_lift(args) -> int:
     if not (exefs / "main").is_file():
         print("no %s: run `oranges extract <nup> %s --only exefs` first" % (exefs / "main", args.work), file=sys.stderr)
         return 1
-    report = lift.run(exefs, args.work, tuple(args.skip.split(",")) if args.skip else (), args.translate)
+    report = lift.run(exefs, args.work, tuple(args.skip.split(",")) if args.skip else (), args.translate, args.write)
     print("%-8s %10s %9s %9s %11s %8s" % ("module", "text insns", "entries", "functions", "reached", "of text"))
     for name, m in report["modules"].items():
         print("%-8s %10d %9d %9d %11d %7.2f%%" % (name, m["text_words"], m["entries"], m["functions"], m["reached"],
@@ -138,7 +139,18 @@ def cmd_lift(args) -> int:
         t = report["translate"]
         print("translator: %d distinct words, %d untranslatable (%d sites)" % (
             t["distinct_words"], t["untranslatable_words"], t["untranslatable_sites"]))
+    if "emit" in report:
+        e = report["emit"]
+        print("emitted: %d instructions (shared tails included), indirect BR %d of %d, untranslated words %d (%d sites)"
+              % (e["instructions"], e["indirect_br"], e["br"], e["unhandled_words"], e["unhandled_sites"]))
     print("details: %s" % (Path(args.work) / "image" / "report.json"))
+    return 0
+
+
+def cmd_build(args) -> int:
+    from . import build
+    exe = build.build(args.work, args.jobs)
+    subprocess.run([str(exe)], check=False)
     return 0
 
 
@@ -171,7 +183,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--exefs", help="exefs folder (default: <work>/exefs)")
     s.add_argument("--skip", help="modules not to load, comma-separated (their exports become hooks)")
     s.add_argument("--translate", action="store_true", help="also run suyu's translator over every reached instruction")
+    s.add_argument("--write", action="store_true", help="also write the lifted C to <work>/gen (about a gigabyte)")
     s.set_defaults(run=cmd_lift)
+    s = sub.add_parser("build", help="compile <work>/gen with the runtime and host, link <work>/build/oranges")
+    s.add_argument("--work", default="work")
+    s.add_argument("--jobs", type=int, help="parallel compiles (default: what fits in memory, or ORANGES_JOBS)")
+    s.set_defaults(run=cmd_build)
     args = ap.parse_args(argv)
     try:
         return args.run(args)

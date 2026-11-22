@@ -25,11 +25,17 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges extract game.nup work [--only exefs|romfs]
 .venv/bin/oranges nso     game.nup [main ...] [-v]              # segments, symbols, relocs, SVCs, cross-module link
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
-.venv/bin/oranges lift [--translate]   # image + function discovery on work/exefs (~20 s; +10 s for the translator check)
+.venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
+.venv/bin/oranges build                           # compile work/gen + rt + host/, link work/build/oranges, run it
+.venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
+.venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
 ```
 
-`oranges lift` writes `work/image/` (`image.bin`, `image.json`, `functions.txt`, `report.json`). `--translate` builds
-`third_party/a64-kit/lift/liba64emit.so` with the system `clang++` the first time (gitignored).
+`oranges lift` writes `work/image/` (`image.bin`, `image.json`, `functions.txt`, `report.json`), and with `--write`
+also `work/gen/` (`code_NNN.c`, `a64_table.c`, `a64_hooks.c`, `a64_fpx.h`, `a64_suyu.h/.c`). The first translator use
+builds `third_party/a64-kit/lift/liba64emit.so` with the system `clang++` (gitignored). `oranges build` caches objects
+in `work/build/obj` (one `.key` stamp beside each object) and runs as many compiles as fit in memory, about 2.5 GB each
+(`ORANGES_JOBS`, `ORANGES_MARCH` (default x86-64-v3) and `ORANGES_OPT` (default O1) override).
 
 ## Layout
 
@@ -48,7 +54,19 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 - `oranges/kit.py`: puts the kit on `sys.path` and adds DT_RELR to its NSO loader. Import it before any kit module
   (`nso`, `nx_image`, `a64_lift`, `a64emit`); ruff's import sorting is turned off for the files that do.
 - `oranges/lift_fixes.py`: Longshot's jump-table and entry fixes to the kit (ported, `install()` wraps `Lifter`).
-- `oranges/lift.py`: the lift stage driver (`build_image`, `discover`, `coverage`, `translate_coverage`, `run`).
+- `oranges/insn.py`: Longshot's `nx2/insn.py` (forms suyu lacks: LSE, LDAPR, SQSHL #imm, SDIV overflow, ...), plus
+  oranges' PMULL/PMULL2 and LDNP/STNP Q, marked `(oranges)`. `install()` wraps `a64_lift.classify` and
+  `a64emit.translate`. A new form goes in `emit()` and gets encodings in `tests/test_insn.py`, checked against Unicorn.
+- `oranges/insncheck.py`: drives the kit's `tests/insn_test.py` (Unicorn vs lifted C) on Linux. It wraps rather than
+  edits: the harness's `VirtualAlloc` becomes `mmap`, the CPU model is Unicorn's "max", and `words=` tests chosen
+  encodings without the game.
+- `oranges/lift.py`: the lift stage driver (`install`, `build_image`, `discover`, `coverage`, `translate_coverage`,
+  `write_c`, `run`). `install()` applies `lift_fixes` and `insn` and must run before discovery and emission.
+- `oranges/build.py`: compiles and links. Chunk flags follow Longshot's (`-O1 -ffp-contract=off -fno-strict-aliasing
+  -mcx16 -ffunction-sections -mllvm -rotation-max-header-size=0`).
+- `host/`: the native host (C). For now `main.c` only has a placeholder `main` and setjmp stubs (`recomp_sj_*`), which is
+  what the link needs. The kit's `rt/a64_rt.c` has weak defaults for `a64_svc`, `a64_on_trap` and `a64_cntpct_host`.
+  The Horizon OS layer goes here and overrides them.
 - `oranges/nso.py` is separate from the kit's `tools/nso.py` (it backs `oranges nso` and its tests). The kit's
   pipeline uses the kit's loader.
 - `tests/fakes.py`: builders for synthetic `.nup` packages and NSO modules. Tests must never need the real game.
@@ -85,11 +103,16 @@ and attribution notices, and note the source file in a comment.
 - Discovery: 231k functions (main 178k, sdk 39k, subsdk0 14k). It reaches 99.35% of main's text, 98.8% of subsdk0's
   and 98.0% of sdk's (the rest is padding and data in code). 5,181 jump tables, 11k PLT stubs, 0 BRs left without a
   table.
-- Translator: of 1.1M distinct instruction words, 49 are untranslatable. Almost all are data that walks reach (`udf`
-  padding, module header words). The real gaps: **PMULL/PMULL2 .8h** (~40 sites, two main routines at 0xbec2xxx and
-  0xbef9xxx), **SQSHL vector #imm** (2, sdk), **STNP q** (2). Add them by wrapping `a64emit.translate`, as Longshot's
-  `nx2/insn.py` does.
-- Next: emit C (`Lifter.write`, with `a64_rtgen`), then compile with `rt/`. After that, the Horizon OS layer.
+- Translator (with `oranges.insn`): every instruction translates. The 10 untranslated words left (5,143 sites) are data
+  that walks reach (`udf` padding, module header words), and they trap, as they should.
+- Unicorn check: 596 forms, 2,869 encodings, 34,428 random states, 0 differences (registers, NZCV, FPSR, V regs,
+  memory).
+- Emission: 19.6M instructions (shared tails included) in 57 files, 1.4 GB of C. 25,789 of 43,097 BRs stay indirect
+  (`a64_ijump`, mostly virtual tail calls).
+- Build: one 25 MB chunk compiles in ~25 s at -O1 with a 1.4 GB peak (clang 23).
+- Next: the Horizon OS layer in `host/`. That means mapping `image.bin` at the guest window, running each module's
+  init, threads, SVCs, IPC services (`main.npdm` lists them), NVN, and setjmp. Longshot's `host/` is the model, but it
+  targets NVN2.
 
 ## Architecture to build toward (Longshot's design)
 

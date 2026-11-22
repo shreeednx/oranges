@@ -31,7 +31,9 @@ ignore = ["UP031"]   # printf-style formatting is the house style
 
 [tool.ruff.lint.per-file-ignores]
 # oranges.kit puts the kit on sys.path, so it must be imported before the kit's modules
-"oranges/{lift,lift_fixes}.py" = ["I001"]
+"oranges/{lift,lift_fixes,insncheck,build}.py" = ["I001"]
+# ported from Longshot and kept close to it
+"oranges/insn.py" = ["I001", "E501", "B007", "B905"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
