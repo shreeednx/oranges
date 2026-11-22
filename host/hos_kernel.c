@@ -94,6 +94,14 @@ static int slot_of(uint32_t h) {
     return (h & ~0xFFFu) == 0x1000u && i && i < MAX_HANDLES && handles[i].kind != H_FREE ? (int)i : -1;
 }
 
+void *hos_handle_object(uint32_t h, int kind) {
+    pthread_mutex_lock(&klock);
+    const int i = slot_of(h);
+    void *obj = i >= 0 && handles[i].kind == kind ? handles[i].obj : NULL;
+    pthread_mutex_unlock(&klock);
+    return obj;
+}
+
 static KThread *thread_of(uint32_t h) {
     const int i = slot_of(h);
     return i >= 0 && handles[i].kind == H_THREAD ? handles[i].obj : NULL;

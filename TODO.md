@@ -2,20 +2,23 @@
 
 Ordered by what blocks the boot first. `CLAUDE.md` has the background (boot status, debugging recipes).
 
-## 1. Services reached through `sm:` (the `olsc:u` abort)
+## Done: services reached through `sm:` (the `olsc:u` abort)
 
-About 3 s in, after the first frame and the device-save mounts, the main thread aborts (`nn::diag::Abort` on a
-result, `svc Break`). The game's own olsc client (`f_085b7b00` → `f_085b8260` → `f_085b8170`, linked into main, so
-no `nn::` HLE stub sees it) calls `nn::sf::hipc::ConnectToHipcService("olsc:u")`. The IPC auto-reply to `sm:`
-`GetServiceHandle` moves no handle, so `ConvertToDomainImpl` runs on handle 0 and fails (`f_085b85e4`, abort at
-`0x85b833c`). Reached from the frame loop: `f_0a809b90` / `f_0a80a810`.
+About 3 s in, the game's own olsc client (`f_085b7b00` → `f_085b8260` → `f_085b8170`, linked into main, so no `nn::`
+HLE stub sees it) asked `sm:` for `olsc:u` and aborted: `sm:` speaks TIPC on this SDK (request type 16 + command), the
+client reads the handle at word 3 and the result at word 4 without checking the header, and the old empty CMIF reply
+put `SFCO` where the result goes. `host/hos_ipc.c` now parses HIPC/TIPC/CMIF requests (domains included) and serves
+`sm:` (GetServiceHandle hands out a session for any name), the CMIF control commands (ConvertCurrentObjectToDomain,
+Clone, QueryPointerBufferSize) and the emulated services in its `services[]`. `olsc:u` is one (`nn_system.c`:
+Initialize, GetSaveDataBackupSetting = off). With it the game runs its frame loop at 30 fps for 90 s and more.
 
-- [ ] Answer `sm:` `GetServiceHandle` with a session handle (a move handle in the reply), so that unemulated services
-      get sessions whose requests are answered empty, like `ConnectToNamedPort` already does. `ConvertToDomain` then
-      needs a domain object id in its reply.
-- [ ] Or answer `olsc:u` properly: no cloud backup (Longshot's `host/` may have it). Check what the game does with
-      the olsc results after that.
-- [ ] See which other services the game opens through `sm:` from here on (the `ipc:` lines in the log).
+Left over from it:
+
+- [ ] `olsc:u` is the only service the game opens through `sm:` in the first 90 s. Watch the `ipc:` lines for more
+      once input gets it further (a request nobody emulates is logged once per service and command, with its caller).
+- [ ] A command that returns an interface but is answered empty gives the client no handle / object id (it reads 0;
+      requests to object 0 are answered empty too). Emulate such commands when one turns up.
+- [ ] Session objects (`Session` in `hos_ipc.c`) are never freed when their handle is closed.
 
 ## Done: the stall after the first frame
 
@@ -39,7 +42,7 @@ Left over from it:
 - [ ] Measure what the spin barriers cost once frames run (they should cost nothing: the guest re-reads those words
       anyway). If they cost something, leave out loops with calls (a call already stops the hoisting).
 
-## 2. Remaining stubbed services
+## 1. Remaining stubbed services
 
 `oranges lift` reports 147 stubbed OS-facing imports. Each one returns 0 without writing its outputs.
 
@@ -50,20 +53,20 @@ Left over from it:
 - [ ] The `nn::oe` notification setters and the performance-configuration calls (harmless today; check them)
 - [ ] Go through the stub list for any call whose result the game uses as a size, pointer or state
 
-## 3. A window and input
+## 2. A window and input
 
 - [ ] Open a window (SDL or similar) and drive the frame from it
 - [ ] Map keyboard and gamepad input into `host/nn_hid.c` (`hos_input()` is where they come in)
 - [ ] Mouse and touch from the window
 - [ ] Optional: scripted input for test runs (Longshot's `HOS_INPUT_SCRIPT`)
 
-## 4. Sound
+## 3. Sound
 
 - [ ] A sound device for `host/nn_audio.c`. The renderer already mixes and `HOS_AUDIO_DUMP=<file.wav>` writes what
       would play. Swap `output_open` / `output_frame` for a real sink.
 - [ ] Process the effects that only pass through today (delay, reverb, biquad filter effects), if the game needs them
 
-## 5. The renderer
+## 4. The renderer
 
 - [ ] A Vulkan back end in place of `host/rx_null.c`, replaying the recorded NVN commands (Longshot's `gpu/vk`, made
       for NVN2: adapt it to NVN1)
@@ -71,7 +74,7 @@ Left over from it:
 - [ ] Textures: deswizzle the block-linear layouts (`host/nvn_layout.c` already computes them) and ASTC/BCn formats
 - [ ] Present the window textures to the real window
 
-## 6. Clean-ups and checks
+## 5. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.

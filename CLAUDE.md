@@ -77,8 +77,10 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
   stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,
   `nninitStartup`, `_init_libc2`, each `DT_INIT`, `nnMain` (rtld is not run). `hos_mem.c` keeps the mapping record
-  for QueryMemory, the system region and the heap. `hos_svc.c` is the SVCs (memory, info, IPC: requests to services nobody
-  emulates get an empty CMIF success). `hos_log.c` has logging, traps and stub notes.
+  for QueryMemory, the system region and the heap. `hos_svc.c` is the SVCs (memory, info, debugging). `hos_ipc.c` is IPC:
+  sessions, HIPC/TIPC/CMIF parsing (domains too), `sm:` (GetServiceHandle gives a session for any name), the CMIF
+  control commands, and the emulated services (`services[]`, each a `HosIface`; `olsc:u` is in `nn_system.c`).
+  Requests to services nobody emulates get a success with zeroed outputs. `hos_log.c` has logging, traps and stub notes.
   `hos_setjmp.c` holds stubs. `hos_kernel.c` has threads (each on a host pthread), handles, mutexes, condition
   variables, address arbiters, events and WaitSynchronization, under one kernel lock. `hos_hostcall.c` provides guest
   addresses that are host functions (through `a64_lookup_host`), for function pointers handed to the game.
@@ -93,7 +95,8 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   no sound device yet: `HOS_AUDIO_DUMP=<wav>`), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
   `nn_hid.c` input (neutral until there is a window). Device limits are the game's own driver's (API 55.15), read by
   running the sdk's `nvnDeviceGetInteger` under Unicorn.
-  IPC requests to services nobody emulates are answered empty (CMIF success) and logged with a backtrace. Native
+  IPC requests to services nobody emulates are answered empty (success, zeroed outputs) and logged once per service
+  and command with a backtrace. Native
   crashes are logged with the guest registers and backtrace (`hos_crash_init`). The kit's `rt/a64_rt.c` weak hooks
   (`a64_svc`, `a64_on_trap`, `a64_lookup_host`) are overridden here.
 - `oranges/nso.py` is separate from the kit's `tools/nso.py` (it backs `oranges nso` and its tests). The kit's
@@ -142,15 +145,17 @@ and attribution notices, and note the source file in a comment.
 - Boot (`./work/build/oranges`): `_init_libc0` … `nnMain` run natively on host threads (~55 of them). The game sets up
   NVN, audio (`nn_audio.c`: renderer, first voice and wave buffers), fonts (a host TTF for the system's shared fonts:
   `HOS_SHARED_FONT`), input (`nn_hid.c`: a connected pad at rest), presents its first frame, runs its frame loop's
-  job scheduler, mounts the device save, and then aborts (~3 s in): its own olsc client (main+0x5b7b00, linked into
-  main, so no `nn::` HLE sees it) gets no session from `sm:` `GetServiceHandle("olsc:u")` (the IPC auto-reply moves no
-  handle) and `ConvertToDomain` on handle 0 fails. To sample every thread: `(sleep 60; pkill -INT -x oranges) & gdb
+  job scheduler, mounts the device save, opens `olsc:u` through `sm:` (its own client, linked into main: served by
+  `hos_ipc.c`), and runs its frame loop at 30 fps (90 s tested, nothing drawn, no input). To sample every thread: `(sleep 60; pkill -INT -x oranges) & gdb
   -batch -ex run -ex "thread apply all bt 25" ./work/build/oranges` (attaching is blocked by ptrace_scope).
 - Two things the frame loop's job scheduler needs (the stall after the first frame): the kernel reports each thread's
   core (`GetCurrentProcessorNumber` from its SetThreadCoreMask ideal core / affinity), because a thread pinned to one
   core takes `core + 1` as its TLS index (`f_0b7e2374`) and the scheduler's per-thread slots are indexed by it
   (`f_086410b0`, barriers at `+0x298`); and spin loops keep reading memory (`oranges/spin.py`).
-- Next after that: the services the game reaches through `sm:` (olsc first), the remaining stubs (`nn::aoc`,
+- `sm:` speaks TIPC on this SDK (request type 16 + command id, the result as the reply's first data word), and the
+  SDK's clients read replies at fixed offsets without checking the header: a reply must have exactly the layout a
+  real server sends.
+- Next: the remaining stubs (`nn::aoc`,
   `nn::nifm`, `nn::friends`, `nn::bcat`, `nn::nfp`), a window with real input, a sound device for `nn_audio.c`, and the
   Vulkan back end in place of `rx_null.c`.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework

@@ -96,6 +96,7 @@ enum { HOS_H_FREE, HOS_H_THREAD, HOS_H_EVENT, HOS_H_SESSION, HOS_H_TRANSFER, HOS
 void hos_kernel_init(void);
 int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm);   /* 1 when it is one of the kernel's */
 uint32_t hos_handle_new(int kind, void *obj, uint64_t a, uint64_t b, uint64_t c);
+void *hos_handle_object(uint32_t handle, int kind);   /* the object of a handle of that kind, or NULL */
 Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority);
 uint64_t hos_main_thread_handle(void);
 
@@ -118,6 +119,42 @@ void hos_kernel_event_signal(uint32_t handle);
 /* an nn::os::SystemEventType of the game's, bound to a new kernel event (as an IPC service's event would be): the
    writable handle, for hos_kernel_event_signal. autoclear: EventClearMode_AutoClear */
 uint32_t hos_system_event_init(Ctx *c, uint64_t event, int autoclear);
+
+/* ---- IPC (hos_ipc.c): sessions, sm:, and the services the host emulates. A service is a HosIface whose dispatch
+   reads r->cmd and r->in, writes its output with hos_ipc_out*, and returns a result code (HOS_IPC_UNKNOWN: a command
+   it does not know, answered empty and logged). */
+typedef struct { uint64_t addr, size; } HosIpcBuffer;
+typedef struct HosIpc HosIpc;
+typedef struct HosIface { const char *name; uint32_t (*dispatch)(HosIpc *r); } HosIface;
+struct HosIpc {
+    Ctx *c;
+    const char *service;            /* the name the session was opened with */
+    const HosIface *iface;          /* the interface the request is for */
+    uint32_t cmd;
+    const uint8_t *in;              /* the input raw data (after the CMIF header) */
+    uint32_t in_size;
+    int pid_sent;
+    uint64_t pid;
+    uint32_t in_handle[16];
+    int n_in_handles;
+    HosIpcBuffer x[16], a[16], b[16], w[16], cbuf[16];   /* send statics, send, receive, exchange, receive list */
+    int nx, na, nb, nw, nc;
+    /* the reply */
+    uint32_t result;
+    uint8_t out[0x100];
+    uint32_t out_size;
+    uint32_t out_handle[8];
+    int out_handle_move[8], n_handles;
+    const HosIface *out_object[8];  /* interfaces returned: move handles to new sessions, or domain objects */
+    int n_objects;
+};
+#define HOS_IPC_UNKNOWN 0xFFFFFFFFu
+uint32_t hos_ipc_connect(const char *name);   /* a session to a named port (svcConnectToNamedPort) */
+void hos_ipc_request(Ctx *A64_NOESC c, uint8_t *msg, uint32_t msg_size, uint32_t session);
+void hos_ipc_out(HosIpc *r, const void *data, uint32_t n);
+void hos_ipc_out_handle(HosIpc *r, uint32_t handle, int move);
+void hos_ipc_out_object(HosIpc *r, const HosIface *iface);
+extern const HosIface hos_olsc_iface;   /* olsc:u (nn_system.c) */
 
 /* ---- kernel results */
 #define HOS_RESULT(module, desc) ((uint32_t)(module) | (uint32_t)(desc) << 9)

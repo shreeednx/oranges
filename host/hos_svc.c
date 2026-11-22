@@ -1,9 +1,8 @@
 /* The kernel calls (SVCs) the lifted SDK makes. Arguments in x0..x7, the result code in x0, outputs in x1.. (the 64-bit
    Horizon ABI). Overrides rt/a64_rt.c's weak a64_svc.
 
-   Memory, information, IPC and debugging are here. Threads, handles and synchronization are hos_kernel.c's. IPC is
-   not served: a session's requests are answered empty (empty_reply), and each is logged with its caller, since the
-   SDK's service clients are meant to be replaced at the nn:: boundary (hle.py). */
+   Memory, information and debugging are here. Threads, handles and synchronization are hos_kernel.c's, sessions and
+   their requests hos_ipc.c's. */
 #include "hos.h"
 
 #include <stdio.h>
@@ -76,24 +75,6 @@ static int get_info(uint32_t type, uint32_t handle, uint64_t sub, uint64_t *out)
     }
 }
 
-/* A request to a service the host does not emulate: answered as a CMIF success with zeroed outputs (Eglantine's
-   auto-stub, by way of Longshot), so a lifted service client sees an empty, successful reply */
-static void empty_reply(Ctx *c, uint8_t *msg, uint32_t session) {
-    const uint32_t w0 = *(uint32_t *)msg, w1 = *(uint32_t *)(msg + 4);
-    uint32_t cmd = 0;
-    for (int off = 8; off < 0x40; off += 4)   /* the CMIF header ('SFCI', version, command id) after the HIPC header */
-        if (*(uint32_t *)(msg + off) == 0x49434653u) { cmd = *(uint32_t *)(msg + off + 8); break; }
-    static int logged;
-    if (logged++ < 64 || hos_trace) {
-        hos_log("ipc: session %#x command %u (hipc %08x %08x): answered empty, from:", session, cmd, w0, w1);
-        hos_backtrace(c);
-    }
-    memset(msg, 0, 0x100);
-    *(uint32_t *)(msg + 4) = 16;               /* 16 raw data words, no handle descriptor */
-    *(uint32_t *)(msg + 16) = 0x4F434653u;     /* CMIF response 'SFCO', version 0, result 0 */
-    c->x[0] = 0;
-}
-
 static void log_svc(Ctx *c, uint32_t imm) {
     hos_log("svc %#x %s(%#llx, %#llx, %#llx, %#llx) lr %#llx", imm, imm < 0x80 && svc_name[imm] ? svc_name[imm] : "?",
             (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
@@ -153,22 +134,19 @@ void a64_svc(Ctx *A64_NOESC c, uint32_t imm) {
         c->x[0] = 0;
         return;
     case 0x1E: { extern uint64_t a64_cntpct_host(void); c->x[0] = a64_cntpct_host(); return; }   /* GetSystemTick */
-    case 0x1F: {   /* ConnectToNamedPort(-, name) -> session. As in Longshot: a service the host does not emulate gets a
-                      session whose requests are answered empty (SendSyncRequest below) */
+    case 0x1F: {   /* ConnectToNamedPort(-, name) -> session (hos_ipc.c) */
         char name[12] = {0};
         memcpy(name, GP(c->x[1]), 11);
-        c->x[1] = hos_handle_new(HOS_H_SESSION, NULL, 0, 0, 0);
-        hos_log("ipc: ConnectToNamedPort(\"%s\") -> session %#llx (requests answered empty), from:", name,
-                (unsigned long long)c->x[1]);
-        hos_backtrace(c);
+        c->x[1] = hos_ipc_connect(name);
+        hos_log("ipc: ConnectToNamedPort(\"%s\") -> session %#llx", name, (unsigned long long)c->x[1]);
         c->x[0] = 0;
         return;
     }
     case 0x21:     /* SendSyncRequest(session): the request is in the thread's IPC buffer (TLS + 0) */
-        empty_reply(c, GP(c->tpidrro_el0), (uint32_t)c->x[0]);
+        hos_ipc_request(c, GP(c->tpidrro_el0), 0x100, (uint32_t)c->x[0]);
         return;
     case 0x22:     /* SendSyncRequestWithUserBuffer(buffer, size, session) */
-        empty_reply(c, GP(c->x[0]), (uint32_t)c->x[2]);
+        hos_ipc_request(c, GP(c->x[0]), (uint32_t)c->x[1], (uint32_t)c->x[2]);
         return;
     case 0x24: c->x[0] = 0, c->x[1] = 0x51; return;                                           /* GetProcessId */
     case 0x26: {   /* Break(reason, arg, size): bit 31 of the reason = notification only */

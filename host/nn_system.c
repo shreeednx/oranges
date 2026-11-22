@@ -1,7 +1,7 @@
 /* The small system services the game asks for: nn::time (the host's clock and time zone), nn::oe (the application's
    environment: language, mode, focus), nn::account (one local user), nn::vi (the display and its vsync event) and
    nn::pl (system shared fonts: a TrueType font of the host's for every type) and
-   nn::ngc (the profanity filter: nothing masked).
+   nn::ngc (the profanity filter: nothing masked), and the olsc:u service (no cloud backup).
 
    Struct layouts are the SDK's (the game reads them):
      PosixTime {s64}; CalendarTime {s16 year; s8 month, day, hour, minute, second; pad}: 8 bytes, returned in x0;
@@ -379,3 +379,19 @@ HLE(_ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPDsj) {
     if (ARG(1)) G32(ARG(1)) = 0;
     RET(0);
 }
+
+/* ---- olsc:u (online save data cloud backup, IOlscServiceForApplication), served over IPC: the game's own client is
+   linked into main, so no nn:: HLE sees it. No cloud backup: the setting is off. Commands from switchbrew's "OLSC
+   services"; the reply layout is the one the game's client reads (main+0x5b9f80: the bool after the CMIF header). - */
+static uint32_t olsc_dispatch(HosIpc *r) {
+    switch (r->cmd) {
+    case 0: return 0;   /* Initialize(pid) */
+    case 13: {          /* GetSaveDataBackupSetting(Uid) -> bool enabled */
+        const uint8_t enabled = 0;
+        hos_ipc_out(r, &enabled, 1);
+        return 0;
+    }
+    default: return HOS_IPC_UNKNOWN;
+    }
+}
+const HosIface hos_olsc_iface = {"IOlscServiceForApplication", olsc_dispatch};
