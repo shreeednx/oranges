@@ -1,0 +1,21 @@
+# Game data and anything built from it never enters the repository.
+*.nup
+*.nsp
+*.nsz
+*.xci
+*.xcz
+*.nca
+*.nso
+*.npdm
+*.keys
+exefs/
+romfs/
+work/
+build/
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/

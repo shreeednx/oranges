@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]   # PEP 639 license fields
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oranges"
+version = "0.0.1"
+description = "Static recompilation of the game to a native PC program"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"   # compression.zstd is in the standard library from 3.14
+dependencies = ["lz4>=4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[project.scripts]
+oranges = "oranges.__main__:main"
+
+[tool.setuptools]
+packages = ["oranges"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP031"]   # printf-style formatting is the house style
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
