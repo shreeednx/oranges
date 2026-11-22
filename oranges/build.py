@@ -74,7 +74,9 @@ def _digest(path: Path) -> bytes:
 def _key(src: Path, flags: list[str], gen: Path) -> str:
     """What an object depends on: its flags, its source and the headers it includes"""
     h = hashlib.sha256("\0".join(flags).encode())
-    deps = [src, RT / "a64.h", gen / "a64_suyu.h", gen / "a64_fpx.h"] + ([HOST / "hos.h"] if src.parent == HOST else [])
+    deps = [src, RT / "a64.h", gen / "a64_suyu.h", gen / "a64_fpx.h"]
+    if src.parent == HOST:   # (every host header and include file: few, and cheap to hash)
+        deps += sorted(p for p in HOST.rglob("*") if p.suffix in (".h", ".inc"))
     for dep in deps:
         if dep.exists():
             h.update(str(dep).encode() + b"\0" + _digest(dep))

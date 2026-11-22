@@ -80,7 +80,14 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   variables, address arbiters, events and WaitSynchronization, under one kernel lock. `hos_hostcall.c` provides guest
   addresses that are host functions (through `a64_lookup_host`), for function pointers handed to the game.
   `nn_fs.c` is `nn::fs` (RomFS read-only from `work/romfs`, device save data in `work/user/save/device`). `nvn.c` has
-  the nv:: driver setup HLE and the NVN exploration layer (`nvnBootstrapLoader` / `GetProcAddress`, logging procs).
+  the nv:: driver setup HLE. `nvn_native.c` is NVN itself, ported from Longshot's NVN1-descended layer: objects live in
+  the game's NVN object memory (`nvn/rx_nvn.h` layouts, checked against `nvn/nvn_api.h` sizes), GPU work is recorded
+  and handed to a render back end at submit. `rx_null.c` is the back end for now: it applies the CPU-visible effects
+  (events, counters, buffer copies/updates) and draws nothing. The proc table `nvn/nvn_procs.inc` lists every `NV()`
+  (`tests/test_nvn.py` keeps them in sync: regenerate it with
+  `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
+  Tegra block-linear texture layout (deko3d-derived). Device limits are the game's own driver's (API 55.15), read by
+  running the sdk's `nvnDeviceGetInteger` under Unicorn.
   IPC requests to services nobody emulates are answered empty (CMIF success) and logged with a backtrace. Native
   crashes are logged with the guest registers and backtrace (`hos_crash_init`). The kit's `rt/a64_rt.c` weak hooks
   (`a64_svc`, `a64_on_trap`, `a64_lookup_host`) are overridden here.
@@ -128,16 +135,19 @@ and attribution notices, and note the source file in a comment.
   (`a64_ijump`, mostly virtual tail calls).
 - Build: one 25 MB chunk compiles in ~25 s at -O1 with a 1.4 GB peak (clang 23).
 - Boot (`./work/build/oranges`): `_init_libc0` … every `DT_INIT` and `nnMain` run natively, on real host threads.
-  `nnMain` mounts the RomFS (`nn::fs` HLE) and sets up `nn::vi` (stubs), the NVN device (exploration procs) and
-  `nn::nifm`, starts its first threads, then crashes on a null framework singleton (main `0xd9e77d8`, read in
-  `f_0b7bb490`) that nothing sets up. The likeliest cause is the NVN placeholders: `nvnDeviceGetInteger` leaves its
-  output unwritten, so the game's device checks go wrong.
-- Next: the NVN layer in `host/nvn.c`. Start with the device procs (`nvnDeviceGetInteger` with NVN1's device-info
-  values, the builders, `nvnDeviceInitialize`), memory pools, buffers, textures and the queue. Model it on Longshot's
-  `host/nvn_native.c` (NVN2), which records GPU work for a Vulkan replay. `HOS_NVN_STRICT=1` stops at the first proc
-  with no implementation. After that: setjmp, `nn::hid`, `nn::vi`, audio. For each wall, `hos_backtrace` (or gdb:
-  lifted frames are `f_<guest address>`) shows the `nn::` entry point, and that function gets an `HLE(...)` in
-  `host/`.
+  `nnMain` mounts the RomFS (`nn::fs` HLE), sets up `nn::vi` (stubs), the NVN device, a texture pool of 8492
+  descriptors and a 1920x1080 three-texture window (present interval 2), then moves its game loop to a new framework
+  thread (0x1003) and starts ~12 more threads (hid, account, aoc stubs). The game-loop thread then crashes allocating
+  from the framework's current heap: its sead-like thread object's current heap (+0xa8, TLS slot 3) and the heap
+  manager's fallback (0xd9e7518 + 8) are both null, although the RootHeap (2928 MB at 0x12000000) exists. Unsolved:
+  find where the current heap is set for the main and game-loop threads (the scoped setters at `GetTlsValue` +
+  `str x, [x0, #0xa8]` restore the old value). The new threads' `tpidr_el0` is 0, as on the console: this SDK never
+  registers a TLS allocator, so `__nnmusl_init_dso` returns early and the thread-start hooks stay unset.
+- Next: the heap above, then the stubs whose outputs matter (`nn::oe::GetDesiredLanguage`, `nn::account`, `nn::time`,
+  `nn::vi`), `nn::hid`, a scheduler that honours priorities and cores if the game needs it (every guest thread runs
+  free on its own host thread now), audio, and the Vulkan back end in place of `rx_null.c` (Longshot's gpu/vk). For each
+  wall, `hos_backtrace` (or gdb: lifted frames are `f_<guest address>`; `$rdi` is the guest `Ctx *`) shows the `nn::`
+  entry point. Hardware watchpoints on `0x100000000000 + <guest address>` find who writes guest memory.
 
 ## Architecture to build toward (Longshot's design)
 

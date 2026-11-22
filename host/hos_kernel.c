@@ -203,6 +203,9 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         if (hos_trace) hos_log("thread %#x: created, entry %#llx arg %#llx stack %#llx prio %d", t->handle,
                                (unsigned long long)t->entry, (unsigned long long)t->arg,
                                (unsigned long long)t->stack_top, t->priority);
+        if (hos_trace) hos_backtrace(c);
+        hos_log("thread %#x: created (entry %#llx, priority %d, core %d) by thread %#x", t->handle,
+                (unsigned long long)c->x[1], t->priority, core, self ? self->handle : 0);
         c->x[0] = 0, c->x[1] = t->handle;
         return 1;
     }

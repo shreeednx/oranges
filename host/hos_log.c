@@ -3,8 +3,19 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 int hos_trace;
+
+int64_t hos_now_ns(void) {
+    static int64_t base;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const int64_t ns = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    int64_t b = __atomic_load_n(&base, __ATOMIC_RELAXED);
+    if (!b && !__atomic_compare_exchange_n(&base, &b, ns, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) return ns - b;
+    return b ? ns - b : 0;
+}
 
 void hos_log(const char *fmt, ...) {
     va_list ap;
@@ -22,8 +33,8 @@ void hos_dump(Ctx *c) {
                 i + 1, (unsigned long long)c->x[i + 1], i + 2, (unsigned long long)c->x[i + 2],
                 i + 3 == 31 ? "sp " : i + 3 < 10 ? (const char *[]){"x3 ", "x7 "}[i / 4] :
                 (const char *[]){"", "", "x11", "x15", "x19", "x23", "x27"}[i / 4], (unsigned long long)c->x[i + 3]);
-    hos_log("  tpidrro_el0 %016llx  tpidr_el0 %016llx", (unsigned long long)c->tpidrro_el0,
-            (unsigned long long)c->tpidr_el0);
+    hos_log("  tpidrro_el0 %016llx  tpidr_el0 %016llx  thread %#x", (unsigned long long)c->tpidrro_el0,
+            (unsigned long long)c->tpidr_el0, c->tpidrro_el0 ? G32(c->tpidrro_el0 + 0x110) : 0);
 }
 
 extern const uint32_t hos_symbol_count, hos_symbol_addr[];   /* (gen/hos_symbols.c) */

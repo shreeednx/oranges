@@ -41,6 +41,14 @@
 #define HOS_STACK_SIZE 0x18000000ULL
 #define HOS_TLS_SIZE 0x200ULL          /* a thread-local region: the IPC buffer, then the SDK's words; +0x1f8 ThreadType* */
 
+/* the host pointer of the n guest bytes at a when they lie in the window (mapped or not), else NULL */
+static inline void *hos_guest_range(uint64_t a, uint64_t n) { return a < HOS_WINDOW && n <= HOS_WINDOW - a ? GP(a) : NULL; }
+/* nanoseconds since the program started (CLOCK_MONOTONIC), and the console's system tick (19.2 MHz, as
+   svcGetSystemTick: rt/a64_rt.c a64_cntpct_host) */
+int64_t hos_now_ns(void);
+uint64_t a64_cntpct_host(void);
+#define HOS_TICK_HZ 19200000ULL
+
 /* gen/hos_image.c */
 extern const uint64_t hos_image_base, hos_image_end, hos_main_stack_size, hos_program_id;
 extern const int hos_main_priority, hos_main_core, hos_module_count;
