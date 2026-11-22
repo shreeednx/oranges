@@ -74,8 +74,8 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
   stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,
   `nninitStartup`, `_init_libc2`, each `DT_INIT`, `nnMain` (rtld is not run). `hos_mem.c` keeps the mapping record
-  for QueryMemory, the system region and the heap. `hos_svc.c` is the SVCs (one guest thread for now: threads are
-  recorded, not run, and IPC answers not-implemented). `hos_log.c` has logging, traps and stub notes.
+  for QueryMemory, the system region and the heap. `hos_svc.c` is the SVCs (memory, info, IPC: requests to services nobody
+  emulates get an empty CMIF success). `hos_log.c` has logging, traps and stub notes.
   `hos_setjmp.c` holds stubs. `hos_kernel.c` has threads (each on a host pthread), handles, mutexes, condition
   variables, address arbiters, events and WaitSynchronization, under one kernel lock. `hos_hostcall.c` provides guest
   addresses that are host functions (through `a64_lookup_host`), for function pointers handed to the game.
