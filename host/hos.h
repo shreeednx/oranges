@@ -123,7 +123,7 @@ uint32_t hos_system_event_init(Ctx *c, uint64_t event, int autoclear);
 #define HOS_RESULT(module, desc) ((uint32_t)(module) | (uint32_t)(desc) << 9)
 #define KERN_INVALID_SIZE HOS_RESULT(1, 101)
 #define KERN_INVALID_ADDRESS HOS_RESULT(1, 102)
-#define KERN_INVALID_STATE HOS_RESULT(1, 106)
+#define KERN_INVALID_STATE HOS_RESULT(1, 125)   /* (106 is InvalidCurrentMemory) */
 #define KERN_INVALID_HANDLE HOS_RESULT(1, 114)
 #define KERN_INVALID_COMBINATION HOS_RESULT(1, 116)
 #define KERN_TIMED_OUT HOS_RESULT(1, 117)

@@ -1351,8 +1351,9 @@ NV(nvnCommandBufferAddCommandMemory) {
 }
 
 /* Recordings: a handle is a host copy of the finished recording. Games reuse command memory for later recordings while
-   still calling earlier handles, so the copy lives until the control memory it was made in is added again (the
-   console driver's handle is a descriptor in that control memory), or until a mark written there is overwritten.
+   still calling earlier handles, so the copy lives until a new recording takes the control memory slot it was made in
+   (the console driver's handle is a descriptor there), or until a mark written there is overwritten, and then for
+   RETIRE_NS more (see let_go). HOS_NVN_CTL_LOG=<n> logs the first n control memory events.
    Live copies are kept by the 64 KiB block of their control memory position. */
 typedef struct rec_node { uint64_t ctl; uint8_t *copy; struct rec_node *next; int marked; } rec_node;
 #define REC_BUCKETS 65536u
@@ -1430,6 +1431,9 @@ static void live_handle_remove(uint64_t h) {   /* (copy_lock held exclusively; b
 }
 static uint64_t dead_first = UINT64_MAX;   /* (the least `after` of the dead copies) */
 static void free_dead_copies(void) {       /* (copy_lock held exclusively) */
+    static int keep = -1;                  /* HOS_NVN_KEEP_COPIES=1 (debugging): never freed, so a stale handle says why */
+    if (keep < 0) keep = env_on("HOS_NVN_KEEP_COPIES");
+    if (keep) return;
     const uint64_t done = rx_nvn_replayed();
     if (done < dead_first) return;
     uint64_t first = UINT64_MAX;
@@ -1455,18 +1459,49 @@ static void dead_copy_add(copy_prefix *p, uint64_t after) {   /* (copy_lock held
     ndead++;
     if (after < dead_first) dead_first = after;
 }
-static void let_go(rec_node *n, uint64_t after) {   /* (copy_lock held exclusively) */
-    copy_prefix *p = (copy_prefix *)n->copy - 1;
-    p->magic = 0;   /* (no submit names it any more) */
-    live_handle_remove((uint64_t)(uintptr_t)n->copy);
-    dead_copy_add(p, after);
+#define COPY_GONE_ADDED 0x444441454e4f47ull   /* "GONEADD": a new recording took its control memory slot */
+#define COPY_GONE_SWEPT 0x5457534e4f47ull     /* "GONSWT": the mark in its control memory was overwritten */
+/* (oranges) A copy let go stays valid for RETIRE_NS first: the game's threads give their command buffers the same
+   control memory at once and call each other's recordings right after, so a slot taken again (or a mark overwritten)
+   does not mean the handle is dead yet. Retired copies then leave the live set and are freed once the replay passed
+   them. */
+#define RETIRE_NS 1000000000LL
+typedef struct { copy_prefix *p; uint64_t why; int64_t at; } retiring_copy;
+static retiring_copy *retiring;
+static size_t nretiring, cap_retiring;
+static void let_go(rec_node *n, uint64_t after, uint64_t why) {   /* (copy_lock held exclusively) */
+    (void)after;
+    if (nretiring == cap_retiring) {
+        cap_retiring = cap_retiring ? cap_retiring * 2 : 1024;
+        retiring = realloc(retiring, cap_retiring * sizeof *retiring);
+        if (!retiring) die("out of memory (recording copies let go)");
+    }
+    retiring[nretiring++] = (retiring_copy){(copy_prefix *)n->copy - 1, why, hos_now_ns() + RETIRE_NS};
     free(n);
     ncopies--;
+}
+static void retire_due(void) {   /* (copy_lock held exclusively) */
+    const int64_t now = hos_now_ns();
+    const uint64_t after = rx_nvn_pushed();
+    for (size_t i = 0; i < nretiring;) {
+        if (retiring[i].at > now) { i++; continue; }
+        copy_prefix *p = retiring[i].p;
+        p->magic = retiring[i].why;   /* (no submit names it any more; why, for the message if one does) */
+        live_handle_remove((uint64_t)(uintptr_t)(p + 1));
+        dead_copy_add(p, after);
+        retiring[i] = retiring[--nretiring];
+    }
+}
+static int ctl_log(void) {   /* HOS_NVN_CTL_LOG=<n> (debugging): the first n control memory events */
+    static int n = -1, left;
+    if (n < 0) n = getenv("HOS_NVN_CTL_LOG") ? atoi(getenv("HOS_NVN_CTL_LOG")) : 0, left = n;
+    return left > 0 && __atomic_sub_fetch(&left, 1, __ATOMIC_RELAXED) >= 0;
 }
 static void release_copies(uint64_t lo, uint64_t hi) {
     if (hi <= lo || !rec_buckets) return;
     const uint64_t after = rx_nvn_pushed();
     pthread_rwlock_wrlock(&copy_lock);
+    retire_due();
     free_dead_copies();
     const uint64_t pages = ((hi - 1) >> REC_SHIFT) - (lo >> REC_SHIFT) + 1;
     const uint64_t steps = pages > REC_BUCKETS ? REC_BUCKETS : pages;   /* (a huge range: every bucket once) */
@@ -1479,7 +1514,7 @@ static void release_copies(uint64_t lo, uint64_t hi) {
                 continue;
             }
             *pn = n->next;
-            let_go(n, after);
+            let_go(n, after, COPY_GONE_ADDED);
         }
     }
     pthread_rwlock_unlock(&copy_lock);
@@ -1492,6 +1527,7 @@ static void release_copies(uint64_t lo, uint64_t hi) {
 #define SWEEP_SLICE 2688u
 static void sweep_overwritten_copies(void) {   /* (copy_lock held exclusively) */
     if (!rec_buckets) return;
+    retire_due();
     free_dead_copies();
     const uint64_t after = rx_nvn_pushed();
     static unsigned next_slice;
@@ -1509,14 +1545,19 @@ static void sweep_overwritten_copies(void) {   /* (copy_lock held exclusively) *
                 continue;
             }
             *pn = n->next;
-            let_go(n, after);
+            let_go(n, after, COPY_GONE_SWEPT);
         }
     }
 }
+/* (oranges) Copies are let go when a new recording takes their control memory slot (EndRecording), not when the memory
+   is added again: the game adds a command buffer's control memory again and then still submits recordings made in it,
+   which the console's descriptors there allow until a new recording overwrites them. */
 NV(nvnCommandBufferAddControlMemory) {
     UNUSED;
     nvn_cmd *o = CB(P(0));
-    release_copies(U64(1), U64(1) + U64(2));
+    if (ctl_log()) hos_log("nvn ctl: cmd %#llx add control %#llx + %#llx (was %#llx used %#llx)", (unsigned long long)U64(0),
+                           (unsigned long long)U64(1), (unsigned long long)U64(2), (unsigned long long)o->ctl,
+                           (unsigned long long)o->ctl_used);
     o->ctl = U64(1);
     o->ctl_size = U64(2);
     o->ctl_used = 0;
@@ -1581,6 +1622,9 @@ NV(nvnCommandBufferEndRecording) {
     /* the copy is tied to the control memory position the console driver's descriptor would take */
     const uint64_t at = o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     o->ctl_used += 64;
+    if (ctl_log()) hos_log("nvn ctl: cmd %#llx end recording at %#llx -> %p", (unsigned long long)h2g(o),
+                           (unsigned long long)at, (void *)copy);
+    if (o->ctl) release_copies(at, at + 64);   /* (the recordings made in this slot before: their descriptor is gone) */
     rec_node *n = (rec_node *)xmalloc(sizeof *n, "recording copy");
     n->ctl = o->ctl ? at : ~0ull;
     n->copy = copy;
@@ -1614,12 +1658,17 @@ static void check_handle(uint64_t h) {
         live = live_handle_has(h);
         pthread_rwlock_unlock(&copy_lock);
     }
-    if (!live || ((const copy_prefix *)(uintptr_t)h - 1)->magic != COPY_MAGIC)
-        die("command handle %#llx is not a live recording", (unsigned long long)h);
+    const uint64_t magic = h ? ((const copy_prefix *)(uintptr_t)h - 1)->magic : 0;
+    if (!live || magic != COPY_MAGIC)
+        die("command handle %#llx is not a live recording (%s)", (unsigned long long)h,
+            magic == COPY_GONE_ADDED ? "let go: a new recording took its control memory slot"
+            : magic == COPY_GONE_SWEPT ? "let go: the mark in its control memory was overwritten"
+            : live ? "in the set, without its magic" : "never made, or its memory reused");
 }
 /* a called recording is copied into the caller at the call (it is complete now; the game may retire it before the
    caller is submitted) */
 static void inline_recording(nvn_cmd *o, uint64_t h) {
+    if (ctl_log()) hos_log("nvn ctl: cmd %#llx calls %#llx", (unsigned long long)h2g(o), (unsigned long long)h);
     check_handle(h);
     const copy_prefix *pre = (const copy_prefix *)(uintptr_t)h - 1;
     const size_t total = (size_t)pre->bytes - sizeof *pre;   /* BEGIN, the records, END */
@@ -2316,6 +2365,7 @@ NV(nvnQueueSubmitCommands) {
     if (n < 0 || n > 64) die("submit of %d handles", n);
     memcpy(h, PN(2, 8 * (size_t)n), 8 * (size_t)n);
     q->submits++;
+    if (ctl_log()) hos_log("nvn ctl: submit %d: %#llx %#llx ...", n, (unsigned long long)h[0], (unsigned long long)(n > 1 ? h[1] : 0));
     for (int i = 0; i < n; i++) {
         check_handle(h[i]);
         resolve_deferred((uint8_t *)(uintptr_t)h[i]);

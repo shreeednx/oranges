@@ -1,6 +1,7 @@
 /* The small system services the game asks for: nn::time (the host's clock and time zone), nn::oe (the application's
    environment: language, mode, focus), nn::account (one local user), nn::vi (the display and its vsync event) and
-   nn::pl (system shared fonts: none, an empty one reported loaded, as Longshot's host/nn_applet.c does).
+   nn::pl (system shared fonts: a TrueType font of the host's for every type) and
+   nn::ngc (the profanity filter: nothing masked).
 
    Struct layouts are the SDK's (the game reads them):
      PosixTime {s64}; CalendarTime {s16 year; s8 month, day, hour, minute, second; pad}: 8 bytes, returned in x0;
@@ -11,6 +12,7 @@
 #include "hos.h"
 
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -314,17 +316,66 @@ HLE(_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE) {
     RET(0);
 }
 
-/* ---- nn::pl: system shared fonts. We have none; an empty one, loaded ----------------------------------------- */
-static uint64_t empty_font;
-HLE(_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE) { (void)c; }
+/* ---- nn::pl: system shared fonts -------------------------------------------------------------------------------
+   The console's are system data we do not have. Every font type is one TrueType font of the host's instead
+   (HOS_SHARED_FONT=<file.ttf>, else the first of a few common ones), handed out as the console's pl service hands out
+   its fonts: plain TrueType data (the system decrypts the BFTTF files into its shared memory). The font has to be
+   TrueType outlines (glyf), which the SDK's font engine reads; without one the game's glyph lookups fail. */
+static uint64_t font_addr, font_size;
+static void font_load(void) {
+    static int done;
+    if (done++) return;
+    static const char *const candidates[] = {"/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", "C:/Windows/Fonts/arial.ttf"};
+    const char *env = getenv("HOS_SHARED_FONT");
+    for (size_t k = env && *env ? 0 : 1; k <= sizeof candidates / sizeof *candidates; k++) {
+        const char *path = k ? candidates[k - 1] : env;
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        const long n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (n > 0 && n < (32L << 20)) {
+            font_addr = hos_sys_alloc(((uint64_t)n + 0xFFF) & ~0xFFFULL, 0x1000);
+            font_size = fread(GP(font_addr), 1, (size_t)n, f) == (size_t)n ? (uint64_t)n : 0;
+        }
+        fclose(f);
+        if (font_size) {
+            hos_log("pl: shared fonts: %s (%llu KB)", path, (unsigned long long)(font_size >> 10));
+            return;
+        }
+    }
+    font_addr = hos_sys_alloc(0x1000, 0x1000);
+    hos_log("pl: no TrueType font found for the system's shared fonts (HOS_SHARED_FONT=<file.ttf>): text will fail");
+}
+HLE(_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE) { font_load(); }
 HLE(_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE) { RET(1); }   /* SharedFontLoadState_Loaded */
 HLE(_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE) {
-    if (!empty_font) empty_font = hos_sys_alloc(0x1000, 0x1000);
-    RET(empty_font);
+    font_load();
+    RET(font_addr);
 }
-HLE(_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE) { RET(0); }
-/* GetSharedFont(int* count, SharedFontData* out, int capacity, LanguageCode): none */
+HLE(_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE) {
+    font_load();
+    RET(font_size);
+}
+/* GetSharedFont(int* count, SharedFontData* out, int capacity, LanguageCode): the one font, as type Standard.
+   SharedFontData: {SharedFontType type; const void* address; size_t size} */
 HLE(_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE) {
-    if (ARG(0)) G32(ARG(0)) = 0;
+    font_load();
+    const int n = (int)ARG(2) > 0 && font_size ? 1 : 0;
+    if (n && ARG(1)) G64(ARG(1)) = 0, G64(ARG(1) + 8) = font_addr, G64(ARG(1) + 16) = font_size;
+    if (ARG(0)) G32(ARG(0)) = (uint32_t)n;
+    RET(0);
+}
+
+/* ---- nn::ngc: the profanity filter (its service, ngct, is not emulated): nothing is masked ----------------------- */
+HLE(_ZN2nn3ngc15ProfanityFilter10InitializeEPvmb) { RET(0); }
+HLE(_ZN2nn3ngc15ProfanityFilterD1Ev) { (void)c; }
+HLE(_ZN2nn3ngc15ProfanityFilter11SetMaskModeENS1_8MaskModeE) { RET(0); }
+/* MaskProfanityWordsInText(int* masked, char16_t* text, unsigned int) -> Result */
+HLE(_ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPDsj) {
+    if (ARG(1)) G32(ARG(1)) = 0;
     RET(0);
 }

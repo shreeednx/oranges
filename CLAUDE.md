@@ -87,8 +87,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   (`tests/test_nvn.py` keeps them in sync: regenerate it with
   `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
   Tegra block-linear texture layout (deko3d-derived). `nn_audio.c` is the audio renderer at the API level (Longshot's,
-  no sound device yet: `HOS_AUDIO_DUMP=<wav>`), `nn_system.c` nn::time / oe / account / vi / pl. Device limits are the game's own driver's (API 55.15), read by running
-  the sdk's `nvnDeviceGetInteger` under Unicorn.
+  no sound device yet: `HOS_AUDIO_DUMP=<wav>`), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
+  `nn_hid.c` input (neutral until there is a window). Device limits are the game's own driver's (API 55.15), read by
+  running the sdk's `nvnDeviceGetInteger` under Unicorn.
   IPC requests to services nobody emulates are answered empty (CMIF success) and logged with a backtrace. Native
   crashes are logged with the guest registers and backtrace (`hos_crash_init`). The kit's `rt/a64_rt.c` weak hooks
   (`a64_svc`, `a64_on_trap`, `a64_lookup_host`) are overridden here.
@@ -135,12 +136,17 @@ and attribution notices, and note the source file in a comment.
 - Emission: 19.6M instructions (shared tails included) in 57 files, 1.4 GB of C. 25,789 of 43,097 BRs stay indirect
   (`a64_ijump`, mostly virtual tail calls).
 - Build: one 25 MB chunk compiles in ~25 s at -O1 with a 1.4 GB peak (clang 23).
-- Boot (`./work/build/oranges`): `_init_libc0` … `nnMain` run natively on host threads. `nnMain` sets up NVN (device,
-  8492-descriptor texture pool, 1920x1080 window), moves its game loop to framework thread 0x1003, starts ~25 threads,
-  opens the audio renderer (`nn_audio.c`), loads a TrueType font through the sdk's font engine (setjmp works:
-  `hos_setjmp.c`), then something opens `sm:` itself over IPC (`ConnectToNamedPort`) and aborts (`Break`) on the empty
-  CMIF reply. Next: find which `nn::` call that is (the IPC log's backtrace) and HLE it, then the remaining stubs
-  (`nn::hid`, `nn::aoc`, `nn::nifm`), a sound device for `nn_audio.c`, and the Vulkan back end in place of `rx_null.c`.
+- Boot (`./work/build/oranges`): `_init_libc0` … `nnMain` run natively on host threads (~55 of them). The game sets up
+  NVN, audio (`nn_audio.c`: renderer, first voice and wave buffers), fonts (a host TTF for the system's shared fonts:
+  `HOS_SHARED_FONT`), input (`nn_hid.c`: a connected pad at rest), presents its first frame, then stalls: every guest
+  thread sits in a kernel wait. The main thread waits on a light event (`WaitLightEvent` from `f_086410b0`, reached
+  through `f_0a80a810` / `f_0bb3e8b0` in its frame loop): a task's completion that no worker picks up (the workers wait
+  on their own light events in `f_0bc5ba70` / `f_0be44294`, the job threads on condition variables). The kernel's
+  arbiter rules match Atmosphère's KAddressArbiter, so look for a stubbed `nn::` call or missing event signal that the
+  task chain depends on. To sample every thread: `(sleep 60; pkill -INT -x oranges) & gdb -batch -ex run -ex "thread
+  apply all bt 25" ./work/build/oranges` (attaching is blocked by ptrace_scope).
+- Next after that: the remaining stubs (`nn::aoc`, `nn::nifm`, `nn::friends`, `nn::bcat`, `nn::nfp`), a window with real
+  input, a sound device for `nn_audio.c`, and the Vulkan back end in place of `rx_null.c`.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with
