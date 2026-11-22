@@ -19,7 +19,9 @@ static int nranges, cap;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 uint64_t hos_heap_size;
-uint64_t hos_total_memory = 0xC0000000ULL;   /* 3 GB: what svcGetInfo reports as the program's memory */
+/* what svcGetInfo reports as the program's memory: the console's application pool, 3285 MB. The game sizes its heaps
+   from it (its AppStaticHeap alone is 2015 MB, which a 3 GB total left no room for) */
+uint64_t hos_total_memory = 0xCD500000ULL;
 static uint64_t sys_next = HOS_SYSTEM_BASE;
 
 static void remove_span(uint64_t start, uint64_t end) {

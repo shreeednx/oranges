@@ -58,6 +58,31 @@ void hos_call(Ctx *c, uint64_t addr, const char *what) {
     f(c);
 }
 
+uint64_t hos_guest_call(Ctx *c, uint64_t addr, int n, const uint64_t *args) {
+    A64Fn f = a64_lookup(addr);
+    if (!addr || !f) hos_fatal(c, "no function at %#llx to call", (unsigned long long)addr);
+    uint64_t saved[19], lr = c->x[30];
+    memcpy(saved, c->x, sizeof saved);
+    for (int i = 0; i < n && i < 8; i++) c->x[i] = args[i];
+    c->x[30] = 0;
+    f(c);
+    const uint64_t r = c->x[0];
+    memcpy(c->x, saved, sizeof saved);
+    c->x[30] = lr;
+    return r;
+}
+
+uint32_t hos_system_event_init(Ctx *c, uint64_t event, int autoclear) {
+    static uint64_t attach;
+    if (!attach) attach = hos_symbol_lookup("_ZN2nn2os33AttachReadableHandleToSystemEventEPNS0_15SystemEventTypeEjbNS0_14EventClearModeE");
+    if (!attach) hos_fatal(c, "nn::os::AttachReadableHandleToSystemEvent is not in the image");
+    uint32_t readable;
+    const uint32_t writable = hos_kernel_event_new(&readable);
+    const uint64_t args[4] = {event, readable, 1, (uint64_t)(autoclear != 0)};
+    hos_guest_call(c, attach, 4, args);
+    return writable;
+}
+
 static Ctx *main_thread(void) {
     const uint64_t stack = hos_sys_alloc(hos_main_stack_size, 0x1000);
     const uint64_t tls = hos_sys_alloc(0x1000, 0x1000);   /* the C library's TLS block (TPIDR_EL0) */

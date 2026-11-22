@@ -33,12 +33,11 @@
 #define HOS_SYSTEM_BASE 0x01000000ULL
 #define HOS_SYSTEM_END 0x07000000ULL
 #define HOS_HEAP_BASE 0x10000000ULL
-#define HOS_HEAP_MAX 0xC0000000ULL     /* 3 GB: the game's nninitStartup asks for total memory less the image, 2960 MB
-*/
-#define HOS_ALIAS_BASE 0xD0000000ULL
-#define HOS_ALIAS_SIZE 0x18000000ULL
-#define HOS_STACK_BASE 0xE8000000ULL
-#define HOS_STACK_SIZE 0x18000000ULL
+#define HOS_HEAP_MAX 0xD0000000ULL     /* nninitStartup asks for the total memory less what is used (~3170 MB) */
+#define HOS_ALIAS_BASE 0xE0000000ULL
+#define HOS_ALIAS_SIZE 0x10000000ULL
+#define HOS_STACK_BASE 0xF0000000ULL
+#define HOS_STACK_SIZE 0x0F000000ULL
 #define HOS_TLS_SIZE 0x200ULL          /* a thread-local region: the IPC buffer, then the SDK's words; +0x1f8 ThreadType* */
 
 /* the host pointer of the n guest bytes at a when they lie in the window (mapped or not), else NULL */
@@ -108,6 +107,17 @@ const char *hos_hostcall_name(uint64_t addr);   /* the name a host call was regi
 
 /* ---- calls into the guest */
 void hos_call(Ctx *c, uint64_t addr, const char *what);   /* call the lifted function at addr, with c as it is */
+/* call the lifted function at addr from an HLE function, with up to 8 integer arguments: the caller-saved registers
+   are kept around the call (the HLE's own return value goes in x0 after). Returns the callee's x0. */
+uint64_t hos_guest_call(Ctx *c, uint64_t addr, int n, const uint64_t *args);
+uint64_t hos_symbol_lookup(const char *name);   /* an export's address by its (mangled) name, or 0 */
+/* kernel events for the host's use: a new event's writable handle (*readable: its readable handle), and a signal of it
+   from any host thread */
+uint32_t hos_kernel_event_new(uint32_t *readable);
+void hos_kernel_event_signal(uint32_t handle);
+/* an nn::os::SystemEventType of the game's, bound to a new kernel event (as an IPC service's event would be): the
+   writable handle, for hos_kernel_event_signal. autoclear: EventClearMode_AutoClear */
+uint32_t hos_system_event_init(Ctx *c, uint64_t event, int autoclear);
 
 /* ---- kernel results */
 #define HOS_RESULT(module, desc) ((uint32_t)(module) | (uint32_t)(desc) << 9)

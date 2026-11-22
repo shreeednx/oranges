@@ -193,6 +193,25 @@ Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority) {
 
 uint64_t hos_main_thread_handle(void) { return threads[0] ? threads[0]->handle : 0; }
 
+/* ---- events for the host's own use (system events the HLE hands the game: hos_system_event_init) */
+
+uint32_t hos_kernel_event_new(uint32_t *readable) {
+    KEvent *e = calloc(1, sizeof *e);
+    const uint32_t w = hos_handle_new(H_EVENT, e, 0, 0, 0);
+    *readable = hos_handle_new(H_EVENT, e, 0, 0, 0);
+    return w;
+}
+
+void hos_kernel_event_signal(uint32_t handle) {
+    pthread_mutex_lock(&klock);
+    const int i = slot_of(handle);
+    if (i >= 0 && handles[i].kind == H_EVENT) {
+        ((KEvent *)handles[i].obj)->signaled = 1;
+        pthread_cond_broadcast(&kwake);
+    }
+    pthread_mutex_unlock(&klock);
+}
+
 /* ---- the SVCs: 1 when handled */
 
 int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {

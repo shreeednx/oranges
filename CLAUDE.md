@@ -86,8 +86,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   (events, counters, buffer copies/updates) and draws nothing. The proc table `nvn/nvn_procs.inc` lists every `NV()`
   (`tests/test_nvn.py` keeps them in sync: regenerate it with
   `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
-  Tegra block-linear texture layout (deko3d-derived). Device limits are the game's own driver's (API 55.15), read by
-  running the sdk's `nvnDeviceGetInteger` under Unicorn.
+  Tegra block-linear texture layout (deko3d-derived). `nn_audio.c` is the audio renderer at the API level (Longshot's,
+  no sound device yet: `HOS_AUDIO_DUMP=<wav>`), `nn_system.c` nn::time / oe / account / vi / pl. Device limits are the game's own driver's (API 55.15), read by running
+  the sdk's `nvnDeviceGetInteger` under Unicorn.
   IPC requests to services nobody emulates are answered empty (CMIF success) and logged with a backtrace. Native
   crashes are logged with the guest registers and backtrace (`hos_crash_init`). The kit's `rt/a64_rt.c` weak hooks
   (`a64_svc`, `a64_on_trap`, `a64_lookup_host`) are overridden here.
@@ -134,20 +135,19 @@ and attribution notices, and note the source file in a comment.
 - Emission: 19.6M instructions (shared tails included) in 57 files, 1.4 GB of C. 25,789 of 43,097 BRs stay indirect
   (`a64_ijump`, mostly virtual tail calls).
 - Build: one 25 MB chunk compiles in ~25 s at -O1 with a 1.4 GB peak (clang 23).
-- Boot (`./work/build/oranges`): `_init_libc0` … every `DT_INIT` and `nnMain` run natively, on real host threads.
-  `nnMain` mounts the RomFS (`nn::fs` HLE), sets up `nn::vi` (stubs), the NVN device, a texture pool of 8492
-  descriptors and a 1920x1080 three-texture window (present interval 2), then moves its game loop to a new framework
-  thread (0x1003) and starts ~12 more threads (hid, account, aoc stubs). The game-loop thread then crashes allocating
-  from the framework's current heap: its sead-like thread object's current heap (+0xa8, TLS slot 3) and the heap
-  manager's fallback (0xd9e7518 + 8) are both null, although the RootHeap (2928 MB at 0x12000000) exists. Unsolved:
-  find where the current heap is set for the main and game-loop threads (the scoped setters at `GetTlsValue` +
-  `str x, [x0, #0xa8]` restore the old value). The new threads' `tpidr_el0` is 0, as on the console: this SDK never
-  registers a TLS allocator, so `__nnmusl_init_dso` returns early and the thread-start hooks stay unset.
-- Next: the heap above, then the stubs whose outputs matter (`nn::oe::GetDesiredLanguage`, `nn::account`, `nn::time`,
-  `nn::vi`), `nn::hid`, a scheduler that honours priorities and cores if the game needs it (every guest thread runs
-  free on its own host thread now), audio, and the Vulkan back end in place of `rx_null.c` (Longshot's gpu/vk). For each
-  wall, `hos_backtrace` (or gdb: lifted frames are `f_<guest address>`; `$rdi` is the guest `Ctx *`) shows the `nn::`
-  entry point. Hardware watchpoints on `0x100000000000 + <guest address>` find who writes guest memory.
+- Boot (`./work/build/oranges`): `_init_libc0` … `nnMain` run natively on host threads. `nnMain` sets up NVN (device,
+  8492-descriptor texture pool, 1920x1080 window), moves its game loop to framework thread 0x1003, starts ~25 threads,
+  opens the audio renderer (`nn_audio.c`), loads a TrueType font through the sdk's font engine (setjmp works:
+  `hos_setjmp.c`), then something opens `sm:` itself over IPC (`ConnectToNamedPort`) and aborts (`Break`) on the empty
+  CMIF reply. Next: find which `nn::` call that is (the IPC log's backtrace) and HLE it, then the remaining stubs
+  (`nn::hid`, `nn::aoc`, `nn::nifm`), a sound device for `nn_audio.c`, and the Vulkan back end in place of `rx_null.c`.
+- Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
+  carves a 2015 MB AppStaticHeap from it, so the total matters.
+- Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with
+  `hos_symbol_lookup`); `hos_system_event_init` binds a game `SystemEventType` to a kernel event the host signals with
+  `hos_kernel_event_signal` (audio renderer, vsync, account async contexts).
+- For each wall, `hos_backtrace` (or gdb: lifted frames are `f_<guest address>`, `$rdi` is the guest `Ctx *`) shows the
+  `nn::` entry point. Hardware watchpoints on `0x100000000000 + <guest address>` find who writes guest memory.
 
 ## Architecture to build toward (Longshot's design)
 

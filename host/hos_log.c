@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 int hos_trace;
@@ -39,6 +40,12 @@ void hos_dump(Ctx *c) {
 
 extern const uint32_t hos_symbol_count, hos_symbol_addr[];   /* (gen/hos_symbols.c) */
 extern const char *const hos_symbol_name[];
+
+uint64_t hos_symbol_lookup(const char *name) {
+    for (uint32_t i = 0; i < hos_symbol_count; i++)
+        if (!strcmp(hos_symbol_name[i], name)) return hos_symbol_addr[i];
+    return 0;
+}
 
 const char *hos_symbol(uint64_t addr, uint64_t *offset) {
     uint32_t lo = 0, hi = hos_symbol_count;
