@@ -25,7 +25,11 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges extract game.nup work [--only exefs|romfs]
 .venv/bin/oranges nso     game.nup [main ...] [-v]              # segments, symbols, relocs, SVCs, cross-module link
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
+.venv/bin/oranges lift [--translate]   # image + function discovery on work/exefs (~20 s; +10 s for the translator check)
 ```
+
+`oranges lift` writes `work/image/` (`image.bin`, `image.json`, `functions.txt`, `report.json`). `--translate` builds
+`third_party/a64-kit/lift/liba64emit.so` with the system `clang++` the first time (gitignored).
 
 ## Layout
 
@@ -36,7 +40,20 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
   and `.dynamic`: symbols (count from DT_HASH or DT_GNU_HASH), RELA/JMPREL/RELR relocations, imports and exports. It also
   scans SVC instructions. `link()` reports imports that no loaded module exports.
 - `oranges/game.py`: the single supported build (title id, main build id, SDK version, exefs load order).
+- `third_party/a64-kit/`: NotRexed's AArch64 lifter, vendored **unchanged** from Longshot (see its `PROVENANCE.md`).
+  `hos/nx_image.py` is the image builder (we are rtld: modules from 0x08000000, relocations applied, imports bound).
+  `lift/a64_lift.py` is the lifter (`Lifter.discover`, `walk`, `jump_table`, `emit_function`). `lift/a64emit.cpp` +
+  `suyu/arm64_to_c.h` is suyu's per-instruction AArch64→C translator. `rt/` is the guest model the lifted C sees. Don't
+  edit it. Change its behavior by wrapping its functions from `oranges/`, the way Longshot's `nx2/` does.
+- `oranges/kit.py`: puts the kit on `sys.path` and adds DT_RELR to its NSO loader. Import it before any kit module
+  (`nso`, `nx_image`, `a64_lift`, `a64emit`); ruff's import sorting is turned off for the files that do.
+- `oranges/lift_fixes.py`: Longshot's jump-table and entry fixes to the kit (ported, `install()` wraps `Lifter`).
+- `oranges/lift.py`: the lift stage driver (`build_image`, `discover`, `coverage`, `translate_coverage`, `run`).
+- `oranges/nso.py` is separate from the kit's `tools/nso.py` (it backs `oranges nso` and its tests). The kit's
+  pipeline uses the kit's loader.
 - `tests/fakes.py`: builders for synthetic `.nup` packages and NSO modules. Tests must never need the real game.
+  `make_nso(code={offset: word})` places instructions, and puts the symbol table before the string table (the kit's
+  loader counts symbols as `(strtab - symtab) / 24`).
 
 ## Game data rules
 
@@ -60,7 +77,19 @@ and attribution notices, and note the source file in a comment.
   code), `subsdk0` (multimedia/movie), `sdk` (nnSdk, 23k exports, where all the SVCs live), `main.npdm`.
 - Middleware in main: NintendoWare (G3d, Ui2d, Font, Atk, Vfx2), Havok Animation/Cloth 2019.1, NEX/Pia 4.6.11 (online),
   libcurl.
-- main's only imports nobody exports are `glslc*` (the NVN online shader compiler). The host must stub or provide them.
+- main's only imports nobody exports are `glslc*` (the NVN online shader compiler). They are weak, so the image binds
+  them to 0, as rtld does. A call to one would jump to 0.
+
+## Lift status (a64-kit on this build)
+
+- Discovery: 231k functions (main 178k, sdk 39k, subsdk0 14k). It reaches 99.35% of main's text, 98.8% of subsdk0's
+  and 98.0% of sdk's (the rest is padding and data in code). 5,181 jump tables, 11k PLT stubs, 0 BRs left without a
+  table.
+- Translator: of 1.1M distinct instruction words, 49 are untranslatable. Almost all are data that walks reach (`udf`
+  padding, module header words). The real gaps: **PMULL/PMULL2 .8h** (~40 sites, two main routines at 0xbec2xxx and
+  0xbef9xxx), **SQSHL vector #imm** (2, sdk), **STNP q** (2). Add them by wrapping `a64emit.translate`, as Longshot's
+  `nx2/insn.py` does.
+- Next: emit C (`Lifter.write`, with `a64_rtgen`), then compile with `rt/`. After that, the Horizon OS layer.
 
 ## Architecture to build toward (Longshot's design)
 

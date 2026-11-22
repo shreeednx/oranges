@@ -90,13 +90,19 @@ RELR_ADDRESSES = [0x2100, 0x2108, 0x2118]
 
 
 def make_nso(*, exports: tuple[str, ...] = ("exported",), imports: tuple[str, ...] = ("imported",),
-             hash_style: str = "sysv", compress: bool = True, module_id: bytes = b"\x12\x34" * 8) -> bytes:
+             hash_style: str = "sysv", compress: bool = True, module_id: bytes = b"\x12\x34" * 8,
+             code: dict[int, int] | None = None) -> bytes:
+    """A module with MOD0, .dynamic, symbols, RELA/JMPREL/RELR relocations and two SVCs. code: {text offset: word}
+    placed over the defaults. The symbol table comes before the string table, which a64-kit's loader needs (it
+    counts symbols as (strtab - symtab) / 24)."""
     text = bytearray(0x1000)
     struct.pack_into("<II", text, 0, 0x14000002, 8)   # b +8; MOD0 at 8
     text[8:12] = b"MOD0"
     struct.pack_into("<iii", text, 12, DATA - 8, DATA + DATA_SIZE - 8, DATA + DATA_SIZE + BSS_SIZE - 8)
     struct.pack_into("<II", text, 0x100, 0xD4000001 | 0x26 << 5, 0xD4000001 | 0x7F << 5)   # svc 0x26, svc 0x7f
     text[0x201:0x205] = struct.pack("<I", 0xD4000001 | 0x11 << 5)   # misaligned: not an instruction
+    for at, word in (code or {}).items():
+        struct.pack_into("<I", text, at, word)
 
     ro = bytearray(0x1000)
     path = b"fake.nss"
@@ -109,12 +115,12 @@ def make_nso(*, exports: tuple[str, ...] = ("exported",), imports: tuple[str, ..
     for name in ("libfake.nss", *exports, *imports):
         names[name] = len(strtab)
         strtab += name.encode() + b"\0"
-    ro[0x100:0x100 + len(strtab)] = strtab
+    ro[0x200:0x200 + len(strtab)] = strtab
     symbols = [(0, 0, 0, 0, 0)]
     symbols += [(names[n], nso.STB_GLOBAL << 4 | nso.STT_FUNC, 1, 0x100 + 4 * i, 4) for i, n in enumerate(exports)]
     symbols += [(names[n], nso.STB_GLOBAL << 4 | nso.STT_FUNC, 0, 0, 0) for n in imports]
     for i, (no, info, shndx, value, size) in enumerate(symbols):
-        struct.pack_into("<IBBHQQ", ro, 0x200 + 24 * i, no, info, 0, shndx, value, size)
+        struct.pack_into("<IBBHQQ", ro, 0x100 + 24 * i, no, info, 0, shndx, value, size)
     if hash_style == "sysv":
         struct.pack_into("<II", ro, 0x600, 1, len(symbols))
     else:   # gnu: one bucket that starts at symbol 1, chain ends at the last symbol
@@ -127,8 +133,8 @@ def make_nso(*, exports: tuple[str, ...] = ("exported",), imports: tuple[str, ..
     struct.pack_into("<QQ", ro, 0x780, RELR_ADDRESSES[0], 0b1011)
 
     data = bytearray(DATA_SIZE)
-    dynamic = [(nso.DT_NEEDED, names["libfake.nss"]), (nso.DT_STRTAB, RO + 0x100), (nso.DT_STRSZ, len(strtab)),
-               (nso.DT_SYMTAB, RO + 0x200), (nso.DT_SYMENT, 24),
+    dynamic = [(nso.DT_NEEDED, names["libfake.nss"]), (nso.DT_STRTAB, RO + 0x200), (nso.DT_STRSZ, len(strtab)),
+               (nso.DT_SYMTAB, RO + 0x100), (nso.DT_SYMENT, 24),
                (nso.DT_HASH if hash_style == "sysv" else nso.DT_GNU_HASH, RO + 0x600),
                (nso.DT_RELA, RO + 0x700), (nso.DT_RELASZ, 24), (nso.DT_RELAENT, 24),
                (nso.DT_JMPREL, RO + 0x718), (nso.DT_PLTRELSZ, 24),

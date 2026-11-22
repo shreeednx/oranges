@@ -118,6 +118,30 @@ def cmd_nso(args) -> int:
     return 0
 
 
+def cmd_lift(args) -> int:
+    from . import lift
+    exefs = Path(args.exefs or Path(args.work) / "exefs")
+    if not (exefs / "main").is_file():
+        print("no %s: run `oranges extract <nup> %s --only exefs` first" % (exefs / "main", args.work), file=sys.stderr)
+        return 1
+    report = lift.run(exefs, args.work, tuple(args.skip.split(",")) if args.skip else (), args.translate)
+    print("%-8s %10s %9s %9s %11s %8s" % ("module", "text insns", "entries", "functions", "reached", "of text"))
+    for name, m in report["modules"].items():
+        print("%-8s %10d %9d %9d %11d %7.2f%%" % (name, m["text_words"], m["entries"], m["functions"], m["reached"],
+                                                  m["reached_pct"]))
+    print("jump tables %d (%d targets), BRs without a table %d, PLT stubs %d, setjmp owners %d" % (
+        report["jump_tables"], report["jump_table_targets"], report["br_without_table"], report["plt_stubs"],
+        report["setjmp_owners"]))
+    if report["unresolved_imports"]:
+        print("unresolved imports: %s" % ", ".join(report["unresolved_imports"]))
+    if "translate" in report:
+        t = report["translate"]
+        print("translator: %d distinct words, %d untranslatable (%d sites)" % (
+            t["distinct_words"], t["untranslatable_words"], t["untranslatable_sites"]))
+    print("details: %s" % (Path(args.work) / "image" / "report.json"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="oranges", description=__doc__)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -142,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("modules", nargs="*", help="exefs modules to load from a .nup (default: all)")
     s.add_argument("-v", "--verbose", action="store_true")
     s.set_defaults(run=cmd_nso)
+    s = sub.add_parser("lift", help="build the guest image and discover every function (a64-kit), report coverage")
+    s.add_argument("--work", default="work", help="work folder (default: work)")
+    s.add_argument("--exefs", help="exefs folder (default: <work>/exefs)")
+    s.add_argument("--skip", help="modules not to load, comma-separated (their exports become hooks)")
+    s.add_argument("--translate", action="store_true", help="also run suyu's translator over every reached instruction")
+    s.set_defaults(run=cmd_lift)
     args = ap.parse_args(argv)
     try:
         return args.run(args)

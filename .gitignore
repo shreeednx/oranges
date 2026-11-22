@@ -19,3 +19,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# a64-kit build outputs (written next to their sources)
+third_party/a64-kit/lift/liba64emit.so
+third_party/a64-kit/lift/*.sha1
