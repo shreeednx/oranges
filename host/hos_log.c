@@ -1,0 +1,94 @@
+/* Logging, fatal stops, traps and the generated stubs' first-call notes. */
+#include "hos.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int hos_trace;
+
+void hos_log(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("[hos] ", stderr);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
+    fflush(stderr);
+}
+
+void hos_dump(Ctx *c) {
+    for (int i = 0; i < 32; i += 4)
+        hos_log("  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx  %s %016llx", i, (unsigned long long)c->x[i],
+                i + 1, (unsigned long long)c->x[i + 1], i + 2, (unsigned long long)c->x[i + 2],
+                i + 3 == 31 ? "sp " : i + 3 < 10 ? (const char *[]){"x3 ", "x7 "}[i / 4] :
+                (const char *[]){"", "", "x11", "x15", "x19", "x23", "x27"}[i / 4], (unsigned long long)c->x[i + 3]);
+    hos_log("  tpidrro_el0 %016llx  tpidr_el0 %016llx", (unsigned long long)c->tpidrro_el0,
+            (unsigned long long)c->tpidr_el0);
+}
+
+extern const uint32_t hos_symbol_count, hos_symbol_addr[];   /* (gen/hos_symbols.c) */
+extern const char *const hos_symbol_name[];
+
+const char *hos_symbol(uint64_t addr, uint64_t *offset) {
+    uint32_t lo = 0, hi = hos_symbol_count;
+    while (lo < hi) {
+        const uint32_t mid = (lo + hi) / 2;
+        if (hos_symbol_addr[mid] <= addr) lo = mid + 1;
+        else hi = mid;
+    }
+    if (!lo || addr >> 32) return NULL;
+    *offset = addr - hos_symbol_addr[lo - 1];
+    return hos_symbol_name[lo - 1];
+}
+
+static void frame_line(int i, uint64_t pc) {
+    uint64_t off = 0;
+    const char *name = hos_symbol(pc, &off);
+    if (name && off < 0x100000) hos_log("  #%-2d %#llx  %s+%#llx", i, (unsigned long long)pc, name, (unsigned long long)off);
+    else hos_log("  #%-2d %#llx", i, (unsigned long long)pc);
+}
+
+/* Lifted code keeps the guest's frame records ([x29] = the caller's x29, [x29 + 8] = the return address) in guest
+   memory, as the hardware would, so the chain walks as it does on the console. */
+void hos_backtrace(Ctx *c) {
+    frame_line(0, c->x[30]);
+    uint64_t fp = c->x[29];
+    for (int i = 1; i < 32 && fp && !(fp & 7) && fp < HOS_WINDOW - 16; i++) {
+        const uint64_t lr = G64(fp + 8), next = G64(fp);
+        if (!lr) break;
+        frame_line(i, lr);
+        if (next <= fp) break;
+        fp = next;
+    }
+}
+
+void hos_fatal(Ctx *c, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("[hos] fatal: ", stderr);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
+    if (c) {
+        hos_dump(c);
+        hos_backtrace(c);
+    }
+    fflush(stderr);
+    exit(70);
+}
+
+/* rt/a64_rt.c's weak hook: a thread that cannot go on (a trap, a branch to an address with no function) */
+void a64_on_trap(Ctx *c, uint64_t pc, uint32_t insn, const char *why) {
+    hos_fatal(c, "%s at %#llx (insn %08x), lr %#llx", why, (unsigned long long)pc, insn, (unsigned long long)c->x[30]);
+}
+
+/* gen/a64_stubs.c: an OS-facing SDK function, or an import nothing exports, that the host does not implement yet.
+   It returns 0, which is success for the nn::Result functions, and logs its first call (every call with HOS_TRACE). */
+void hos_unimplemented(Ctx *A64_NOESC c, const char *sym, const char *name, int *seen) {
+    (void)sym;
+    if (!*seen || hos_trace)
+        hos_log("stub: %s (x0 %#llx x1 %#llx x2 %#llx, lr %#llx)", name, (unsigned long long)c->x[0],
+                (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[30]);
+    *seen = 1;
+    c->x[0] = 0;
+}

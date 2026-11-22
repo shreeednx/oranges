@@ -51,18 +51,33 @@ def sources(gen: Path) -> list[tuple[Path, list[str]]]:
         raise SystemExit("no lifted C in %s: run `oranges lift --write` first" % gen)
     support = ["-O2"] + common_flags(gen)
     out = [(c, chunk_flags(gen)) for c in chunks]
-    out += [(gen / n, support) for n in ("a64_table.c", "a64_hooks.c", "a64_suyu.c")]
-    out += [(RT / "a64_rt.c", support), (HOST / "main.c", support)]
+    out += [(gen / n, support) for n in ("a64_table.c", "a64_hooks.c", "a64_suyu.c", "a64_stubs.c", "hos_image.c",
+                                         "hos_symbols.c")
+            if (gen / n).exists()]
+    host = ["-I" + str(HOST)] + support
+    out += [(RT / "a64_rt.c", support)] + [(c, host) for c in sorted(HOST.glob("*.c"))]
     return out
 
 
+_digests: dict[tuple[Path, int, int], bytes] = {}
+
+
+def _digest(path: Path) -> bytes:
+    """A file's content hash (by content: a lift rewrites every file, mostly with the same text)"""
+    st = path.stat()
+    k = (path, st.st_size, st.st_mtime_ns)
+    if k not in _digests:
+        _digests[k] = hashlib.sha256(path.read_bytes()).digest()
+    return _digests[k]
+
+
 def _key(src: Path, flags: list[str], gen: Path) -> str:
-    """What an object depends on: its flags, its source and the headers every object includes (by size and mtime)"""
+    """What an object depends on: its flags, its source and the headers it includes"""
     h = hashlib.sha256("\0".join(flags).encode())
-    for dep in [src, RT / "a64.h", gen / "a64_suyu.h", gen / "a64_fpx.h"]:
+    deps = [src, RT / "a64.h", gen / "a64_suyu.h", gen / "a64_fpx.h"] + ([HOST / "hos.h"] if src.parent == HOST else [])
+    for dep in deps:
         if dep.exists():
-            st = dep.stat()
-            h.update(b"%s %d %d\0" % (str(dep).encode(), st.st_size, st.st_mtime_ns))
+            h.update(str(dep).encode() + b"\0" + _digest(dep))
     return h.hexdigest()
 
 

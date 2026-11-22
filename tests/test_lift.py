@@ -16,7 +16,13 @@ def exefs(tmp_path):
     d = tmp_path / "exefs"
     d.mkdir()
     (d / "main").write_bytes(make_nso(code=CODE))
-    (d / "sdk").write_bytes(make_nso(exports=("imported",), imports=(), code=CODE))
+    # (_init_libc0 at 0x100: svc 0x26 (Break), so a boot reaches lifted code and the SVC layer, and stops there)
+    (d / "sdk").write_bytes(make_nso(exports=("_init_libc0", "imported"), imports=(), code=CODE))
+    npdm = bytearray(0x80)
+    npdm[:4] = b"META"
+    npdm[0x0E], npdm[0x0F] = 44, 0                      # main thread priority, core
+    npdm[0x1C:0x20] = (0x10000).to_bytes(4, "little")  # main thread stack
+    (d / "main.npdm").write_bytes(bytes(npdm))
     return d
 
 
@@ -28,7 +34,7 @@ def test_image_relocates_and_binds(exefs):
     def q(a):
         return struct.unpack_from("<Q", img.mem, a - lift.nx_image.MAIN_BASE)[0]
     assert q(main.base + 0x2180) == main.base + 0x100            # RELA RELATIVE
-    assert q(main.base + 0x2188) == sdk.base + 0x100             # JUMP_SLOT bound to sdk's export
+    assert q(main.base + 0x2188) == sdk.base + 0x104             # JUMP_SLOT bound to sdk's export
     for a in (0x2100, 0x2108, 0x2118):                           # RELR (oranges.kit)
         assert q(main.base + a) == main.base + 0x40 + a
     assert not img.unresolved
@@ -50,7 +56,7 @@ def test_run_writes_report(exefs, tmp_path):
     out = tmp_path / "work" / "image"
     assert {p.name for p in out.iterdir()} == {"image.bin", "image.json", "functions.txt", "report.json"}
     assert report["modules"]["main"]["functions"] == 3
-    assert len((out / "functions.txt").read_text().splitlines()) == 6
+    assert len((out / "functions.txt").read_text().splitlines()) == 7   # (sdk: _init_libc0 and imported split 0x100)
 
 
 @pytest.mark.skipif(not shutil.which("clang++"), reason="needs clang++ to build suyu's translator")
@@ -71,7 +77,11 @@ def test_write_compile_link_run(exefs, tmp_path):
     assert report["emit"]["files"] >= 1 and report["emit"]["unhandled_words"] == 0
     gen = work / "gen"
     assert (gen / "a64_table.c").exists() and (gen / "a64_suyu.h").exists()
+    assert (gen / "hos_image.c").exists() and (gen / "a64_stubs.c").exists()
     exe = build.build(work, jobs=2, say=lambda *_: None)
-    out = subprocess.run([str(exe)], capture_output=True, text=True, check=True).stdout
-    assert "6 lifted functions linked" in out
+    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 70, run.stderr                   # (hos_fatal)
+    assert "image: 2 MB at 0x8000000, 6 segments, 7 lifted functions" in run.stderr
+    assert "boot: _init_libc0" in run.stderr and "svc 0x26 Break" in run.stderr
+    assert "the guest called Break" in run.stderr
     assert build.build(work, jobs=2, say=lambda *_: None) == exe   # (nothing to recompile the second time)

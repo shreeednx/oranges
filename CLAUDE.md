@@ -26,7 +26,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges nso     game.nup [main ...] [-v]              # segments, symbols, relocs, SVCs, cross-module link
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
 .venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
-.venv/bin/oranges build                           # compile work/gen + rt + host/, link work/build/oranges, run it
+.venv/bin/oranges build                           # compile work/gen + rt + host/, link work/build/oranges
+./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
 .venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
 .venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
 ```
@@ -64,9 +65,18 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `write_c`, `run`). `install()` applies `lift_fixes` and `insn` and must run before discovery and emission.
 - `oranges/build.py`: compiles and links. Chunk flags follow Longshot's (`-O1 -ffp-contract=off -fno-strict-aliasing
   -mcx16 -ffunction-sections -mllvm -rotation-max-header-size=0`).
-- `host/`: the native host (C). For now `main.c` only has a placeholder `main` and setjmp stubs (`recomp_sj_*`), which is
-  what the link needs. The kit's `rt/a64_rt.c` has weak defaults for `a64_svc`, `a64_on_trap` and `a64_cntpct_host`.
-  The Horizon OS layer goes here and overrides them.
+- `oranges/hle.py`: the lift-time half of the OS layer (from Longshot's `nx2/standalone.py`). `hle_set` hooks every
+  `HLE(sym)` / `void imp_sym(Ctx` that `host/*.c` defines, at the import and at the sdk's definition, and stubs every
+  OS-facing `nn::<service ns>::f` the game imports (`OS_NAMESPACES`). It writes `gen/a64_stubs.c` (stubs log their
+  first call and return 0) and `gen/hos_image.c` (boot constants: segments, DT_INITs, SDK boot entry points, main
+  thread from `main.npdm`). `oranges lift --write` applies it. A new `HLE(...)` in host/ needs a lift again.
+- `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.
+  `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
+  stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,
+  `nninitStartup`, `_init_libc2`, each `DT_INIT`, `nnMain` (rtld is not run). `hos_mem.c` keeps the mapping record
+  for QueryMemory, the system region and the heap. `hos_svc.c` is the SVCs (one guest thread for now: threads are
+  recorded, not run, and IPC answers not-implemented). `hos_log.c` has logging, traps and stub notes.
+  `hos_setjmp.c` holds stubs. The kit's `rt/a64_rt.c` weak hooks (`a64_svc`, `a64_on_trap`) are overridden here.
 - `oranges/nso.py` is separate from the kit's `tools/nso.py` (it backs `oranges nso` and its tests). The kit's
   pipeline uses the kit's loader.
 - `tests/fakes.py`: builders for synthetic `.nup` packages and NSO modules. Tests must never need the real game.

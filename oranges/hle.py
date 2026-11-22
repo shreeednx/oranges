@@ -1,0 +1,201 @@
+"""The lift-time half of the Horizon OS layer: which SDK functions the host replaces, the stubs for the OS-facing
+ones it does not implement yet, and the boot constants host/hos_main.c reads.
+
+The model is TOTKPort's, by way of Longshot (nx2/standalone.py, GPL-3.0-or-later, commit 67ba729d, adapted here). The
+SDK is replaced at the nn:: boundary where it talks to system services:
+  - a function host/ defines as `HLE(<mangled name>)` or `void imp_<mangled name>(Ctx *c)` is hooked where the game
+    imports it and at the sdk's own definition (hos/nx_image.py's hle set), so lifted SDK code reaching it lands
+    there too;
+  - every other free function of an OS-facing namespace that a game module imports gets a generated stub (gen/
+    a64_stubs.c) that logs its first call and returns 0;
+  - everything else (libc, nn::os, nn::util, nn::mem, std, the NVN driver) runs as lifted code. The kernel calls it
+    makes are host/hos_svc.c's.
+"""
+
+import os
+import re
+import struct
+import subprocess
+from pathlib import Path
+
+from . import kit
+
+import toolchain  # noqa: E402,I001  (the kit's)
+
+HOST = Path(kit.ROOT) / "host"
+
+# a64-kit's list (TOTK, a Switch 1 game, like this one), plus the service namespaces Longshot added for MKW. nn::os and
+# nn::fs are not here: nn::os runs lifted over the SVCs, and nn::fs is for the host to implement as HLE.
+OS_NAMESPACES = {"audio", "hid", "oe", "prepo", "nfp", "time", "account", "vi", "swkbd", "pl", "err", "codec", "diag",
+                 "detail", "settings", "ns", "applet", "album", "friends", "nifm", "ssl", "socket", "ec", "bcat",
+                 "web", "ldn", "irsensor", "aoc", "olsc", "pctl", "apm", "ro",
+                 "chat", "camera", "gs", "movie", "npns", "news", "fatal", "lbl", "capture", "syncpt"}
+
+
+def implemented(host: Path = HOST) -> set[str]:
+    """C names of the HLE functions in host/*.c: `void imp_x(Ctx` definitions and `HLE(x)` macros"""
+    names = set()
+    for f in sorted(host.glob("*.c")):
+        src = f.read_text(errors="replace")
+        names |= set(re.findall(r"^void (imp_\w+)\(Ctx", src, re.M))
+        names |= {"imp_" + n for n in re.findall(r"^HLE\((\w+)\)", src, re.M)}
+    return names
+
+
+def nested_name(sym: str) -> list[str] | None:
+    """The components of an Itanium nested name (_ZN[K]<len><id>...E), or None if it is not that simple shape"""
+    m = re.match(r"_ZNK?", sym)
+    if not m:
+        return None
+    i, parts = m.end(), []
+    while i < len(sym) and sym[i].isdigit():
+        j = i
+        while sym[j].isdigit():
+            j += 1
+        n = int(sym[i:j])
+        parts.append(sym[j:j + n])
+        i = j + n
+    return parts if i < len(sym) and sym[i] == "E" else None
+
+
+def os_facing(sym: str) -> bool:
+    """A free function of an OS-facing namespace: nn::<OS namespace>::f (class members and data stay lifted)"""
+    parts = nested_name(sym)
+    return bool(parts) and parts[0] == "nn" and len(parts) >= 3 and parts[1] in OS_NAMESPACES and (
+        len(parts) == 3 or (len(parts) == 4 and parts[2] == "sdk"))
+
+
+def hle_set(modules, host: Path = HOST) -> tuple[set[str], set[str], list[str]]:
+    """(HLE'd symbols, stubbed symbols, host names no module has): the host's imp_ functions some module has, and the
+    OS-facing functions the game modules import that the host does not define"""
+    hle = {n[4:] for n in implemented(host)}
+    known = {s["name"] for m in modules for s in m.symbols if s["name"]}
+    unused = sorted(hle - known)
+    hle -= set(unused)
+    kind = {s["name"]: s["type"] for m in modules for s in m.symbols if s["defined"] and s["name"]}
+    stubbed = set()
+    for m in modules:
+        if m.name not in ("sdk", "rtld"):   # (every game module: main and the subsdk* the exefs has)
+            stubbed |= {s["name"] for s in m.symbols if not s["defined"] and s["name"] and os_facing(s["name"])
+                        and kind.get(s["name"], "func") == "func"}
+    return hle, stubbed - hle, unused
+
+
+def demangle(syms: list[str]) -> dict[str, str]:
+    tool = toolchain.find("llvm-cxxfilt")
+    try:
+        out = subprocess.run([tool], input="\n".join(syms), capture_output=True, text=True).stdout.splitlines()
+        return dict(zip(syms, out, strict=True)) if len(out) == len(syms) else {s: s for s in syms}
+    except (OSError, ValueError):
+        return {s: s for s in syms}
+
+
+def _write_if_changed(path: Path, text: str) -> None:
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)
+
+
+def write_stubs(gen: Path, meta: dict, host: Path = HOST) -> int:
+    """gen/a64_stubs.c: a function for every hook the host does not implement (a stubbed OS-facing function, or an
+    import nothing exports, bound to a trampoline): it logs its first call and returns 0"""
+    have = implemented(host)
+    hooks = [h for h in meta["hooks"] if h["c"] not in have]
+    names = demangle([h["sym"] for h in hooks])
+    lines = ["/* Generated by oranges.hle: the hooked functions host/ does not implement. */", '#include "a64.h"',
+             "void hos_unimplemented(Ctx *A64_NOESC c, const char *sym, const char *name, int *seen);", ""]
+    for h in hooks:
+        lines.append('void %s(Ctx *A64_NOESC c) { static int seen; hos_unimplemented(c, "%s", "%s", &seen); }'
+                     % (h["c"], h["sym"], names[h["sym"]].replace("\\", "\\\\").replace('"', '\\"')))
+    _write_if_changed(gen / "a64_stubs.c", "\n".join(lines) + "\n")
+    return len(hooks)
+
+
+def thread_hooks(img, meta: dict) -> tuple[int, int]:
+    """The SDK thread entry's start and exit hooks (nnmusl's per-thread TLS setup and teardown): the entry starts
+    `mrs x1, tpidrro_el0; add x1, x1, #0x1f8; str x0, [x1]` and loads each hook through a GOT slot"""
+    for m in meta["modules"]:
+        for pc in range(m["base"], m["base"] + m["size"] - 12, 4):
+            if not img.in_code(pc) or img.word(pc) != 0xD53BD061:
+                continue
+            if img.word(pc + 4) != 0x9107E021 or img.word(pc + 8) != 0xF9000020:
+                continue
+            hooks, page = [], {}
+            for q in range(pc + 12, pc + 12 + 4 * 40, 4):
+                w = img.word(q)
+                if (w & 0x9F000000) == 0x90000000:                                   # ADRP
+                    imm = ((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3)
+                    imm = imm - (1 << 21) if imm & (1 << 20) else imm
+                    page[w & 31] = (q & ~0xFFF) + (imm << 12)
+                elif (w & 0xFFC00000) == 0xF9400000 and ((w >> 5) & 31) in page:     # LDR Xt, [Xn, #imm]
+                    got = page.pop((w >> 5) & 31) + ((w >> 10) & 0xFFF) * 8
+                    hooks.append(struct.unpack("<Q", img.read(got, 8))[0])
+                if len(hooks) == 2:
+                    return hooks[0], hooks[1]
+    return 0, 0
+
+
+BOOT_SYMBOLS = ("_init_libc0", "_init_libc1", "_init_libc2", "nnosInitialize", "nninitStartup", "nnMain",
+                "nninitInitializeSdkModule", "nvnBootstrapLoader")
+
+
+def write_image_c(gen: Path, img, meta: dict, exefs: Path) -> dict:
+    """gen/hos_image.c, the boot constants: the image span, each module's DT_INIT in load order (rtld is not run: the
+    image is already relocated), the SDK's boot entry points, and the main thread's stack, priority and core
+    (main.npdm)"""
+    ex = meta["exports"]
+    mods = [m for m in meta["modules"] if m["init"]]
+    npdm = (exefs / "main.npdm").read_bytes()
+    if npdm[:4] != b"META":
+        raise SystemExit("main.npdm: no META header")
+    prio, core = npdm[0xE], npdm[0xF]
+    stack = int.from_bytes(npdm[0x1C:0x20], "little")
+    aoff, asz = int.from_bytes(npdm[0x70:0x74], "little"), int.from_bytes(npdm[0x74:0x78], "little")
+    aci = npdm[aoff:aoff + asz]
+    program_id = int.from_bytes(aci[0x10:0x18], "little") if aci[:4] == b"ACI0" else 0
+    main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
+    start_hook, exit_hook = thread_hooks(img, meta)
+    lines = ["/* Generated by oranges.hle. */", "#include <stdint.h>",
+             "const uint64_t hos_main_stack_size = %#xULL;" % stack,
+             "const int hos_main_priority = %d, hos_main_core = %d;" % (prio, core),
+             "const uint64_t hos_image_base = %#xULL, hos_image_end = %#xULL;" % (meta["base"], meta["end"]),
+             "const int hos_module_count = %d;" % len(mods),
+             "const uint64_t hos_module_init[] = {%s};" % ", ".join("%#xULL" % m["init"] for m in mods),
+             "const char *const hos_module_name[] = {%s};" % ", ".join('"%s"' % m["name"] for m in mods),
+             "const uint64_t hos_program_id = %#xULL;   /* (main.npdm's ACI0) */" % program_id,
+             'const char hos_main_build_id[] = "%s";' % main_build,
+             "const uint64_t hos_thread_start_hook = %#xULL, hos_thread_exit_hook = %#xULL;" % (start_hook, exit_hook)]
+    def page(n):
+        return (n + 0xFFF) & ~0xFFF
+    segs = []   # (per module: text RX, rodata R, and data with bss RW, page-aligned: bss starts in data's last page)
+    for m in meta["modules"]:
+        seg = {g["name"]: g for g in m["segments"]}
+        text, ro, data = seg[".text"], seg[".rodata"], seg[".data"]
+        segs.append((text["addr"], page(text["size"]), 5))
+        segs.append((ro["addr"], page(ro["size"]), 1))
+        segs.append((data["addr"], page(max(data["addr"] + data["size"], m["bss"][1])) - data["addr"], 3))
+    lines.append("const int hos_segment_count = %d;" % len(segs))
+    lines.append("const uint64_t hos_segment[][3] = {%s};" % ", ".join("{%#x, %#x, %d}" % s for s in sorted(segs)))
+    for sym in BOOT_SYMBOLS:
+        lines.append("const uint64_t hos_entry_%s = %#xULL;" % (sym.lstrip("_"), ex.get(sym, 0)))
+    _write_if_changed(gen / "hos_image.c", "\n".join(lines) + "\n")
+    return {"stack": stack, "priority": prio, "core": core, "program_id": "%016x" % program_id,
+            "thread_hooks": ["%#x" % start_hook, "%#x" % exit_hook],
+            "missing_entries": [s for s in BOOT_SYMBOLS if s not in ex]}
+
+
+def write_symbols(gen: Path, img) -> int:
+    """gen/hos_symbols.c: every named function (the modules' dynamic symbols), sorted, for the host's backtraces"""
+    names = sorted(img.names.items())
+    lines = ["/* Generated by oranges.hle: named guest functions, for backtraces. */", "#include <stdint.h>",
+             "const uint32_t hos_symbol_count = %d;" % len(names),
+             "const uint32_t hos_symbol_addr[] = {%s};" % ",".join("%#x" % a for a, _ in names),
+             "const char *const hos_symbol_name[] = {%s};" % ",".join('"%s"' % n for _, n in names)]
+    _write_if_changed(gen / "hos_symbols.c", "\n".join(lines) + "\n")
+    return len(names)
+
+
+def write(gen: str | os.PathLike, img, exefs: str | os.PathLike, meta: dict) -> dict:
+    gen = Path(gen)
+    gen.mkdir(parents=True, exist_ok=True)
+    return {"stubs": write_stubs(gen, meta), "boot": write_image_c(gen, img, meta, Path(exefs)),
+            "symbols": write_symbols(gen, img)}

@@ -1,7 +1,6 @@
 """oranges command line: python -m oranges <command> ..."""
 
 import argparse
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -139,6 +138,11 @@ def cmd_lift(args) -> int:
         t = report["translate"]
         print("translator: %d distinct words, %d untranslatable (%d sites)" % (
             t["distinct_words"], t["untranslatable_words"], t["untranslatable_sites"]))
+    if report.get("hle"):
+        h = report["hle"]
+        print("host: %d functions replaced (HLE), %d OS-facing imports stubbed%s" % (
+            h["hle"], h["stubbed"], ", host functions no module has: %s" % ", ".join(h["host_unused"])
+            if h["host_unused"] else ""))
     if "emit" in report:
         e = report["emit"]
         print("emitted: %d instructions (shared tails included), indirect BR %d of %d, untranslated words %d (%d sites)"
@@ -149,8 +153,7 @@ def cmd_lift(args) -> int:
 
 def cmd_build(args) -> int:
     from . import build
-    exe = build.build(args.work, args.jobs)
-    subprocess.run([str(exe)], check=False)
+    build.build(args.work, args.jobs)
     return 0
 
 
