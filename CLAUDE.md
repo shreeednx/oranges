@@ -76,7 +76,14 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `nninitStartup`, `_init_libc2`, each `DT_INIT`, `nnMain` (rtld is not run). `hos_mem.c` keeps the mapping record
   for QueryMemory, the system region and the heap. `hos_svc.c` is the SVCs (one guest thread for now: threads are
   recorded, not run, and IPC answers not-implemented). `hos_log.c` has logging, traps and stub notes.
-  `hos_setjmp.c` holds stubs. The kit's `rt/a64_rt.c` weak hooks (`a64_svc`, `a64_on_trap`) are overridden here.
+  `hos_setjmp.c` holds stubs. `hos_kernel.c` has threads (each on a host pthread), handles, mutexes, condition
+  variables, address arbiters, events and WaitSynchronization, under one kernel lock. `hos_hostcall.c` provides guest
+  addresses that are host functions (through `a64_lookup_host`), for function pointers handed to the game.
+  `nn_fs.c` is `nn::fs` (RomFS read-only from `work/romfs`, device save data in `work/user/save/device`). `nvn.c` has
+  the nv:: driver setup HLE and the NVN exploration layer (`nvnBootstrapLoader` / `GetProcAddress`, logging procs).
+  IPC requests to services nobody emulates are answered empty (CMIF success) and logged with a backtrace. Native
+  crashes are logged with the guest registers and backtrace (`hos_crash_init`). The kit's `rt/a64_rt.c` weak hooks
+  (`a64_svc`, `a64_on_trap`, `a64_lookup_host`) are overridden here.
 - `oranges/nso.py` is separate from the kit's `tools/nso.py` (it backs `oranges nso` and its tests). The kit's
   pipeline uses the kit's loader.
 - `tests/fakes.py`: builders for synthetic `.nup` packages and NSO modules. Tests must never need the real game.
@@ -120,13 +127,17 @@ and attribution notices, and note the source file in a comment.
 - Emission: 19.6M instructions (shared tails included) in 57 files, 1.4 GB of C. 25,789 of 43,097 BRs stay indirect
   (`a64_ijump`, mostly virtual tail calls).
 - Build: one 25 MB chunk compiles in ~25 s at -O1 with a 1.4 GB peak (clang 23).
-- Boot (`./work/build/oranges`): `_init_libc0`, `nnosInitialize`, `_init_libc1`, `nninitStartup` (a 2960 MB heap),
-  `_init_libc2`, every `DT_INIT` and `nnMain` run natively. `nnMain` stops at the game's first real service:
-  `nn::fs::QueryMountRomCacheSize` → `GetFileSystemProxyServiceObject` → `nn::sm::Initialize` (IPC, not served).
-- Next: `nn::fs` as HLE in `host/` (RomFS reads from the extracted `work/romfs` or straight from the `.nup`, save data
-  in a host folder), then threads (the SDK's `svcCreateThread` on host threads), then setjmp, `nn::hid`, `nn::vi`, and
-  NVN (Longshot's `nvn_native.c` is NVN2, so it is a model rather than a drop-in). The rule for each wall:
-  `hos_backtrace` shows the `nn::` entry point, and that function gets an `HLE(...)` in `host/`.
+- Boot (`./work/build/oranges`): `_init_libc0` … every `DT_INIT` and `nnMain` run natively, on real host threads.
+  `nnMain` mounts the RomFS (`nn::fs` HLE) and sets up `nn::vi` (stubs), the NVN device (exploration procs) and
+  `nn::nifm`, starts its first threads, then crashes on a null framework singleton (main `0xd9e77d8`, read in
+  `f_0b7bb490`) that nothing sets up. The likeliest cause is the NVN placeholders: `nvnDeviceGetInteger` leaves its
+  output unwritten, so the game's device checks go wrong.
+- Next: the NVN layer in `host/nvn.c`. Start with the device procs (`nvnDeviceGetInteger` with NVN1's device-info
+  values, the builders, `nvnDeviceInitialize`), memory pools, buffers, textures and the queue. Model it on Longshot's
+  `host/nvn_native.c` (NVN2), which records GPU work for a Vulkan replay. `HOS_NVN_STRICT=1` stops at the first proc
+  with no implementation. After that: setjmp, `nn::hid`, `nn::vi`, audio. For each wall, `hos_backtrace` (or gdb:
+  lifted frames are `f_<guest address>`) shows the `nn::` entry point, and that function gets an `HLE(...)` in
+  `host/`.
 
 ## Architecture to build toward (Longshot's design)
 

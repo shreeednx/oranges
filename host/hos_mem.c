@@ -124,7 +124,7 @@ uint64_t hos_sys_alloc(uint64_t size, uint64_t align) {
     pthread_mutex_lock(&lock);
     const uint64_t a = (sys_next + align - 1) & ~(align - 1);
     const uint64_t end = (a + size + PAGE - 1) & ~(PAGE - 1);
-    if (end > HOS_SYSTEM_END) hos_fatal(NULL, "system region full (%#llx bytes asked)", (unsigned long long)size);
+    if (end > HOS_HOSTCALL_BASE) hos_fatal(NULL, "system region full (%#llx bytes asked)", (unsigned long long)size);
     sys_next = end;
     pthread_mutex_unlock(&lock);
     const uint64_t first = a & ~(PAGE - 1);

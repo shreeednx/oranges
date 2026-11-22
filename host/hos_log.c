@@ -77,6 +77,40 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
     exit(70);
 }
 
+/* ---- native crashes: a signal in lifted or host code. The guest registers are those of the context the thread runs
+   (hos_current), as last stored: lifted code keeps them in the context across calls. */
+#include <signal.h>
+#include <unistd.h>
+
+__thread Ctx *hos_current;
+
+static void on_signal(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    const uintptr_t a = (uintptr_t)si->si_addr, base = (uintptr_t)A64_PTR(0);
+    if (a >= base && a < base + HOS_WINDOW)
+        hos_log("crash: signal %d at guest address %#llx (an unmapped page of the guest window)", sig,
+                (unsigned long long)(a - base));
+    else
+        hos_log("crash: signal %d at host address %p", sig, si->si_addr);
+    if (hos_current) {
+        hos_dump(hos_current);
+        hos_backtrace(hos_current);
+    }
+    fflush(stderr);
+    _exit(71);
+}
+
+void hos_crash_init(void) {
+    static uint8_t alt[1 << 16];
+    stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
+    sigaltstack(&ss, NULL);
+    struct sigaction sa = {0};
+    sa.sa_sigaction = on_signal;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    for (int sig = SIGILL; sig <= SIGSEGV; sig++)
+        if (sig == SIGILL || sig == SIGBUS || sig == SIGFPE || sig == SIGSEGV) sigaction(sig, &sa, NULL);
+}
+
 /* rt/a64_rt.c's weak hook: a thread that cannot go on (a trap, a branch to an address with no function) */
 void a64_on_trap(Ctx *c, uint64_t pc, uint32_t insn, const char *why) {
     hos_fatal(c, "%s at %#llx (insn %08x), lr %#llx", why, (unsigned long long)pc, insn, (unsigned long long)c->x[30]);

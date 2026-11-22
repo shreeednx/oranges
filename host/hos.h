@@ -59,6 +59,8 @@ extern int hos_trace;
 void hos_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 __attribute__((noreturn)) void hos_fatal(Ctx *c, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void hos_dump(Ctx *c);   /* the guest registers, to the log */
+void hos_crash_init(void);   /* native crashes (signals) logged with the guest state of the thread */
+extern __thread Ctx *hos_current;   /* the guest context this host thread runs */
 void hos_backtrace(Ctx *c);   /* the guest call chain (its frame pointers), with the nearest named function */
 const char *hos_symbol(uint64_t addr, uint64_t *offset);   /* the named function at or below addr, or NULL */
 
@@ -78,8 +80,23 @@ uint64_t hos_sys_alloc(uint64_t size, uint64_t align);   /* zeroed, from the sys
 int hos_set_heap_size(uint64_t size, uint64_t *addr);    /* svcSetHeapSize: 0 or a result code */
 extern uint64_t hos_heap_size, hos_total_memory;
 
-/* ---- threads (hos_main.c for now: only the main thread) */
+/* ---- host folders (hos_main.c): the RomFS (ORANGES_ROMFS, default work/romfs) and the user folder with saves
+   (ORANGES_USER, default work/user) */
+extern char hos_romfs_dir[1024], hos_user_dir[1024];
+
+/* ---- the kernel's threads, handles and synchronization (hos_kernel.c) */
+enum { HOS_H_FREE, HOS_H_THREAD, HOS_H_EVENT, HOS_H_SESSION, HOS_H_TRANSFER, HOS_H_OTHER };
+void hos_kernel_init(void);
+int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm);   /* 1 when it is one of the kernel's */
+uint32_t hos_handle_new(int kind, void *obj, uint64_t a, uint64_t b, uint64_t c);
+Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority);
 uint64_t hos_main_thread_handle(void);
+
+/* ---- host calls (hos_hostcall.c): a guest address that calls fn(c, user), for function pointers handed to the game */
+#define HOS_HOSTCALL_BASE 0x06F00000ULL   /* (to HOS_SYSTEM_END: 4096 slots of 16 bytes, no memory behind them) */
+typedef void (*HosHostFn)(Ctx *A64_NOESC c, void *user);
+uint64_t hos_hostcall(const char *name, HosHostFn fn, void *user);
+const char *hos_hostcall_name(uint64_t addr);   /* the name a host call was registered with, or NULL */
 
 /* ---- calls into the guest */
 void hos_call(Ctx *c, uint64_t addr, const char *what);   /* call the lifted function at addr, with c as it is */

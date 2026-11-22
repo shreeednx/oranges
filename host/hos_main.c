@@ -7,7 +7,9 @@
    HLE replaces, so it is not run.
 
    usage: oranges [image.bin]   (default: ../image/image.bin beside the executable, i.e. work/image/image.bin)
-          HOS_TRACE=1           log every SVC and every stub call */
+          HOS_TRACE=1           log every SVC, stub call and file opened
+          ORANGES_ROMFS=<dir>   the extracted RomFS (default work/romfs)
+          ORANGES_USER=<dir>    saves (default work/user) */
 #include "hos.h"
 
 #include <errno.h>
@@ -57,18 +59,13 @@ void hos_call(Ctx *c, uint64_t addr, const char *what) {
 }
 
 static Ctx *main_thread(void) {
-    static Ctx ctx;
-    Ctx *c = &ctx;
     const uint64_t stack = hos_sys_alloc(hos_main_stack_size, 0x1000);
-    const uint64_t tlr = hos_sys_alloc(HOS_TLS_SIZE, HOS_TLS_SIZE);   /* the thread-local region (TPIDRRO_EL0) */
-    const uint64_t tls = hos_sys_alloc(0x1000, 0x1000);               /* the C library's TLS block (TPIDR_EL0) */
-    G32(tlr + 0x110) = (uint32_t)hos_main_thread_handle();
-    c->tpidrro_el0 = tlr;
+    const uint64_t tls = hos_sys_alloc(0x1000, 0x1000);   /* the C library's TLS block (TPIDR_EL0) */
+    Ctx *c = hos_kernel_main_thread(stack + hos_main_stack_size, hos_main_priority);
     c->tpidr_el0 = tls + 0x800;
-    c->x[31] = (stack + hos_main_stack_size) & ~15ULL;
     hos_log("main thread: stack %#llx (%llu KB), thread-local region %#llx, handle %#llx, priority %d",
-            (unsigned long long)stack, (unsigned long long)(hos_main_stack_size >> 10), (unsigned long long)tlr,
-            (unsigned long long)hos_main_thread_handle(), hos_main_priority);
+            (unsigned long long)stack, (unsigned long long)(hos_main_stack_size >> 10),
+            (unsigned long long)c->tpidrro_el0, (unsigned long long)hos_main_thread_handle(), hos_main_priority);
     return c;
 }
 
@@ -90,6 +87,19 @@ int main(int argc, char **argv) {
         exe[n > 0 ? n : 0] = 0;
         snprintf(path, sizeof path, "%s/../image/image.bin", dirname(exe));
     }
+    {   /* the RomFS and user folders: beside the image's work folder unless the environment says otherwise */
+        char exe[PATH_MAX];
+        const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        exe[n > 0 ? n : 0] = 0;
+        const char *work = dirname(dirname(exe));   /* (work/build/oranges -> work) */
+        const char *romfs = getenv("ORANGES_ROMFS"), *user = getenv("ORANGES_USER");
+        if (romfs) snprintf(hos_romfs_dir, sizeof hos_romfs_dir, "%s", romfs);
+        else snprintf(hos_romfs_dir, sizeof hos_romfs_dir, "%s/romfs", work);
+        if (user) snprintf(hos_user_dir, sizeof hos_user_dir, "%s", user);
+        else snprintf(hos_user_dir, sizeof hos_user_dir, "%s/user", work);
+    }
+    hos_crash_init();
+    hos_kernel_init();
     hos_mem_init();
     load_image(path);
     Ctx *c = main_thread();
