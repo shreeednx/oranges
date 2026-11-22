@@ -54,7 +54,7 @@ def sources(gen: Path) -> list[tuple[Path, list[str]]]:
     out += [(gen / n, support) for n in ("a64_table.c", "a64_hooks.c", "a64_suyu.c", "a64_stubs.c", "hos_image.c",
                                          "hos_symbols.c")
             if (gen / n).exists()]
-    host = ["-I" + str(HOST)] + support
+    host = ["-I" + str(HOST)] + support + ["-g"]   # (debug info for the OS layer: cheap, and gdb can read its state)
     out += [(RT / "a64_rt.c", support)] + [(c, host) for c in sorted(HOST.glob("*.c"))]
     return out
 

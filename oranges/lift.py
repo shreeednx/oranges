@@ -6,7 +6,8 @@
   discover  lift/a64_lift.py: every entry (unwind-table starts, exports, init_array, relocated code pointers, BL
             targets) walked to the code reachable without crossing another entry. Jump tables recovered, PLT stubs
             resolved through the GOT. oranges.lift_fixes adds Longshot's jump-table fixes, oranges.insn the
-            instruction forms suyu's translator lacks (both installed by install()).
+            instruction forms suyu's translator lacks, oranges.spin compiler barriers in spin loops (all installed
+            by install()).
   translate (optional) suyu's per-instruction translator (lift/a64emit.cpp, built with the system clang++)
             over every distinct instruction word discovery reached, to count what it cannot translate.
 
@@ -28,7 +29,7 @@ from pathlib import Path
 
 from . import kit  # noqa: F401  (sys.path)
 from . import hle as hle_mod
-from . import insn, lift_fixes
+from . import insn, lift_fixes, spin
 
 import a64_lift  # noqa: E402  (the kit's)
 import a64_rtgen  # noqa: E402
@@ -52,9 +53,11 @@ def build_image(exefs: str | os.PathLike, skip: tuple[str, ...] = (), hle: bool 
 
 
 def install() -> None:
-    """oranges' additions to the kit, once: the jump-table fixes and the extra instruction forms"""
+    """oranges' additions to the kit, once: the jump-table fixes, the extra instruction forms and the spin-loop
+    barriers (oranges.spin)"""
     lift_fixes.install()
     insn.install()
+    spin.install()
 
 
 def discover(img, max_insns: int = 0) -> a64_lift.Lifter:
@@ -139,7 +142,7 @@ def write_c(lifter, gen: str | os.PathLike, exefs: str | os.PathLike | None = No
             "unhandled_words": len(lifter.unhandled), "unhandled_sites": sum(lifter.unhandled.values()),
             "unhandled": {"%08x" % w: n for w, n in lifter.unhandled.most_common(40)},
             "indirect_br": len(lifter.ijump), "br": branches, "bad_targets": lifter.stats["bad_target"],
-            "host": host}
+            "spin_barriers": lifter.stats["spin_barriers"], "host": host}
 
 
 def run(exefs: str | os.PathLike, work: str | os.PathLike, skip: tuple[str, ...] = (), translate: bool = False,

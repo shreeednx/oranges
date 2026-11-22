@@ -55,6 +55,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
 - `oranges/kit.py`: puts the kit on `sys.path` and adds DT_RELR to its NSO loader. Import it before any kit module
   (`nso`, `nx_image`, `a64_lift`, `a64emit`); ruff's import sorting is turned off for the files that do.
 - `oranges/lift_fixes.py`: Longshot's jump-table and entry fixes to the kit (ported, `install()` wraps `Lifter`).
+- `oranges/spin.py`: (oranges) a compiler barrier after each loop-invariant load of a small loop (`Lifter.after`), so
+  clang can't hoist a plain LDR out of a spin loop (it made the game's spinlock wait `jmp .`). `install()` wraps
+  `Lifter.emit_function`; `report.json` `emit.spin_barriers` counts them (~159k).
 - `oranges/insn.py`: Longshot's `nx2/insn.py` (forms suyu lacks: LSE, LDAPR, SQSHL #imm, SDIV overflow, ...), plus
   oranges' PMULL/PMULL2 and LDNP/STNP Q, marked `(oranges)`. `install()` wraps `a64_lift.classify` and
   `a64emit.translate`. A new form goes in `emit()` and gets encodings in `tests/test_insn.py`, checked against Unicorn.
@@ -138,15 +141,18 @@ and attribution notices, and note the source file in a comment.
 - Build: one 25 MB chunk compiles in ~25 s at -O1 with a 1.4 GB peak (clang 23).
 - Boot (`./work/build/oranges`): `_init_libc0` … `nnMain` run natively on host threads (~55 of them). The game sets up
   NVN, audio (`nn_audio.c`: renderer, first voice and wave buffers), fonts (a host TTF for the system's shared fonts:
-  `HOS_SHARED_FONT`), input (`nn_hid.c`: a connected pad at rest), presents its first frame, then stalls: every guest
-  thread sits in a kernel wait. The main thread waits on a light event (`WaitLightEvent` from `f_086410b0`, reached
-  through `f_0a80a810` / `f_0bb3e8b0` in its frame loop): a task's completion that no worker picks up (the workers wait
-  on their own light events in `f_0bc5ba70` / `f_0be44294`, the job threads on condition variables). The kernel's
-  arbiter rules match Atmosphère's KAddressArbiter, so look for a stubbed `nn::` call or missing event signal that the
-  task chain depends on. To sample every thread: `(sleep 60; pkill -INT -x oranges) & gdb -batch -ex run -ex "thread
-  apply all bt 25" ./work/build/oranges` (attaching is blocked by ptrace_scope).
-- Next after that: the remaining stubs (`nn::aoc`, `nn::nifm`, `nn::friends`, `nn::bcat`, `nn::nfp`), a window with real
-  input, a sound device for `nn_audio.c`, and the Vulkan back end in place of `rx_null.c`.
+  `HOS_SHARED_FONT`), input (`nn_hid.c`: a connected pad at rest), presents its first frame, runs its frame loop's
+  job scheduler, mounts the device save, and then aborts (~3 s in): its own olsc client (main+0x5b7b00, linked into
+  main, so no `nn::` HLE sees it) gets no session from `sm:` `GetServiceHandle("olsc:u")` (the IPC auto-reply moves no
+  handle) and `ConvertToDomain` on handle 0 fails. To sample every thread: `(sleep 60; pkill -INT -x oranges) & gdb
+  -batch -ex run -ex "thread apply all bt 25" ./work/build/oranges` (attaching is blocked by ptrace_scope).
+- Two things the frame loop's job scheduler needs (the stall after the first frame): the kernel reports each thread's
+  core (`GetCurrentProcessorNumber` from its SetThreadCoreMask ideal core / affinity), because a thread pinned to one
+  core takes `core + 1` as its TLS index (`f_0b7e2374`) and the scheduler's per-thread slots are indexed by it
+  (`f_086410b0`, barriers at `+0x298`); and spin loops keep reading memory (`oranges/spin.py`).
+- Next after that: the services the game reaches through `sm:` (olsc first), the remaining stubs (`nn::aoc`,
+  `nn::nifm`, `nn::friends`, `nn::bcat`, `nn::nfp`), a window with real input, a sound device for `nn_audio.c`, and the
+  Vulkan back end in place of `rx_null.c`.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with
@@ -154,6 +160,9 @@ and attribution notices, and note the source file in a comment.
   `hos_kernel_event_signal` (audio renderer, vsync, account async contexts).
 - For each wall, `hos_backtrace` (or gdb: lifted frames are `f_<guest address>`, `$rdi` is the guest `Ctx *`) shows the
   `nn::` entry point. Hardware watchpoints on `0x100000000000 + <guest address>` find who writes guest memory.
+  host/ builds with `-g`, so gdb reads the kernel's state: `p *hos_current` (a thread's guest registers; `x29` walks
+  the guest frame chain), `p 'hos_kernel.c'::threads[0]->wait` (what a thread waits for). A thread at 100% CPU in a
+  lifted function: disassemble it for a `jmp` to itself (a hoisted load).
 
 ## Architecture to build toward (Longshot's design)
 

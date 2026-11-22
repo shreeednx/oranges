@@ -9,7 +9,13 @@
        kernel hands the mutex to the waiter it wakes.
      - condition variables (WaitProcessWideKeyAtomic / SignalProcessWideKey): the wait releases the mutex, and a woken
        waiter takes it back before it returns (or queues for it).
-     - address arbiters (WaitForAddress / SignalToAddress), events, and WaitSynchronization on events and threads. */
+     - address arbiters (WaitForAddress / SignalToAddress), events, and WaitSynchronization on events and threads.
+
+   Threads run freely (no scheduler), but each one keeps the core the console would run it on: its ideal core and
+   affinity mask from CreateThread / SetThreadCoreMask, and GetCurrentProcessorNumber reports it. The game relies on
+   that: a thread pinned to one core takes `core + 1` as its index in TLS (f_0b7e2374), and the job scheduler's
+   per-thread slots are indexed by it (f_086410b0). With every thread on core 0 they collided and the frame loop's
+   barriers never let go. */
 #include "hos.h"
 
 #include <errno.h>
@@ -25,6 +31,11 @@
 #define KERN_CANCELLED HOS_RESULT(1, 118)
 #define KERN_INVALID_CURRENT_MEMORY HOS_RESULT(1, 106)
 #define KERN_TERMINATION_REQUESTED HOS_RESULT(1, 59)
+#define KERN_INVALID_CORE_ID HOS_RESULT(1, 113)
+#define PROCESS_CORE_MASK 0x7ULL    /* an application's cores, 0-2 (GetInfo AllowedCoreMask) */
+#define IDEAL_CORE_DONT_CARE (-1)   /* SetThreadCoreMask's special ideal cores */
+#define IDEAL_CORE_USE_PROCESS (-2)
+#define IDEAL_CORE_NO_UPDATE (-3)
 
 static pthread_mutex_t klock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t kwake;   /* (CLOCK_MONOTONIC, set up in hos_kernel_init) */
@@ -33,7 +44,9 @@ typedef struct KThread {
     Ctx ctx;
     uint32_t handle;
     uint64_t entry, arg, stack_top, tlr;
-    int priority, core, started, exited;
+    int priority, started, exited;
+    int ideal_core, core;           /* the ideal core (or IDEAL_CORE_DONT_CARE), and the core it runs on */
+    uint64_t affinity;              /* the cores it may run on */
     pthread_t host;
     /* what the thread waits for, if anything */
     enum { W_NONE, W_MUTEX, W_CONDVAR, W_ARBITER } wait;
@@ -165,9 +178,19 @@ static void *thread_main(void *p) {
     return NULL;
 }
 
+/* (under klock) the core t runs on after a change of its ideal core or affinity: the ideal core, else the one it is on
+   if still allowed, else the highest allowed (the kernel's rule, KThread::SetCoreMask) */
+static void thread_place(KThread *t) {
+    if (t->ideal_core >= 0) t->core = t->ideal_core;
+    else if (!(t->affinity >> t->core & 1)) t->core = 63 - __builtin_clzll(t->affinity);
+}
+
+/* core: CreateThread's ideal core, already checked (IDEAL_CORE_USE_PROCESS or one of the process's cores) */
 static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int priority, int core) {
     KThread *t = calloc(1, sizeof *t);
-    t->entry = entry, t->arg = arg, t->stack_top = stack_top, t->priority = priority, t->core = core;
+    t->entry = entry, t->arg = arg, t->stack_top = stack_top, t->priority = priority;
+    t->ideal_core = t->core = core == IDEAL_CORE_USE_PROCESS ? hos_main_core : core;
+    t->affinity = 1ULL << t->ideal_core;
     t->tlr = hos_sys_alloc(HOS_TLS_SIZE, HOS_TLS_SIZE);
     t->handle = hos_handle_new(H_THREAD, t, 0, 0, 0);
     G32(t->tlr + 0x110) = t->handle;
@@ -182,7 +205,7 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
 
 /* the main thread, which hos_main.c runs on the process's own host thread */
 Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority) {
-    KThread *t = thread_new(0, 0, stack_top, priority, 0);
+    KThread *t = thread_new(0, 0, stack_top, priority, hos_main_core);
     t->started = 1;
     t->host = pthread_self();
     t->ctx.x[31] = stack_top & ~15ULL;
@@ -218,6 +241,10 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
     switch (imm) {
     case 0x08: {   /* CreateThread(-, entry, arg, stack top, priority, core) -> handle */
         const int core = (int32_t)c->x[5];
+        if (core != IDEAL_CORE_USE_PROCESS && (core < 0 || core > 63 || !(PROCESS_CORE_MASK >> core & 1))) {
+            c->x[0] = KERN_INVALID_CORE_ID;
+            return 1;
+        }
         KThread *t = thread_new(c->x[1], c->x[2], c->x[3], (int)c->x[4], core);
         if (hos_trace) hos_log("thread %#x: created, entry %#llx arg %#llx stack %#llx prio %d", t->handle,
                                (unsigned long long)t->entry, (unsigned long long)t->arg,
@@ -275,9 +302,38 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         c->x[0] = t ? 0 : KERN_INVALID_HANDLE;
         return 1;
     }
-    case 0x0E: c->x[0] = 0, c->x[1] = 0, c->x[2] = 0x7; return 1;   /* GetThreadCoreMask */
-    case 0x0F: c->x[0] = 0; return 1;                               /* SetThreadCoreMask */
-    case 0x10: c->x[0] = 0; return 1;                               /* GetCurrentProcessorNumber */
+    case 0x0E: {   /* GetThreadCoreMask(-, handle) -> ideal core, affinity mask */
+        pthread_mutex_lock(&klock);
+        KThread *t = thread_of((uint32_t)c->x[2]);
+        c->x[0] = t ? 0 : KERN_INVALID_HANDLE;
+        c->x[1] = t ? (uint64_t)(uint32_t)t->ideal_core : 0, c->x[2] = t ? t->affinity : 0;
+        pthread_mutex_unlock(&klock);
+        return 1;
+    }
+    case 0x0F: {   /* SetThreadCoreMask(handle, ideal core, affinity mask): the checks are the svc's */
+        int ideal = (int32_t)c->x[1];
+        uint64_t mask = c->x[2];
+        uint32_t r = 0;
+        pthread_mutex_lock(&klock);
+        KThread *t = thread_of((uint32_t)c->x[0]);
+        if (ideal == IDEAL_CORE_USE_PROCESS) ideal = hos_main_core, mask = 1ULL << ideal;
+        if (!t) r = KERN_INVALID_HANDLE;
+        else if (!mask || mask & ~PROCESS_CORE_MASK) r = KERN_INVALID_CORE_ID;
+        else if (ideal >= 0 && (ideal > 63 || !(PROCESS_CORE_MASK >> ideal & 1))) r = KERN_INVALID_CORE_ID;
+        else if (ideal >= 0 && !(mask >> ideal & 1)) r = KERN_INVALID_COMBINATION;
+        else if (ideal < 0 && ideal != IDEAL_CORE_DONT_CARE && ideal != IDEAL_CORE_NO_UPDATE) r = KERN_INVALID_CORE_ID;
+        else if (ideal == IDEAL_CORE_NO_UPDATE && t->ideal_core >= 0 && !(mask >> t->ideal_core & 1))
+            r = KERN_INVALID_COMBINATION;
+        if (!r) {
+            if (ideal != IDEAL_CORE_NO_UPDATE) t->ideal_core = ideal;
+            t->affinity = mask;
+            thread_place(t);
+        }
+        pthread_mutex_unlock(&klock);
+        c->x[0] = r;
+        return 1;
+    }
+    case 0x10: c->x[0] = self ? (uint64_t)self->core : (uint64_t)hos_main_core; return 1;   /* GetCurrentProcessorNumber */
     case 0x45: {   /* CreateEvent -> writable, readable (one event behind both) */
         KEvent *e = calloc(1, sizeof *e);
         c->x[1] = hos_handle_new(H_EVENT, e, 0, 0, 0);
