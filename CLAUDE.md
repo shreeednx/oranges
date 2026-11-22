@@ -120,9 +120,13 @@ and attribution notices, and note the source file in a comment.
 - Emission: 19.6M instructions (shared tails included) in 57 files, 1.4 GB of C. 25,789 of 43,097 BRs stay indirect
   (`a64_ijump`, mostly virtual tail calls).
 - Build: one 25 MB chunk compiles in ~25 s at -O1 with a 1.4 GB peak (clang 23).
-- Next: the Horizon OS layer in `host/`. That means mapping `image.bin` at the guest window, running each module's
-  init, threads, SVCs, IPC services (`main.npdm` lists them), NVN, and setjmp. Longshot's `host/` is the model, but it
-  targets NVN2.
+- Boot (`./work/build/oranges`): `_init_libc0`, `nnosInitialize`, `_init_libc1`, `nninitStartup` (a 2960 MB heap),
+  `_init_libc2`, every `DT_INIT` and `nnMain` run natively. `nnMain` stops at the game's first real service:
+  `nn::fs::QueryMountRomCacheSize` → `GetFileSystemProxyServiceObject` → `nn::sm::Initialize` (IPC, not served).
+- Next: `nn::fs` as HLE in `host/` (RomFS reads from the extracted `work/romfs` or straight from the `.nup`, save data
+  in a host folder), then threads (the SDK's `svcCreateThread` on host threads), then setjmp, `nn::hid`, `nn::vi`, and
+  NVN (Longshot's `nvn_native.c` is NVN2, so it is a model rather than a drop-in). The rule for each wall:
+  `hos_backtrace` shows the `nn::` entry point, and that function gets an `HLE(...)` in `host/`.
 
 ## Architecture to build toward (Longshot's design)
 
