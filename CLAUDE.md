@@ -97,7 +97,7 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   on the game (each was a black screen): NVN's upper-left origin is a y-flipped Vulkan viewport; `gl_Position` must be
   invariant (EQUAL depth pre-pass); `SetRenderEnableConditional` must be honoured (UI layers); the first stage's
   inputs need `previous_stage_stores` all set. Debugging: `HOS_VK_LOG`, `HOS_VK_PASSDUMP`, `HOS_VK_DUMP`,
-  `HOS_VK_SHOTS`, `HOS_VK_SPV` (each program's SPIR-V), `HOS_VK_TEXDUMP=<gpu>,<path>` (a texture as drawn and as in
+  `HOS_VK_SHOTS`, `HOS_VK_SPV` (each program's SPIR-V, `<key>_<stage>.spv`), `HOS_VK_TEXDUMP=<gpu>,<path>` (a texture as drawn and as in
   guest memory), `HOS_VK_VALIDATE=1` (the Khronos layer, when installed). Textures the CPU changes are found by a
   whole-storage hash every few frames (the font's glyph cache is written in place); ASTC is decoded on the CPU.
 - `third_party/eden/`: eden's Maxwell shader recompiler and sirit, vendored unchanged from the Longshot toolchain
@@ -211,8 +211,12 @@ and attribution notices, and note the source file in a comment.
   makes it wait for the init (0 crashes in 80 runs). Races like it show up under load: run many times (4 at a time,
   30 s each) and count frames before trusting a change.
 - Rendering (`host/vk/`): the airport prologue is drawn at 30 fps, in the window and headless, text and icons
-  included. Not replayed yet: compute dispatches and indirect draws (none seen yet). TODO.md "The renderer's gaps".
-- Next: the renderer's gaps (TODO.md).
+  included, and the character creator with its compute dispatches (NVN1 compute stages: no code-area header, the
+  workgroup and shared memory in the control section, `vk_shader.cpp`). Not replayed yet: indirect draws (none seen).
+- With A and + every 1.6 s the game goes through the name, birthday, character creator and island questions, and at
+  ~195 s starts the opening movie (`Movie/OpeningMovie.webm`, subsdk0's `movie::` library), whose hardware decoder
+  aborts in `NvOsDrvOpen`.
+- Next: the opening movie (TODO.md).
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

@@ -2,8 +2,10 @@
 // Maxwell shader recompiler (third_party/eden), and the stages of a pipeline emitted together.
 //
 // An NVN1 stage (nvnProgramSetShaders: {data, control}) is a control section in CPU memory (magic 0x98761234, version
-// 1) and a code area in GPU memory: a 0x30-byte header (magic 0x12345678), then for a graphics stage the 0x50-byte
-// Maxwell program header (SPH) at +0x30 and the instructions from +0x80, with a scheduling word every 32 bytes. That is
+// 1) and a code area in GPU memory. A graphics stage's code area is a 0x30-byte header (magic 0x12345678), the 0x50-byte
+// Maxwell program header (SPH) at +0x30 and the instructions from +0x80; a compute stage's is the code alone, from +0
+// (its workgroup size and shared memory are in the control section: vk_shader.cpp). Either way there is a scheduling
+// word every 32 bytes. That is
 // what the Maxwell frontend reads from a GPU's program region, so the stage is translated as it is, the program's
 // extent found by following its control flow.
 //
@@ -51,7 +53,8 @@ struct StageCode {
     uint64_t key = 0;                 // hash of its code
     std::vector<uint64_t> code;       // the code area from its start (its header, the program header, the code)
     std::vector<uint8_t> c1;          // constant bank 1: the program's constants (control section +0x700: start, end)
-    uint32_t workgroup[3]{1, 1, 1}, shared_memory = 0, local_memory = 0;   // (compute)
+    uint32_t start = 0;               // the program's start in the code area (graphics 0x30, compute 0)
+    uint32_t workgroup[3]{1, 1, 1}, shared_memory = 0, local_memory = 0;   // (compute: workgroup, shared memory)
     std::string why;                  // (not translatable: why)
     bool ok = false;
     const Shader::ProgramHeader& sph() const {

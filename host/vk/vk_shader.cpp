@@ -29,8 +29,13 @@ constexpr uint32_t kCodeHeader = 0x30;   // (the code area's own header, before 
 constexpr uint32_t kMaxCode = 1u << 20;  // (bytes of code a stage may have)
 constexpr uint32_t kControlC1 = 0x700;   // (the control section: the c1 block's start and end in the code area)
 
-/// the first instruction's address in the code area (compute: no program header; to be confirmed on a compute stage)
-constexpr uint32_t first_instruction(bool graphics) { return kCodeHeader + (graphics ? 0x50 : 0); }
+// (the control section: the code's start in the code area (graphics 0x30, past the code area's header; compute 0), the
+// NVN stage, and a compute stage's workgroup size (x, y, z) and shared memory bytes; found on the game's programs)
+constexpr uint32_t kControlStart = 0x708, kControlStage = 0x714, kControlWorkgroup = 0x748;
+
+/// the first instruction's offset from the program's start (graphics: past the program header; eden's CFG skips a
+/// scheduling word there itself)
+constexpr uint32_t first_instruction(bool graphics) { return graphics ? 0x50 : 0; }
 
 uint64_t hash_bytes(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {
     const uint8_t* b = static_cast<const uint8_t*>(p);
@@ -99,18 +104,37 @@ private:
 std::shared_ptr<StageCode> read_stage(const nvn_stage_data& sd) {
     auto c = std::make_shared<StageCode>();
     c->data = sd.data, c->control = sd.control;
-    uint32_t magic = 0, code_magic = 0;
-    if (!sd.control || !sd.data || !nvn_gpu_read(sd.control, &magic, 4) || !nvn_gpu_read(sd.data, &code_magic, 4) ||
-        magic != kControlMagic || code_magic != kCodeMagic) {
-        c->why = "not an NVN1 shader (control magic or code magic)";
+    uint32_t magic = 0;
+    if (!sd.control || !sd.data || !nvn_gpu_read(sd.control, &magic, 4) || magic != kControlMagic) {
+        c->why = "not an NVN1 shader (control magic)";
         return c;
     }
-    uint32_t word0 = 0;
-    nvn_gpu_read(sd.data + kCodeHeader, &word0, 4);
-    const uint32_t sph_type = word0 & 31, shader_type = word0 >> 10 & 15;
-    // (a graphics stage has its program header: type 1 VTG or 2 pixel, version 3; anything else is compute)
-    const bool graphics = (sph_type == 1 || sph_type == 2) && (word0 >> 5 & 31) == 3 && nvn_stage_of_header(shader_type) >= 0;
-    c->nvn_stage = graphics ? nvn_stage_of_header(shader_type) : 5;
+    uint32_t start = 0, stage = 0;
+    nvn_gpu_read(sd.control + kControlStart, &start, 4);
+    nvn_gpu_read(sd.control + kControlStage, &stage, 4);
+    if (stage == 5) {   // compute: the code from the start of the code area; its workgroup and shared memory
+        uint32_t cs[4] = {1, 1, 1, 0};
+        nvn_gpu_read(sd.control + kControlWorkgroup, cs, sizeof cs);
+        for (int i = 0; i < 3; i++) c->workgroup[i] = std::max(1u, cs[i]);
+        c->shared_memory = cs[3];
+        c->start = start;
+    } else {   // graphics: the code area's header and the program header first
+        uint32_t code_magic = 0, word0 = 0;
+        if (!nvn_gpu_read(sd.data, &code_magic, 4) || code_magic != kCodeMagic) {
+            c->why = "not an NVN1 shader (code magic)";
+            return c;
+        }
+        nvn_gpu_read(sd.data + kCodeHeader, &word0, 4);
+        const uint32_t sph_type = word0 & 31, shader_type = word0 >> 10 & 15;
+        if (!((sph_type == 1 || sph_type == 2) && (word0 >> 5 & 31) == 3 && nvn_stage_of_header(shader_type) >= 0)) {
+            c->why = "stage " + std::to_string(stage) + " without a program header";
+            return c;
+        }
+        stage = (uint32_t)nvn_stage_of_header(shader_type);
+        c->start = kCodeHeader;
+    }
+    const bool graphics = stage != 5;
+    c->nvn_stage = (int)stage;
     c->stage = stage_of(c->nvn_stage);
     // c1: the program's own constants (indirect branch tables, literals), after its code in the code area
     uint32_t c1[2] = {0, 0};
@@ -122,15 +146,15 @@ std::shared_ptr<StageCode> read_stage(const nvn_stage_data& sd) {
     // boundaries (+0x80 is one), so the program starts at +0x30 there, and its first instruction is past the header.
     uint32_t end = 0;
     try {
-        ExtentEnv env{sd.data, c->stage, kCodeHeader, c->c1};
+        ExtentEnv env{sd.data, c->stage, c->start, c->c1};
         Shader::ObjectPool<Shader::Maxwell::Flow::Block> blocks{32};
-        Shader::Maxwell::Flow::CFG cfg{env, blocks, first_instruction(graphics)};
+        Shader::Maxwell::Flow::CFG cfg{env, blocks, c->start + first_instruction(graphics)};
         end = env.end();
     } catch (const std::exception& e) {
         c->why = std::string("control flow: ") + e.what();
         return c;
     }
-    if (end <= first_instruction(graphics)) {
+    if (end <= c->start + first_instruction(graphics)) {
         c->why = "no code";
         return c;
     }
@@ -138,6 +162,7 @@ std::shared_ptr<StageCode> read_stage(const nvn_stage_data& sd) {
     c->code.assign(end / 8, 0);
     if (!nvn_gpu_read(sd.data, c->code.data(), end)) return c->why = "code not readable", c;
     c->key = hash_bytes(c->c1.data(), c->c1.size(), hash_bytes(c->code.data(), end, (uint64_t)c->nvn_stage));
+    c->key = hash_bytes(c->workgroup, sizeof c->workgroup, hash_bytes(&c->shared_memory, 4, c->key));
     if (graphics) {
         const auto& h = c->sph();
         c->local_memory = static_cast<uint32_t>(h.LocalMemorySize()) + h.common3.shader_local_memory_crs_size;
@@ -178,7 +203,7 @@ class Env final : public Shader::Environment {
 public:
     Env(const StageCode& c, StageQuery& q) : c_{c}, q_{q} {
         stage = c.stage;
-        start_address = kCodeHeader;
+        start_address = c.start;
         if (c.nvn_stage != 5) std::memcpy(&sph, reinterpret_cast<const uint8_t*>(c.code.data()) + kCodeHeader, sizeof sph);
         is_proprietary_driver = true;
     }
@@ -282,7 +307,7 @@ Translated translate(const std::vector<std::shared_ptr<const StageCode>>& stages
             }
             Env env{*c, q};
             auto& p = pools.emplace_back(std::make_unique<Pools>());
-            Shader::Maxwell::Flow::CFG cfg{env, p->flow_blocks, first_instruction(c->nvn_stage != 5)};
+            Shader::Maxwell::Flow::CFG cfg{env, p->flow_blocks, c->start + first_instruction(c->nvn_stage != 5)};
             programs.push_back(Shader::Maxwell::TranslateProgram(p->insts, p->blocks, env, cfg, host));
         }
         Shader::Backend::Bindings bindings{};

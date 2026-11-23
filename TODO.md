@@ -176,7 +176,7 @@ Left over from it:
 - [x] ASTC: decoded on the CPU with suyu's decoder (`third_party/eden/video_core/textures`); the choice cursor shows
 - [ ] The whole-storage check costs up to 32 MB of hashing a frame on the game's submitting thread: measure, and move
       it (or the ASTC decodes) off that thread if it shows
-- [ ] Not replayed yet: compute dispatches, indirect draws, texel buffers, storage images, alpha test, line widths,
+- [ ] Not replayed yet: indirect draws, texel buffers, alpha test, line widths,
       multisample resolves, depth-stencil fills from memory. None seen in the prologue so far (logged once if they are)
 - [ ] Performance: every submit waits for the GPU, every pass ends with a full barrier, the driver banks are rebuilt
       for each draw, programs are translated on the game's thread. Profile once more of the game draws
@@ -187,12 +187,44 @@ Left over from it:
 - [ ] Run once with the Khronos validation layer (`HOS_VK_VALIDATE=1`; not installed on this machine)
 - [ ] Occlusion queries and other counters write 0 (only timestamps seen so far)
 
-## 1. The renderer's gaps
+## Done: compute dispatches (the character creator)
 
-The leftovers under "Done: a renderer" above: compute dispatches and the other unreplayed commands when the game first
+The game's first compute dispatches come with the character creator (~80 s with A and + every 1.6 s): one program,
+1x1x1 groups of 32 threads, reading six textures and its uniform buffers and writing 16-byte results to storage buffers
+(a per-frame lighting or exposure reduction, by the look of it). An NVN1 compute stage differs from a graphics one: its
+code area has no header (the code starts at +0, with a scheduling word), and its control section has the workgroup size
+at +0x748/+0x74c/+0x750 and the shared memory bytes at +0x754 (32, 1, 1 and 0x780 here; the code's STS/LDS confirm the
+shared memory). Found by comparing the compute stage's control section with three graphics stages': +0x708 is the
+code's start in the code area (0x30 graphics, 0 compute), +0x70c the register count, +0x714 the NVN stage.
+`vk_replay.cpp` replays `DispatchCompute` and `DispatchComputeIndirect` (the counts read by the GPU from the imported
+buffer; the driver bank's grid at c0 +0x200 from guest memory) between full barriers, and storage images are bound now
+(an image handle is its texture pool id; a storage view of one level, sRGB through its linear twin).
+
+Left over from it:
+
+- [ ] Check the compute program's results against a capture if a picture ever looks wrong around it (nothing to compare
+      against yet: the creator looks as it did without it)
+- [ ] Indirect draws, texel buffers: still not seen through the opening (to ~195 s)
+
+## 1. The opening movie (a guest abort at ~195 s)
+
+After the island questions and the airport announcement, the game plays `Movie/OpeningMovie.webm` (VP9 1920x1080 30
+fps + Vorbis 48 kHz stereo, 65 s: the flight) through subsdk0's `movie::` library, whose hardware decoder (NvMM / NVOMX)
+opens an nvhost channel: `NvRmChannelOpen` -> `NvOsDrvOpen` aborts (the nv driver is never initialized here). The way
+through is HLE of `movie::Extractor` and `movie::Decoder` (subsdk0 exports them by name: `SetDataSource`,
+`GetTrackCount`, `GetTrackConfiguration`, `SelectTrack`, `Read`, `Advance`, `GetSampleTime`, `Configure`, `Start`,
+`AcquireInputBufferIndex`, `SendInputBufferForDecode`, `AcquireOutputBufferIndex`, `GetOutputBuffer`, ...: Android's
+MediaExtractor / MediaCodec in shape) on FFmpeg (libavformat / libavcodec 8 are on this machine; optional like libopus).
+main imports `movie::Buffer`, `movie::MediaData` (key/value metadata: FindInt32, FindString, FindRect), the
+constructors, and SetAllocator / SetThreadPriority / SetCoreMask; the rest it calls through the objects. Check
+`hle.py` hooks a subsdk0 definition (it hooks every game module's imports and the sdk's definitions).
+
+## 2. The renderer's gaps
+
+The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
 
-## 2. Clean-ups and checks
+## 3. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.

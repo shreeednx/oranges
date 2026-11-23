@@ -34,6 +34,7 @@ struct Image {
     VkImageType type = VK_IMAGE_TYPE_2D;
     uint32_t w = 1, h = 1, depth = 1, layers = 1, levels = 1;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    VkImageUsageFlags usage = 0;
     bool written = false, filled = false;
     uint64_t fingerprint = 0, checked_frame = ~0ull;
     uint64_t content = 0, content_frame = 0;   // (a hash of all of the storage, and the frame it was taken)
@@ -54,6 +55,16 @@ uint64_t hash_bytes(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull)
 }
 
 // ---- formats ----
+/// the format a storage view of an image takes: the linear twin of an sRGB format (sRGB cannot be stored)
+VkFormat storage_twin(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+    case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+    default: return f;
+    }
+}
+
 struct FormatRow {
     uint16_t nvn;
     VkFormat vk;
@@ -186,9 +197,13 @@ bool create(Image* im) {
     if (ff & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
     if (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    if ((ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && im->samples == VK_SAMPLE_COUNT_1_BIT) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-    if (!im->fi.compressed && !im->fi.depth && !im->fi.stencil)
-        flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+    const bool mutable_format = !im->fi.compressed && !im->fi.depth && !im->fi.stencil;
+    if (mutable_format) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+    // (storage: sRGB images through their linear twin's views, which the extended usage allows)
+    const VkFormat st = mutable_format ? storage_twin(im->fi.format) : im->fi.format;
+    if ((features_of(st) & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && im->samples == VK_SAMPLE_COUNT_1_BIT)
+        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    im->usage = usage;
     if (im->type == VK_IMAGE_TYPE_3D) {   // (its slices as render targets, and as 2D textures)
         flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
         if (g.view_2d_of_3d) flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
@@ -471,7 +486,8 @@ void image_written(Image* im) {
     im->written = true;
 }
 
-VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type, bool for_attachment) {
+VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type, int use) {
+    const bool for_attachment = use == kViewAttachment, storage = use == kViewStorage;
     // levels, layers, format, swizzle: the view's where it sets them
     uint32_t base_level = 0, levels = im->levels, base_layer = 0, layers = im->layers;
     VkFormat format = im->fi.format;
@@ -487,9 +503,13 @@ VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type
         }
         if (v->set_swizzle) sw[0] = v->swz[0], sw[1] = v->swz[1], sw[2] = v->swz[2], sw[3] = v->swz[3];
     }
+    if (storage) {   // (one level, no swizzle, and the sRGB formats' linear twins: sRGB cannot be stored)
+        levels = 1, sw[0] = 2, sw[1] = 3, sw[2] = 4, sw[3] = 5;
+        format = storage_twin(format);
+    }
     levels = std::max(1u, std::min(levels, im->levels - base_level));
     layers = std::max(1u, std::min(layers, im->layers - base_layer));
-    if (is_rgbx(im->d.format) && !for_attachment) sw[3] = 1;
+    if (is_rgbx(im->d.format) && !for_attachment && !storage) sw[3] = 1;
     VkImageViewType type;
     if (for_attachment) {
         type = im->type == VK_IMAGE_TYPE_1D ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_2D;
@@ -523,8 +543,8 @@ VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type
     if (for_attachment && im->fi.depth && im->fi.stencil) aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
     struct {
         uint32_t base_level, levels, base_layer, layers;
-        int format, type, sw[4], attach;
-    } k{base_level, levels, base_layer, layers, (int)format, (int)type, {sw[0], sw[1], sw[2], sw[3]}, for_attachment};
+        int format, type, sw[4], use;
+    } k{base_level, levels, base_layer, layers, (int)format, (int)type, {sw[0], sw[1], sw[2], sw[3]}, use};
     const uint64_t key = hash_bytes(&k, sizeof k);
     auto it = im->views.find(key);
     if (it != im->views.end()) return it->second;
@@ -532,14 +552,19 @@ VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type
     const VkFormatFeatureFlags ff = features_of(format);
     usage.usage = for_attachment ? (im->fi.depth || im->fi.stencil ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                                                    : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
-                                 : VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!for_attachment && !(ff & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) return VK_NULL_HANDLE;
+                                 : storage ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (storage && (!(ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) || !(im->usage & VK_IMAGE_USAGE_STORAGE_BIT))) {
+        im->views[key] = VK_NULL_HANDLE;
+        vk_log_limited("storageview", 8, "vk: a storage image of format %d: not storable here", (int)format);
+        return VK_NULL_HANDLE;
+    }
+    if (use == kViewSampled && !(ff & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) return VK_NULL_HANDLE;
     VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     ci.pNext = &usage;
     ci.image = im->img;
     ci.viewType = type;
     ci.format = format;
-    if (!for_attachment) ci.components = {swizzle_of(sw[0]), swizzle_of(sw[1]), swizzle_of(sw[2]), swizzle_of(sw[3])};
+    if (use == kViewSampled) ci.components = {swizzle_of(sw[0]), swizzle_of(sw[1]), swizzle_of(sw[2]), swizzle_of(sw[3])};
     ci.subresourceRange = {aspect, base_level, levels, base_layer, layers};
     VkImageView view = VK_NULL_HANDLE;
     if (vkCreateImageView(g.dev, &ci, nullptr, &view) != VK_SUCCESS) view = VK_NULL_HANDLE;

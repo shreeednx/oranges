@@ -96,8 +96,10 @@ FormatInfo format_info(int nvn_format);
 /// the image of a texture (made, and filled from guest memory, at its first use); null when the format has no image
 Image* image_of(VkCommandBuffer cb, const nvn_tex* t);
 /// a view of it (the view's levels, layers, format and swizzle; shader_type: the Shader::TextureType the shader
-/// declares; for_attachment: one level and layer, no swizzle)
-VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type, bool for_attachment);
+/// declares). use: kViewSampled; kViewAttachment, one level and layer, no swizzle; kViewStorage, one level, no swizzle
+/// (null when the format cannot be stored)
+enum { kViewSampled = 0, kViewAttachment = 1, kViewStorage = 2 };
+VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type, int use);
 VkImage image_handle(Image* im);
 VkFormat image_format(Image* im);
 void image_extent(Image* im, uint32_t level, uint32_t* w, uint32_t* h);

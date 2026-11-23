@@ -29,7 +29,6 @@ extern "C" uint64_t a64_cntpct_host(void);
 namespace ovk {
 
 // (vk_texture.cpp)
-VkImageView view_of(Image* im, const nvn_view* v, bool has_view, int shader_type, bool for_attachment);
 const FormatInfo& image_format_info(Image* im);
 uint32_t image_layers(Image* im);
 VkSampleCountFlagBits image_samples(Image* im);
@@ -114,6 +113,7 @@ struct State {
     bool depth_clamp = false, raster_discard = false, restart = false, render_enabled = true;
     bool cond_ok = true;   // (SetRenderEnableConditional's condition, when one is set)
     int64_t copy_stride = 0;
+    uint32_t grid[3] = {0, 0, 0};   // (the dispatch being pushed: compute's c0 0x200)
     State() {
         for (auto& b : blend) b.src_rgb = NVN_BLEND_FUNC_ONE, b.dst_rgb = NVN_BLEND_FUNC_ZERO, b.src_a = NVN_BLEND_FUNC_ONE,
                               b.dst_a = NVN_BLEND_FUNC_ZERO, b.eq_rgb = NVN_BLEND_EQUATION_ADD, b.eq_a = NVN_BLEND_EQUATION_ADD;
@@ -147,6 +147,7 @@ uint32_t bank_word(const State& s, int stage, uint32_t bank, uint32_t offset) {
         const uint32_t in = (offset - base) % 16;
         return in == 0 ? lo(e.addr) : in == 4 ? hi(e.addr) : in == 8 ? (uint32_t)e.size : 0;
     }
+    if (stage == 5 && offset >= 0x200 && offset < 0x20c) return s.grid[(offset - 0x200) / 4];
     if (stage == 5 && offset >= 0x210 && offset < 0x210 + 16 * 16) {
         const nvn_p_bind_buf& e = b.ubo[(offset - 0x210) / 16];
         const uint32_t in = (offset - 0x210) % 16;
@@ -522,7 +523,8 @@ struct Replay {
     bool color_integer[8]{}, color_sint[8]{};
     bool has_depth = false, has_stencil = false;
     std::vector<CpuOp> cpu;
-    uint64_t draws = 0, skipped = 0;
+    std::vector<Image*> stored;   // (the storage images of the draw or dispatch being pushed: written by the GPU)
+    uint64_t draws = 0, skipped = 0, dispatches = 0;
 } rp;
 
 void end_rendering() {
@@ -551,7 +553,7 @@ bool begin_rendering() {
         rp.color_formats[i] = VK_FORMAT_UNDEFINED, rp.color_integer[i] = rp.color_sint[i] = false;
         Image* im = image_of(rp.cb, s.rt.color[i]);
         if (!im) continue;
-        const VkImageView v = view_of(im, &s.rt.cview[i], s.rt.has_cview[i], 0, true);
+        const VkImageView v = view_of(im, &s.rt.cview[i], s.rt.has_cview[i], 0, kViewAttachment);
         if (!v) continue;
         image_written(im);
         colors[i].imageView = v;
@@ -568,7 +570,7 @@ bool begin_rendering() {
     if (s.rt.depth) {
         Image* im = image_of(rp.cb, s.rt.depth);
         if (im) {
-            const VkImageView v = view_of(im, &s.rt.dview, s.rt.has_dview, 0, true);
+            const VkImageView v = view_of(im, &s.rt.dview, s.rt.has_dview, 0, kViewAttachment);
             if (v) {
                 image_written(im);
                 depth.imageView = v;
@@ -789,7 +791,7 @@ bool push_descriptors(const Program& p, VkPipelineBindPoint point) {
                 bool hv = false;
                 const bool known = h && texture_of((int)(h & 0xFFFFF), &t, &v, &hv);
                 if (known) {
-                    if (Image* im = image_of(rp.cb, &t)) ii.imageView = view_of(im, &v, hv, b.tex_type, false);
+                    if (Image* im = image_of(rp.cb, &t)) ii.imageView = view_of(im, &v, hv, b.tex_type, kViewSampled);
                     ii.sampler = sampler_of((int)(h >> 20));
                 }
                 if (trace_on && known && b.tex_type == 3)
@@ -805,11 +807,25 @@ bool push_descriptors(const Program& p, VkPipelineBindPoint point) {
                 imgs.push_back(ii);
             }
             where.push_back({imgs.size() - w.descriptorCount, 1});
-        } else if (b.kind == kImg) {
+        } else if (b.kind == kImg) {   // (an image handle is its texture pool id: nvnTexturePoolRegisterImage)
             w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            for (uint32_t k = 0; k < w.descriptorCount; k++) imgs.push_back({VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL});
+            for (uint32_t k = 0; k < w.descriptorCount; k++) {
+                const uint32_t h = descriptor_handle(s, b, k);
+                VkDescriptorImageInfo ii{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL};
+                nvn_tex t;
+                nvn_view v;
+                bool hv = false;
+                if (h && texture_of((int)(h & 0xFFFFF), &t, &v, &hv))
+                    if (Image* im = image_of(rp.cb, &t)) {
+                        ii.imageView = view_of(im, &v, hv, b.tex_type, kViewStorage);
+                        if (ii.imageView) rp.stored.push_back(im);
+                    }
+                if (trace_on)
+                    hos_log("vk trace:   image binding %u: c%u+%#x handle %#x -> %s", b.binding, b.index, b.offset, h,
+                            ii.imageView ? "bound" : "null");
+                imgs.push_back(ii);
+            }
             where.push_back({imgs.size() - w.descriptorCount, 1});
-            vk_log_limited("img", 4, "vk: a program uses storage images: not bound yet");
         } else {
             w.descriptorType = b.kind == kTexBuf ? VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
             where.push_back({~(size_t)0, 2});
@@ -931,7 +947,9 @@ void draw(int prim, bool indexed, uint32_t count, uint32_t first, int32_t base_v
     // descriptors (their textures may need filling: before_transfer ends the render pass, which is begun again)
     before_transfer = before_transfer_hook;
     trace_on = traced;
+    rp.stored.clear();
     push_descriptors(*p, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    for (Image* im : rp.stored) image_written(im);
     trace_on = false;
     before_transfer = nullptr;
     if (!begin_rendering()) return;
@@ -1095,6 +1113,51 @@ void draw(int prim, bool indexed, uint32_t count, uint32_t first, int32_t base_v
         vkCmdDraw(cb, count, instances, first, base_instance);
     }
     rp.draws++;
+}
+
+// ---- compute ----
+/// a dispatch of the bound program's compute stage: x, y, z groups, or (indirect, when not 0) the three 32-bit counts
+/// there, which the GPU may have written earlier in this submit
+void dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
+    State& s = *rp.s;
+    if (!s.has_prog) return;
+    BufRef ind{};
+    if (indirect) {   // (the counts as they are now, for the driver bank's grid; the GPU reads them itself)
+        uint32_t n[3]{};
+        nvn_gpu_read(indirect, n, sizeof n);
+        x = n[0], y = n[1], z = n[2];
+        ind = buffer_at(indirect, 12);
+    } else if (!x || !y || !z) {
+        return;
+    }
+    end_rendering();
+    s.grid[0] = x, s.grid[1] = y, s.grid[2] = z;
+    PipelineInputs in{};
+    for (auto& a : in.attributes) a = Shader::AttributeType::Disabled;
+    Program* p = program_for(s, in, true);
+    if (!p) {
+        rp.skipped++;
+        return;
+    }
+    const bool traced = trace_left();
+    if (traced)
+        hos_log("vk trace: dispatch %u x %u x %u%s, program %016llx", x, y, z, indirect ? " (indirect)" : "",
+                (unsigned long long)p->key);
+    else
+        vk_log_limited("dispatch", 4, "vk: compute dispatch %u x %u x %u%s (program %016llx)", x, y, z,
+                       indirect ? ", indirect" : "", (unsigned long long)p->key);
+    full_barrier(rp.cb);   // (what came before: its writes are the dispatch's inputs; image fills, too)
+    trace_on = traced;
+    rp.stored.clear();
+    push_descriptors(*p, VK_PIPELINE_BIND_POINT_COMPUTE);
+    trace_on = false;
+    const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    g.x.vkCmdBindShadersEXT(rp.cb, 1, &stage, p->shaders.data());
+    if (indirect && ind.buf && !(ind.offset & 3)) vkCmdDispatchIndirect(rp.cb, ind.buf, ind.offset);
+    else if (x && y && z) vkCmdDispatch(rp.cb, x, y, z);
+    full_barrier(rp.cb);   // (its writes, for what comes after)
+    for (Image* im : rp.stored) image_written(im);
+    rp.dispatches++;
 }
 
 // ---- copies ----
@@ -1478,9 +1541,12 @@ void run(const uint8_t* p) {
                  d->ibuf, d->itype);
             break;
         }
-        case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:
-            vk_log_limited("dispatch", 4, "vk: compute dispatches are not replayed yet");
+        case NOP_DISPATCH: {
+            const auto* d = reinterpret_cast<const nvn_p_dispatch*>(a);
+            dispatch((uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z, 0);
             break;
+        }
+        case NOP_DISPATCH_INDIRECT: dispatch(0, 0, 0, reinterpret_cast<const nvn_p_dispatch_indirect*>(a)->addr); break;
         case NOP_DRAW_INDIRECT: vk_log_limited("indirect", 4, "vk: indirect draws are not replayed yet"); break;
         case NOP_WAIT_EVENT: {
             const auto* w = reinterpret_cast<const nvn_p_wait_event*>(a);
@@ -1576,8 +1642,9 @@ void rx_nvn_present(const nvn_tex* t, const int crop[4]) {
     }
     textures_frame_end();
     static uint64_t frames;
-    if (++frames % 600 == 0) hos_log("vk: %llu frames; %llu draws, %llu skipped", (unsigned long long)frames,
-                                     (unsigned long long)rp.draws, (unsigned long long)rp.skipped);
+    if (++frames % 600 == 0) hos_log("vk: %llu frames; %llu draws, %llu dispatches, %llu skipped", (unsigned long long)frames,
+                                     (unsigned long long)rp.draws, (unsigned long long)rp.dispatches,
+                                     (unsigned long long)rp.skipped);
 }
 
 void rx_nvn_register_texture(int id, const nvn_tex* t, const nvn_view* v) {
