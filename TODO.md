@@ -279,16 +279,28 @@ recipe. Things learned on the way:
   It wasn't the cause of anything seen, but the console's history is a time series and the game reads 16 a frame.
 - `vk_replay.cpp` logs each counter type the game reports, once: only timestamps (0, 16) so far.
 
-## 1. Further into the prologue: the villagers
+## Done: the rest of the prologue and the first save
 
-The manager asks the player to help the two villagers find spots for their tents (somewhere on the island; the minimap
-shows the player only). Then on the console: their building sites, the campfire (fruit and branches), the first
-night and the first save (`deviceSave:/main.dat`; nothing has been written so far). Drive it with `HOS_CONTROL`.
+Driven with `HOS_CONTROL`: the villagers' spots, 10 branches, 6 peaches, the campfire party (the island named on the
+game's keyboard), the camping cot, the musician's dream, the phone and the loan. The game then saves
+(`deviceSave:/main.dat` 10 MB, `mainHeader.dat`, `landname.dat`, `Villager0/`) and a fresh run loads it: title screen
+(Ver. 3.0.3) and the island ~30 s after boot. No wall on the way. A copy of that save is in `work/user/save_day1`.
+What made it possible: `HOS_CONTROL` has `MEM <file>` (the guest's writable pages as a sparse file), `PEEK` and
+`POKE`, and `oranges/drive.py` (`python -m oranges.drive find|pos|walk|path|items|collect|shake|bodies`) finds the
+player's physics body and the field item layer in memory and walks by position. Its docstring has the layouts found
+(coordinates, the 288 x 192 item layer, item ids). A missing villager in the first run was my search by eye, not
+the game: the memory search found both at once.
 
-Why first: it is what finds the next wall, and the first save lets later runs load a game instead of replaying the
-prologue's ~5 minutes each time.
+Left over from it:
 
-## 2. Check touch input: the mouse on the game's keyboard
+- [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
+      each piece ran on the game. Run it once on the game.
+- [ ] Touch (task 1 below): on the island-name keyboard a `TOUCH=` tap switches it to touch mode (the cursor goes)
+      but types nothing, held 0.15 or 0.5 s.
+- [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
+      `HOS_TIME` offset would let runs see daytime.
+
+## 1. Check touch input: the mouse on the game's keyboard
 
 The window's left mouse button is a finger on the touch screen (`hos_window.c`: the 1280x720 picture, letterboxed;
 `TOUCH=x,y` in `HOS_INPUT_SCRIPT` and `HOS_CONTROL`), but no one has seen the game react to it. The game reads the
@@ -299,7 +311,7 @@ the mouse in the window. If it doesn't react, look at the touch state's layout a
 
 Why here: small and quick (one run to 60 s), and the result matters to the settings menu's "mouse as touch".
 
-## 3. An oranges settings menu (controls first)
+## 2. An oranges settings menu (controls first)
 
 An in-game settings menu like Longshot's "Insert menu" (its `gpu/vk/vk_menu.cpp`, the look in `vk_ui.h`, the file in
 `host/options_path.c`; its user guide is `docs/user/graphics-and-controls.md`). That menu is drawn with Dear ImGui over
@@ -320,7 +332,7 @@ marked. The Controls tab comes first, then Graphics (task 4); the other tabs as 
 
 Why here: what makes the game playable by a person rather than by scripts (fixed keys today).
 
-## 4. Graphics settings (the settings menu's Graphics tab)
+## 3. Graphics settings (the settings menu's Graphics tab)
 
 The resolutions the game supports itself, chosen in the menu (task 3). Longshot's Graphics tab (its user guide's
 "Every setting") is the model for how they look. The game renders for the mode the console reports: `nn_system.c`
@@ -341,7 +353,7 @@ mode with Boost.
 
 Why here: it needs the menu (task 3), and the game draws right at 1080p already; this is choice, not a fix.
 
-## 5. The renderer's gaps
+## 4. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -349,7 +361,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 6. Clean-ups and checks
+## 5. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.

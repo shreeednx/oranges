@@ -26,7 +26,10 @@
    Lines run in order, each to its end before the next: "<seconds> [inputs...]" holds those inputs (the script's
    names) that long and releases them ("0.2 A", "3 LSTICK=0,1", "1.5": nothing), "SHOT <file.bmp>" saves the next
    presented picture (the Vulkan back end's), "DUMP" logs every thread (hos_kernel_dump), "PROFILE <s> [thread]" samples
-   one (HOS_PROFILE), "QUIT" ends the program. Added to the player's and the script's. */
+   one (HOS_PROFILE), "QUIT" ends the program. Added to the player's and the script's. For finding things in the
+   guest's memory while it runs: "MEM <file>" writes every mapped writable page into a sparse file at its guest address
+   (not a snapshot: the game runs on), "PEEK <hex address> <bytes> <file>" writes those bytes, "POKE <hex address>
+   <hex bytes>" stores bytes (in memory order). */
 #include "hos.h"
 
 #include <ctype.h>
@@ -202,6 +205,45 @@ static void control_line(char *line) {
     if (!strcasecmp(tok, "QUIT")) {
         hos_log("control: QUIT");
         hos_exit(0);
+    }
+    if (!strcasecmp(tok, "MEM")) {
+        const char *path = strtok(NULL, "\r\n");
+        if (!path) return;
+        while (*path == ' ' || *path == '\t') path++;
+        const int64_t n = hos_mem_dump(path);
+        if (n < 0) hos_log("control: MEM %s failed", path);
+        else hos_log("control: MEM %s (%lld MB)", path, (long long)(n >> 20));
+        return;
+    }
+    if (!strcasecmp(tok, "PEEK") || !strcasecmp(tok, "POKE")) {
+        const int poke = !strcasecmp(tok, "POKE");
+        const char *at = strtok(NULL, " \t\r\n"), *what = strtok(NULL, " \t\r\n"), *path = strtok(NULL, "\r\n");
+        if (!at || !what) return;
+        const uint64_t a = strtoull(at, NULL, 16);
+        if (poke) {   /* POKE <hex address> <hex bytes, in memory order> */
+            const size_t n = strlen(what) / 2;
+            uint8_t *p = hos_guest_range(a, n);
+            if (!p) { hos_log("control: POKE %#llx: not guest memory", (unsigned long long)a); return; }
+            for (size_t i = 0; i < n; i++) {
+                unsigned v;
+                if (sscanf(what + 2 * i, "%2x", &v) != 1) break;
+                __atomic_store_n(&p[i], (uint8_t)v, __ATOMIC_RELAXED);
+            }
+            return;
+        }
+        /* PEEK <hex address> <bytes> <file>: the bytes, raw, into the file (written whole, then renamed into place) */
+        const size_t n = strtoull(what, NULL, 0);
+        const uint8_t *p = hos_guest_range(a, n);
+        if (!p || !path) { hos_log("control: PEEK %#llx: not guest memory", (unsigned long long)a); return; }
+        while (*path == ' ' || *path == '\t') path++;
+        char tmp[4200];
+        snprintf(tmp, sizeof tmp, "%s.part", path);
+        FILE *f = fopen(tmp, "wb");
+        if (!f) return;
+        fwrite(p, 1, n, f);
+        fclose(f);
+        rename(tmp, path);
+        return;
     }
     char *end;
     const double seconds = strtod(tok, &end);

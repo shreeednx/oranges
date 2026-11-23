@@ -165,8 +165,8 @@ and attribution notices, and note the source file in a comment.
 ## The supported build (from the reference dump)
 
 - Title `01006F8002326000`, main module id `ff1d1c05670db6021c85b624a710b963`. The `.nup` metadata label is
-  `output_update`, i.e. the base game with its update applied. Main contains a lone string `3.0.3`, probably the game
-  version (unconfirmed). Like Longshot, support exactly one build and refuse others (`game.check`).
+  `output_update`, i.e. the base game with its update applied. Main contains a lone string `3.0.3`, the game
+  version (the title screen shows Ver. 3.0.3). Like Longshot, support exactly one build and refuse others (`game.check`).
 - Nintendo SDK 20.5.4, `spec: NX`. This is a **Switch 1** program using **NVN (v1)**, not Longshot's NVN2. Longshot's
   graphics layer won't carry over directly.
 - exefs: `rtld`, `main` (66 MB text, stripped: only 1068 dynamic symbols, so function discovery has to be done from

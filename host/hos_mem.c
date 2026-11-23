@@ -9,7 +9,9 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #define PAGE 0x1000ULL
 
@@ -148,4 +150,41 @@ int hos_set_heap_size(uint64_t size, uint64_t *addr) {
     hos_heap_size = size;
     *addr = HOS_HEAP_BASE;
     return 0;
+}
+
+/* HOS_CONTROL's MEM: every mapped writable range into <path> at its guest address (a sparse file: pages that are all
+   zero, or not resident, are left out), so a debugger's search can run on the guest's memory while the game runs on.
+   Not a snapshot: the other threads keep writing while it is copied. Returns the bytes written, or -1. */
+int64_t hos_mem_dump(const char *path) {
+    pthread_mutex_lock(&lock);
+    Range *copy = malloc(sizeof *copy * (size_t)(nranges ? nranges : 1));
+    const int n = nranges;
+    memcpy(copy, ranges, sizeof *copy * (size_t)n);
+    pthread_mutex_unlock(&lock);
+    const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return free(copy), -1;
+    static const uint8_t zero[PAGE];
+    int64_t written = 0;
+    unsigned char *core = NULL;
+    size_t core_cap = 0;
+    for (int i = 0; i < n; i++) {
+        const Range *r = &copy[i];
+        if (!(r->perm & HOS_PERM_W) || r->state == HOS_MEM_IO) continue;
+        const size_t pages = r->size / PAGE;
+        if (pages > core_cap) core = realloc(core, core_cap = pages);
+        if (mincore(GP(r->start), r->size, core)) memset(core, 1, pages);
+        for (size_t p = 0; p < pages; p++) {
+            if (!(core[p] & 1)) continue;
+            const uint64_t a = r->start + p * PAGE;
+            if (!memcmp(GP(a), zero, PAGE)) continue;
+            if (pwrite(fd, GP(a), PAGE, (off_t)a) != (ssize_t)PAGE) { written = -1; goto out; }
+            written += PAGE;
+        }
+    }
+    if (ftruncate(fd, HOS_WINDOW)) written = -1;
+out:
+    close(fd);
+    free(core);
+    free(copy);
+    return written;
 }

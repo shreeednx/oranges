@@ -88,6 +88,7 @@ void hos_query(uint64_t addr, uint64_t *start, uint64_t *size, int *state, int *
 uint64_t hos_sys_alloc(uint64_t size, uint64_t align);   /* zeroed, from the system region, never freed */
 int hos_set_heap_size(uint64_t size, uint64_t *addr);    /* svcSetHeapSize: 0 or a result code */
 extern uint64_t hos_heap_size, hos_total_memory;
+int64_t hos_mem_dump(const char *path);   /* HOS_CONTROL MEM: the mapped writable pages into a sparse file */
 
 /* ---- host folders (hos_main.c): the RomFS (ORANGES_ROMFS, default work/romfs) and the user folder with saves
    (ORANGES_USER, default work/user) */

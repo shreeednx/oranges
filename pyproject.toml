@@ -12,7 +12,7 @@ requires-python = ">=3.14"   # compression.zstd is in the standard library from 
 dependencies = ["lz4>=4"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.8", "capstone>=5"]   # capstone: disassembly while investigating
+dev = ["pytest>=8", "ruff>=0.8", "capstone>=5", "numpy>=2"]   # capstone: disassembly while investigating; numpy: oranges.drive
 
 [project.scripts]
 oranges = "oranges.__main__:main"
