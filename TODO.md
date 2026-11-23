@@ -125,7 +125,7 @@ Left over from it:
 
 - [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window (the
       Vulkan back end presents in mailbox mode): see the renderer's leftovers
-- [ ] Key remapping (a config file: task 3, the settings menu), more than one gamepad (Npad No.2-8), motion from a
+- [ ] Key remapping (a config file: task 2, the settings menu), more than one gamepad (Npad No.2-8), motion from a
       gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
@@ -295,21 +295,20 @@ Left over from it:
 
 - [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
       each piece ran on the game. Run it once on the game.
-- [ ] Touch (task 1 below): on the island-name keyboard a `TOUCH=` tap switches it to touch mode (the cursor goes)
-      but types nothing, held 0.15 or 0.5 s.
+- [ ] Touch: a tap on the island-name keyboard types nothing (see task 3, with Handheld mode).
 - [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
       `HOS_TIME` offset would let runs see daytime.
 
-## 1. Check touch input: the mouse on the game's keyboard
+## 1. NPC talking sounds
 
-The window's left mouse button is a finger on the touch screen (`hos_window.c`: the 1280x720 picture, letterboxed;
-`TOUCH=x,y` in `HOS_INPUT_SCRIPT` and `HOS_CONTROL`), but no one has seen the game react to it. The game reads the
-touch screen from 0.8 s, and from another caller (`lr 0xb1c3bc4`) once its keyboard for the player's name is up
-(~58 s): tapping its keys should type. Check it with `HOS_CONTROL` (`TOUCH=x,y` held a moment, then `SHOT`), and with
-the mouse in the window. If it doesn't react, look at the touch state's layout and the sampling (`nn_hid.c`
-`touch_state`: the delta time, the attributes for a finger going down and up, the finger id).
+The characters' voices while they talk (the babble under each dialogue line) are not heard; the user
+heard it with the window build after the prologue's save (2026-11-23). Music and the other sounds play. Find how the
+game plays them: probably voices on the audio renderer that `nn_audio.c` refuses or mixes silent (a format, a
+sample rate or an effect it doesn't handle), or a stream the game builds from its sound archive at run time. Start
+with `HOS_AUDIO_TRACE` during a talk (voices added, their formats, refused Auxes / effects) and compare against a
+part where sound is heard.
 
-Why here: small and quick (one run to 60 s), and the result matters to the settings menu's "mouse as touch".
+Why first: it is the one thing a player notices that the game does wrong so far.
 
 ## 2. An oranges settings menu (controls first)
 
@@ -318,7 +317,7 @@ An in-game settings menu like Longshot's "Insert menu" (its `gpu/vk/vk_menu.cpp`
 the window's image at the end of a present, so it costs nothing while closed and never touches the game's picture.
 F1 opens it (a gamepad's Home too), and the game gets no input while it is open. It has tabs (Graphics, Audio,
 Gameplay, Controls, ...), its choices are saved as they change in an options file, and rows that need a restart are
-marked. The Controls tab comes first, then Graphics (task 4); the other tabs as there are settings for them.
+marked. The Controls tab comes first, then Graphics (task 3); the other tabs as there are settings for them.
 
 - [ ] The menu itself: Dear ImGui on the Vulkan back end (`host/vk`), drawn over the presented image (not with
       `HOS_VK=0`). Keyboard, gamepad and mouse to move around it. While it is open, `hos_input()` gives the game
@@ -334,7 +333,7 @@ Why here: what makes the game playable by a person rather than by scripts (fixed
 
 ## 3. Graphics settings (the settings menu's Graphics tab)
 
-The resolutions the game supports itself, chosen in the menu (task 3). Longshot's Graphics tab (its user guide's
+The resolutions the game supports itself, chosen in the menu (task 2). Longshot's Graphics tab (its user guide's
 "Every setting") is the model for how they look. The game renders for the mode the console reports: `nn_system.c`
 answers `nn::oe::GetOperationMode` with Console (docked, the 1920x1080 picture every screenshot has) and the performance
 mode with Boost.
@@ -345,13 +344,19 @@ mode with Boost.
 - [ ] A Resolution setting: Docked (1920x1080) or Handheld (1280x720), whichever the game really supports. Changing
       it while the game runs takes the console's notice: the game turns on `SetOperationModeChangedNotificationEnabled`
       and waits for the applet's OperationModeChanged message. Without that, apply it after a restart.
+- [ ] Touch input, with Handheld: the touch screen is the handheld console's, and we report docked (Console), which
+      is probably why a tap does nothing. On the island-name keyboard a `TOUCH=` tap (0.15 or 0.5 s) switches it
+      to touch mode (the cursor highlight goes) but types nothing. Once Handheld can be reported (an option to
+      simulate handheld mode), check tapping the keyboard again, with `TOUCH=x,y` (`HOS_CONTROL`, 1280x720) and
+      the mouse in the window. If it still doesn't type, look at `nn_hid.c` `touch_state` (the delta time, the
+      attributes for a finger going down and up, the finger id). It matters to the settings menu's "mouse as touch".
 - [ ] The window's side of it: fullscreen (F11 today), V-Sync (`HOS_VSYNC=1` today), the filter used to scale the
       picture to the window.
 - [ ] Only after those: whether to go above 1080p. The game has no such mode, so it would mean the renderer enlarging
       the game's render targets (Longshot's "Output resolution"), with whatever that breaks (the UI's layout, the
       post effects' texel offsets, the game's reads of its own targets). Decide once the native modes work.
 
-Why here: it needs the menu (task 3), and the game draws right at 1080p already; this is choice, not a fix.
+Why here: it needs the menu (task 2), and the game draws right at 1080p already; this is choice, not a fix.
 
 ## 4. The renderer's gaps
 
@@ -377,6 +382,11 @@ Why last: none of these blocks the game; take them on when one starts to matter 
 ## Future ideas
 
 Not planned yet. Each needs a look at what the game allows first.
+
+- **Shorter loading times, if possible.** Find where the time goes while a scene loads (the title screen to the
+  island is ~30 s here; `HOS_PROFILE` on the loading threads, `HOS_FS_LOG`): our decompression, shader
+  translation and texture uploads on the game's threads, or the game's own pacing (waits and frame-counted fades).
+  Only what we add can be cut without changing the game.
 
 - **AMD FSR (upscaling).** FSR 1 needs only the final picture: one pass at the present that upscales the game's 1080p
   to the window (a 1440p or 4K screen), so it is the easy one. FSR 2 / 3.1 are temporal: they need the scene's depth
