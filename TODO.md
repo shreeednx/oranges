@@ -295,7 +295,7 @@ Left over from it:
 
 - [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
       each piece ran on the game. Run it once on the game.
-- [ ] Touch: a tap on the island-name keyboard types nothing (see task 2, with Handheld mode).
+- [ ] Touch: a tap on the island-name keyboard types nothing (see task 1, with Handheld mode).
 - [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
       `HOS_TIME` offset would let runs see daytime.
 
@@ -345,40 +345,40 @@ Left over from it:
 
 - [ ] Try it by hand in the window: keyboard, a gamepad (Home, the D-pad / stick repeat, triggers as bindings) and the
       mouse (hit-testing by the console's 1280x720 coordinates). Only `HOS_CONTROL` drove it so far.
-- [x] Which gamepad is Npad No.1 (the Controller row); more than one player (Npad No.2-8): see task 1
+- [x] Which gamepad is Npad No.1 (the Controller row); more than one player (Npad No.2-8): the Steam Controller's
+      leftovers
 - [ ] The menu is drawn only at the game's presents (30 fps): it freezes while the game does not present (a long load)
 - [ ] Nothing needs a restart yet; the row flag (`restart`, "(after a restart)") is there for the Graphics tab
 
-## 1. The Steam Controller through Steam Input
+## Done: the Steam Controller through Steam Input
 
-Started from Steam (a non-Steam game, Steam Input forced on) with a Steam Controller, the game got no gamepad: the
-controller still acted as Steam's keyboard and mouse (reported by the user, 2026-11-23). The user's logs settled it:
-on Wayland SDL opened Steam's pad ("Steam Controller" is the Pro Controller) but Steam kept its Desktop layout; with
-`SDL_VIDEO_DRIVER=x11` Steam switched to the game's layout and every button worked and could be rebound, but not the
-stick directions (moving a stick was no input to bind).
+Started from Steam (a non-Steam game, Steam Input forced on), the Steam Controller acted as Steam's keyboard and mouse
+(reported by the user, 2026-11-23). The user's logs settled it: on Wayland SDL opened Steam's pad but Steam kept its
+Desktop layout; with X11 Steam switched to the game's layout, and every button could be rebound but no stick direction.
+Now, checked by the user from Steam: the controller plays the game, stick directions bind, Select + Start opens the
+menu.
 
-- [x] Steam's variables and every gamepad SDL announces (vendor:product, type, Steam Input's or not) in the log.
-- [x] Started by Steam (`SteamGameId` / `SteamAppId`), the window is an X11 one (XWayland) when X11 is there: Steam
-      Input follows the window in front through X11, and a native Wayland window kept its Desktop layout.
-      `SDL_VIDEO_DRIVER` still chooses; `HOS_WAYLAND=1` keeps Wayland.
-- [x] The gamepad's stick directions are bindable inputs (`leftstick_up` ... `rightstick_right`): the stick rows'
-      defaults are the gamepad's own directions, an analog amount goes through the binding (swap sticks, a stick
-      direction on a button, a button on a stick), and a stick pushed past 60% is taken while a gamepad cell waits.
-- [x] By hand, from Steam (the user): the controller works in the game. The menu could not be opened with Home
-      (Steam keeps it), so Select + Start together on any gamepad opens and closes it now (Longshot's chord; both
-      kept from the game while held together; the first of the two may reach it for a moment).
-- [x] A Controller row on the Controls tab, while a gamepad is connected: Auto (Steam Input's pad when there is one,
-      else the first connected) or a gamepad by name, saved as SDL's GUID of its model (`#2` for a second of the same
-      model) and its name; one chosen and not connected shows as such, and Auto applies meanwhile. Every gamepad is
-      opened; the chosen one is the Pro Controller (its rumble too), and gamepads coming and going are picked up.
-- [ ] By hand: Select + Start from Steam, the Controller row with two gamepads, binding a stick direction.
-- [ ] Later, from Longshot (`host/steam_pads.h`, `host/pad_sdl.c` there): Valve's real pad read beside Steam's
-      stand-in for its motion sensors (gyro aiming in the game's camera, the Switch's motion controls); more than one
-      player (Npad No.2-8, a gamepad each).
+- Started by Steam (`SteamGameId` / `SteamAppId`) the window is an X11 one (XWayland) when X11 is there: Steam Input
+  follows the window in front through X11, and a native Wayland window kept its Desktop layout. `SDL_VIDEO_DRIVER`
+  still chooses; `HOS_WAYLAND=1` keeps Wayland. Steam's variables and every gamepad SDL announces are in the log.
+- The gamepad's stick directions are bindable inputs (`leftstick_up` ... `rightstick_right`): the stick rows default
+  to the gamepad's own directions, an analog amount goes through the binding (sticks swapped, a stick direction on a
+  button, a button on a stick), and a stick pushed past 60% is taken while a gamepad cell waits.
+- Steam keeps Home for itself: Select + Start together on any gamepad open and close the menu (Longshot's chord; both
+  kept from the game while held together; the first of the two may reach it for a moment).
+- A Controller row on the Controls tab, while a gamepad is connected: Auto (Steam Input's pad when there is one, else
+  the first connected) or a gamepad by name, saved as SDL's GUID of its model (`#2` for a second of the same model) and
+  its name; one chosen and not connected shows as such, with Auto meanwhile. Every gamepad is opened; the chosen one is
+  the Pro Controller (its rumble too), and gamepads coming and going are picked up.
 
-Why first: the player wants to play with this controller now; what is left is checking it by hand.
+Left over from it (low priority: the user has one controller to test with for now):
 
-## 2. Graphics settings (the settings menu's Graphics tab)
+- [ ] By hand with two gamepads: the Controller row choosing between them, one unplugged and plugged in again
+- [ ] More than one player (Npad No.2-8, a gamepad each)
+- [ ] From Longshot (`host/steam_pads.h`, `host/pad_sdl.c` there): Valve's real pad read beside Steam's stand-in for
+      its motion sensors (gyro aiming in the game's camera, the Switch's motion controls)
+
+## 1. Graphics settings (the settings menu's Graphics tab)
 
 The resolutions the game supports itself, chosen in the menu (F1: a Graphics tab). Longshot's Graphics tab (its user
 guide's "Every setting") is the model for how they look. The game renders for the mode the console reports:
@@ -405,7 +405,7 @@ the performance mode with Boost.
 
 Why here: the menu is there now (F1), and the game draws right at 1080p already; this is choice, not a fix.
 
-## 3. The renderer's gaps
+## 2. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -413,7 +413,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 4. Clean-ups and checks
+## 3. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
