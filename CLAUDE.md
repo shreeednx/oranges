@@ -230,7 +230,8 @@ and attribution notices, and note the source file in a comment.
   Release* / Remove* zero that word, and games read it: the game's sound system re-acquires on a scene change only the
   sub mixes whose word is 0. Left holding our handle they were never re-acquired, every Aux added to them later was
   refused, and a job waiting for those effects to detach (IsAuxRemovable) stalled the frame loop after the movie.
-  An HLE object's fields the SDK writes are part of its API.
+  An HLE object's fields the SDK writes are part of its API. The game also sends sub mixes into splitters (its talking
+  voices' sub mix among them): a sub mix's buffers are then the splitter's source channels.
 - Next: the prologue's villagers, campfire and first save; the renderer's gaps (TODO.md).
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.

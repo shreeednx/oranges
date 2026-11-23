@@ -5,7 +5,7 @@
    kind, index). A mixer thread renders one audio frame (240 samples at 48 kHz) every 5 ms:
      voices (PCM16, PCM float, DSP-ADPCM; resampled by sample rate x pitch, voice volume)
        -> their destination mix or splitter (per channel pair volumes)
-       -> sub mixes in dependency order (sub mix volume, then to their destination)
+       -> sub mixes in dependency order (sub mix volume, then to their destination mix or splitter)
        -> the final mix (volume) -> the device sink (its channel map, down to stereo)
        -> the sound device (hos_sound.c)
    and signals the renderer event the game's audio thread waits on. I3DL2 reverb is processed locally; Aux effects
@@ -17,7 +17,7 @@
    (oranges) Ported from Longshot's host/nn_audio.c (https://git.magicbean.dev/MagicBeanDev/Longshot, commit 67ba729d,
    GPL-3.0-or-later): its renderer, mixer and parameter updates as they are; its Windows/SDL output (hos_sound.c
    instead), controller speaker, TV delay and menu volume are left out. Added for the game's SDK: the 8-argument AcquireVoiceSlot, short biquad
-   parameters, GetVoicePlayState, AudioOut, delay / reverb / biquad filter effects and circular buffer sinks (accepted,
+   parameters, GetVoicePlayState, sub mixes into splitters (the villagers' talking), AudioOut, delay / reverb / biquad filter effects and circular buffer sinks (accepted,
    no processing), performance info, the aux light limiter. */
 #include "hos.h"
 
@@ -54,7 +54,7 @@ typedef struct { uint64_t buffer, size; int32_t start, end; int loop; uint64_t c
 typedef struct {
     int used, released, final_mix, buffers;    /* (released: by the game, until the next update applies it) */
     float volume;
-    int dest_kind, dest;                       /* (sub mixes) */
+    int dest_kind, dest;                       /* (sub mixes: a mix, or a splitter whose source channels are its buffers) */
     float to[MAX_BUF][MAX_BUF];                /* [src buffer][dst buffer] volume to the destination mix */
     float buf[MAX_BUF][FRAME];
     int depth;                                 /* (processing order: deeper first) */
@@ -582,9 +582,37 @@ static void render_voice(Voice *v) {
     memcpy(v->ramp_vol, v->vol, sizeof v->ramp_vol);   /* (splitters catch up in render_frame) */
 }
 
-static int mix_depth(int i, int guard) {   /* how many sub mixes lie between this one and the final mix */
-    if (guard > MAX_MIXES || mixes[i].final_mix || mixes[i].dest_kind != DEST_MIX) return 0;
-    return 1 + mix_depth(mixes[i].dest, guard + 1);
+static int mix_depth(int i, int guard) {   /* how many sub mixes lie between this one and the final mix (the most) */
+    const Mix *m = &mixes[i];
+    if (guard > MAX_MIXES || m->final_mix) return 0;
+    if (m->dest_kind == DEST_MIX) return 1 + mix_depth(m->dest, guard + 1);
+    if (m->dest_kind != DEST_SPLITTER || !splitters[m->dest].used) return 0;
+    int depth = 0;
+    for (int d = 0; d < splitters[m->dest].dests; d++) {
+        const int to = splitters[m->dest].dest_mix[d];
+        if (to >= 0 && mixes[to].used && to != i) {
+            const int t = 1 + mix_depth(to, guard + 1);
+            if (t > depth) depth = t;
+        }
+    }
+    return depth;
+}
+/* A sub mix into a splitter: its buffers are the splitter's source channels, each destination's volumes
+   (SetSplitterMixVolume, src = the buffer) times the sub mix volume, ramped like a voice's. The game sends its sub
+   mixes this way (the villagers' talking among them: a mono sub mix to its stereo bus and the final mix). */
+static void mix_to_splitter(Mix *s, Splitter *sp) {
+    for (int d = 0; d < sp->dests; d++) {
+        const int mi = sp->dest_mix[d];
+        if (mi < 0 || !mixes[mi].used || &mixes[mi] == s) continue;
+        Mix *m = &mixes[mi];
+        for (int src = 0; src < s->buffers && src < MAX_CH; src++)
+            for (int b = 0; b < m->buffers; b++) {
+                const float g0 = sp->ramp[d][src][b] * s->volume, g1 = sp->vol[d][src][b] * s->volume;
+                if (g0 == 0.0f && g1 == 0.0f) continue;
+                const float dg = (g1 - g0) / FRAME;
+                for (int i = 0; i < FRAME; i++) m->buf[b][i] += s->buf[src][i] * (g0 + dg * (float)(i + 1));
+            }
+    }
 }
 
 static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the device's 2 or 6 channels */
@@ -595,10 +623,6 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
         }
     for (int i = 0; i < MAX_VOICES; i++)
         if (voices[i].used) render_voice(&voices[i]);
-    for (int i = 0; i < MAX_SPLITTERS; i++)   /* (the splitters' volume ramps: once a frame, whichever voices use them) */
-        if (splitters[i].used)
-            for (int d = 0; d < splitters[i].dests; d++)
-                memcpy(splitters[i].ramp[d], splitters[i].vol[d], sizeof splitters[i].ramp[d]);
     /* sub mixes, deepest first */
     int order[MAX_MIXES], n = 0;
     for (int m = 0; m < MAX_MIXES; m++)
@@ -609,6 +633,7 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
     for (int k = 0; k < n; k++) {
         Mix *s = &mixes[order[k]];
         effects_frame(order[k]);
+        if (s->dest_kind == DEST_SPLITTER && splitters[s->dest].used) mix_to_splitter(s, &splitters[s->dest]);
         if (s->dest_kind != DEST_MIX || !mixes[s->dest].used) continue;
         Mix *d = &mixes[s->dest];
         for (int src = 0; src < s->buffers; src++)
@@ -618,6 +643,10 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
                 for (int i = 0; i < FRAME; i++) d->buf[dst][i] += s->buf[src][i] * g;
             }
     }
+    for (int i = 0; i < MAX_SPLITTERS; i++)   /* (the splitters' volume ramps: once a frame, whichever voices and mixes use them) */
+        if (splitters[i].used)
+            for (int d = 0; d < splitters[i].dests; d++)
+                memcpy(splitters[i].ramp[d], splitters[i].vol[d], sizeof splitters[i].ramp[d]);
     /* the final mix through the sink's channel map: FL FR FC LFE RL RR, as it is to a 5.1 device (the same order on
        Windows' and SDL's 5.1), else down to stereo */
     const int six = channels == 6;
@@ -812,10 +841,12 @@ static void apply(const Cmd *k) {   /* (with the lock held) */
                 if (auxes[e].used && auxes[e].mix == k->idx) auxes[e].mix = -1;
             break;
         case OP_MIX_VOLUME: m->volume = k->f; break;
-        case OP_MIX_DEST:   /* (a sub mix into a splitter: not used by TOTK so far) */
-            m->dest = k->i0 == DEST_MIX ? tgt_mix : -1;
-            m->dest_kind = m->dest >= 0 ? DEST_MIX : DEST_NONE;
+        case OP_MIX_DEST: {
+            const int tgt_split = k->tgt >= 0 && k->tgt < MAX_SPLITTERS && splitters[k->tgt].used ? k->tgt : -1;
+            m->dest = k->i0 == DEST_MIX ? tgt_mix : k->i0 == DEST_SPLITTER ? tgt_split : -1;
+            m->dest_kind = m->dest < 0 ? DEST_NONE : k->i0;
             break;
+        }
         case OP_MIX_MIX_VOLUME: m->to[k->i0][k->i1] = k->f; break;
         }
         return;
@@ -843,7 +874,12 @@ static void apply(const Cmd *k) {   /* (with the lock held) */
     Splitter *s = &splitters[k->idx];
     if (!s->used) return;
     switch (k->op) {
-    case OP_SPLIT_RELEASE: s->used = 0; break;
+    case OP_SPLIT_RELEASE:   /* (a sub mix sent to it goes nowhere until given a new destination: the slot is reused) */
+        s->used = 0;
+        for (int m = 0; m < MAX_MIXES; m++)
+            if (mixes[m].used && mixes[m].dest_kind == DEST_SPLITTER && mixes[m].dest == k->idx)
+                mixes[m].dest_kind = DEST_NONE, mixes[m].dest = -1;
+        break;
     case OP_SPLIT_DEST:
         if (s->dest_mix[k->i0] != tgt_mix)
             for (int f = 0; f < 2; f++) s->bq_epoch[k->i0][f] = ++split_bq_epoch;
@@ -1158,7 +1194,8 @@ static void set_mix_dest(uint64_t obj, int kind, uint64_t dest) {
     AUT("audio: sub mix %d destination %s %#llx (mix %d, splitter %d)", mix_index(obj), kind == DEST_MIX ? "mix" : "splitter",
         (unsigned long long)dest, mix_index(dest), get_handle(dest, K_SPLITTER));
     if (mix_of(obj)) {
-        const Cmd k = {.op = OP_MIX_DEST, .idx = mix_index(obj), .tgt = kind == DEST_MIX ? mix_index(dest) : -1, .i0 = kind};
+        const Cmd k = {.op = OP_MIX_DEST, .idx = mix_index(obj), .tgt = kind == DEST_MIX ? mix_index(dest) : splitter_index(dest),
+                       .i0 = kind};
         submit(&k);
     }
     au_unlock();
@@ -1229,6 +1266,9 @@ static void set_split_volume(Ctx *c) {
     if (splitter_of(ARG(0)) && d >= 0 && d < MAX_SPLIT_DESTS && src >= 0 && src < MAX_CH && dst >= 0 && dst < MAX_BUF) {
         const Cmd k = {.op = OP_SPLIT_VOLUME, .idx = splitter_index(ARG(0)), .tgt = mix_index(ARG(2)), .i0 = d, .i1 = src,
                        .i2 = dst, .f = farg(c, 0)};
+        static int logged;
+        if (farg(c, 0) != 0.0f && logged++ < 400)
+            AUT("audio: splitter %d destination %d (mix %d) volume %.3f: %d -> %d", splitter_index(ARG(0)), d, mix_index(ARG(2)), farg(c, 0), src, dst);
         submit(&k);
     }
     au_unlock();

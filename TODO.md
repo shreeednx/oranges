@@ -125,7 +125,7 @@ Left over from it:
 
 - [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window (the
       Vulkan back end presents in mailbox mode): see the renderer's leftovers
-- [ ] Key remapping (a config file: task 2, the settings menu), more than one gamepad (Npad No.2-8), motion from a
+- [ ] Key remapping (a config file: task 1, the settings menu), more than one gamepad (Npad No.2-8), motion from a
       gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
@@ -295,29 +295,38 @@ Left over from it:
 
 - [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
       each piece ran on the game. Run it once on the game.
-- [ ] Touch: a tap on the island-name keyboard types nothing (see task 3, with Handheld mode).
+- [ ] Touch: a tap on the island-name keyboard types nothing (see task 2, with Handheld mode).
 - [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
       `HOS_TIME` offset would let runs see daytime.
 
-## 1. NPC talking sounds
+## Done: NPC talking sounds (sub mixes into splitters)
 
-The characters' voices while they talk (the babble under each dialogue line) are not heard; the user
-heard it with the window build after the prologue's save (2026-11-23). Music and the other sounds play. Find how the
-game plays them: probably voices on the audio renderer that `nn_audio.c` refuses or mixes silent (a format, a
-sample rate or an effect it doesn't handle), or a stream the game builds from its sound archive at run time. Start
-with `HOS_AUDIO_TRACE` during a talk (voices added, their formats, refused Auxes / effects) and compare against a
-part where sound is heard.
+The villagers' talking was never heard. The game renders it itself (from `.bars` voice archives
+it loads) and plays it as a mono PCM16 stream (256 samples a buffer, four in a ring, started with the first
+line) on its own voice into a 1-buffer sub mix, and it sends that sub mix (and four others: 1, 6, 8, 10 of the 11) into a splitter (`SetSubMixDestination` with a
+`SplitterType`, to its bus and the final mix). `nn_audio.c` dropped a sub mix's splitter destination ("not used by
+TOTK so far"), so those mixes went nowhere. A sub mix into a splitter now feeds each destination mix: its buffers
+are the splitter's source channels, at `SetSplitterMixVolume`'s volumes (the game sets them buffer i to buffer i) times
+the sub mix volume, ramped as a voice's; the mix order follows splitters, and a released splitter drops the sub mixes
+sent to it. The shopkeeper's lines at the airport counter are 2-3x the level of the music alone (22-29 s of the
+prologue), no clipping; the day-1 save loads to the island as before.
 
-Why first: it is the one thing a player notices that the game does wrong so far.
+Left over from it:
 
-## 2. An oranges settings menu (controls first)
+- [ ] Listen to it with the window (checked by level only: `HOS_AUDIO_DUMP`). The other sub mixes that were silent
+      play now too (6 and 8 send 0.125 / 0.25 to a bus and the final mix, the look of reverb sends): check that the
+      island's mix sounds right
+- [ ] A splitter destination's biquad filters apply to voices only, not to a sub mix sent through it (unknown
+      whether the console's do; the game hasn't set one there so far)
+
+## 1. An oranges settings menu (controls first)
 
 An in-game settings menu like Longshot's "Insert menu" (its `gpu/vk/vk_menu.cpp`, the look in `vk_ui.h`, the file in
 `host/options_path.c`; its user guide is `docs/user/graphics-and-controls.md`). That menu is drawn with Dear ImGui over
 the window's image at the end of a present, so it costs nothing while closed and never touches the game's picture.
 F1 opens it (a gamepad's Home too), and the game gets no input while it is open. It has tabs (Graphics, Audio,
 Gameplay, Controls, ...), its choices are saved as they change in an options file, and rows that need a restart are
-marked. The Controls tab comes first, then Graphics (task 3); the other tabs as there are settings for them.
+marked. The Controls tab comes first, then Graphics (task 2); the other tabs as there are settings for them.
 
 - [ ] The menu itself: Dear ImGui on the Vulkan back end (`host/vk`), drawn over the presented image (not with
       `HOS_VK=0`). Keyboard, gamepad and mouse to move around it. While it is open, `hos_input()` gives the game
@@ -331,9 +340,9 @@ marked. The Controls tab comes first, then Graphics (task 3); the other tabs as 
 
 Why here: what makes the game playable by a person rather than by scripts (fixed keys today).
 
-## 3. Graphics settings (the settings menu's Graphics tab)
+## 2. Graphics settings (the settings menu's Graphics tab)
 
-The resolutions the game supports itself, chosen in the menu (task 2). Longshot's Graphics tab (its user guide's
+The resolutions the game supports itself, chosen in the menu (task 1). Longshot's Graphics tab (its user guide's
 "Every setting") is the model for how they look. The game renders for the mode the console reports: `nn_system.c`
 answers `nn::oe::GetOperationMode` with Console (docked, the 1920x1080 picture every screenshot has) and the performance
 mode with Boost.
@@ -356,9 +365,9 @@ mode with Boost.
       the game's render targets (Longshot's "Output resolution"), with whatever that breaks (the UI's layout, the
       post effects' texel offsets, the game's reads of its own targets). Decide once the native modes work.
 
-Why here: it needs the menu (task 2), and the game draws right at 1080p already; this is choice, not a fix.
+Why here: it needs the menu (task 1), and the game draws right at 1080p already; this is choice, not a fix.
 
-## 4. The renderer's gaps
+## 3. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -366,7 +375,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 5. Clean-ups and checks
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
