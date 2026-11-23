@@ -36,6 +36,7 @@ HOS_OPTIONS_FILE=opts.ini ./work/build/oranges   # the menu's settings file (def
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
+HOS_PRESENT_INTERVAL=1 ./work/build/oranges   # 60 fps instead of the game's 30 (its world then runs ~2x fast: TODO 2)
 HOS_AUDIO=1 HOS_NO_WINDOW=1 ./work/build/oranges   # sound without a window (headless runs are quiet by default)
 HOS_NO_WINDOW=1 HOS_SCREENSHOT=shot.bmp,40 ./work/build/oranges   # the presented picture at 40 s (headless draws too)
 HOS_VK_SHOTS=dir,5 ./work/build/oranges   # a screenshot every 5 s; HOS_VK=0: the null back end (nothing drawn)

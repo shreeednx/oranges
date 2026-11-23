@@ -409,20 +409,61 @@ Left over from it:
 - [ ] Handheld still reports the Pro Controller as Npad No.1; a handheld console has its Joy-Cons attached as the
       Handheld Npad (style Handheld, id 0x20). The game plays either way; a game that checks the style would not.
 - [ ] Each mode switch leaves the old size's targets allocated (the renderer never frees images: its memory leftover).
-- [ ] Above 1080p: the game has no such mode, so it would mean the renderer enlarging the game's render targets
-      (Longshot's "Output resolution"), with whatever that breaks (the UI's layout, the post effects' texel offsets,
-      the game's reads of its own targets). Decide now that the native modes work (see Future ideas: FSR 1 is the
-      cheaper way to a sharper big screen).
+- [x] Above 1080p: decided against enlarging the game's render targets (Longshot's "Output resolution": the UI's
+      layout, the post effects' texel offsets, the game's reads of its own targets would all need care). FSR 1 at the
+      present instead (task 1); FSR 3.1 is ruled out (see "Looked at and ruled out").
 
-## 1. The renderer's gaps
+## 1. FSR 1: a sharper picture on big screens
+
+AMD FSR 1 (EASU upscaling, then RCAS sharpening) at the present: the game's 1920x1080 (or handheld 1280x720) picture
+scaled to the window's size, for 1440p and 4K screens, in place of the plain linear blit. A fourth Scaling choice on
+the Graphics tab ("FSR 1", with a Sharpness row), applied only when the window is larger than the picture.
+
+- [ ] The two passes as compute shaders on the picture (the crop of the window texture) into a window-sized image,
+      then the copy to the swapchain. FSR 1's shader source is MIT-licensed (AMD's FidelityFX); vendor it under
+      `third_party/` with its notice.
+- [ ] Input: the final picture, the UI included (the game composites its UI into the same RGB10A2 target as the
+      tonemapped scene, so there is no clean pre-UI picture without finding that point in the frame). FSR 1 copes with
+      text and flat UI; compare the menus and the HUD text against Smooth at 4K.
+- [ ] Linear vs sRGB: EASU wants perceptual (gamma) input, the window texture is RGBA8 (UNORM or sRGB view). Check
+      which the game presents and feed it accordingly.
+- [ ] Screenshots keep the game's own size (they are of the picture, not of the window).
+
+Why first: small and self-contained (one present-time pass, nothing in the game changes), and the visible win for
+anyone with a screen above 1080p. It is the upscaler that fits this game: FSR 3.1 needs inputs the game does not have.
+
+## 2. 60 fps: the game's own time step (research first)
+
+The game's loop runs faster when let (`HOS_NO_PACING=1`: ~120 fps; `HOS_PRESENT_INTERVAL=1`: 55-60 fps, the picture
+right), but its world steps once per frame: in 2 s of walking right at 60 fps the player went about twice as far as at
+30 fps (screenshots of the day-1 save: past the next tent, to the river). So 60 fps means finding how the game steps
+time and halving the step, as Longshot did for its game (`host/oot_high_fps.h` there).
+
+- [ ] Find the step: what the frame loop (`0x86ba430` is its end) hands its systems each frame. A sead-style framework
+      usually has one frame-rate or delta value that game objects scale by; look for 30.0 / 1/30 constants and the
+      readers of the frame counter. Watch movement speed, animation (Havok and NintendoWare), timers, the sound
+      system's frame-counted work, effects (Vfx2) and the UI's frame-counted fades.
+- [ ] Go / no-go after that: one global step (patch it: doable) or steps spread over many systems (likely not worth
+      it). Write down what was found either way.
+- [ ] If it goes ahead: a Frame rate setting (30 / 60) that sets the present interval and the step together; check a
+      day of play (walking, running, talking, the shop, fishing and catching bugs, the museum, villagers' schedules)
+      for things that run at double speed.
+- [ ] Measurement note: `python -m oranges.drive find` picked a wrong body at 60 and 120 fps (its moves did not follow
+      the stick), so compare by screenshots or fix `find` first.
+
+Why second: the bigger win of the two (smoothness, all the time), but a research task with a real chance of a no; the
+renderer needs headroom for it too (task 3). Frame generation is no way around it here (see "Looked at and ruled out").
+
+## 3. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
 
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
-as soon as one of those logs or a wrong picture shows.
+as soon as one of those logs or a wrong picture shows. Its performance part comes first if task 2 goes ahead: at a
+forced 60 fps the game held 55-60 fps headless here, with no headroom.
 
-## 2. Clean-ups and checks
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -444,15 +485,15 @@ Not planned yet. Each needs a look at what the game allows first.
   translation and texture uploads on the game's threads, or the game's own pacing (waits and frame-counted fades).
   Only what we add can be cut without changing the game.
 
-- **AMD FSR (upscaling).** FSR 1 needs only the final picture: one pass at the present that upscales the game's 1080p
-  to the window (a 1440p or 4K screen), so it is the easy one. FSR 2 / 3.1 are temporal: they need the scene's depth
-  and motion vectors, so check whether the game draws motion vectors at all (for its own anti-aliasing or motion blur).
-  Longshot ships FSR 3.1 (its "Upscaler" setting) and can serve as the model.
-- **Higher frame rates.** The game runs at 30 fps (its presents ask for every second 60 Hz vblank; `nvn_native.c`
-  paces them). Two ways:
-  - The game's own rate: present every vblank and let its loop run at 60 or more. Its logic probably counts frames
-    (animations, timers, the day's clock?), so find how it steps time first. Longshot's high frame rate work
-    (`host/oot_high_fps.h` there) shows what it took for its game.
-  - Frames made by the renderer between the game's (frame interpolation, as in FSR 3.1's frame generation), which
-    leaves the game's timing alone.
+## Looked at and ruled out
 
+- **FSR 3.1 (temporal upscaling and frame generation)**, checked 2026-11-24 on a frame of the day-1 save
+  (`HOS_VK_LOG`): the game draws no motion vectors and has no temporal anti-aliasing (so no camera jitter). The scene is
+  one R11G11B10F target with a D32F depth (a depth pre-pass, then the colour pass with EQUAL depth: 800-950 draws each,
+  single target), then a linear depth copy (R32F), half-size passes (R32F, R16F, R8, RG16F: a handful of full-screen
+  draws each, not per object), a bloom chain (R11G11B10F 960x540 down to 30x17), the tonemap into RGB10A2, where the
+  UI is drawn too, and a copy to the RGBA8 window texture. FSR 3.1 needs per-pixel motion vectors, the jitter and a
+  picture without UI; frame generation needs the same motion vectors. They could only be faked: camera-only motion
+  vectors from depth and the view-projection matrices (found in the uniform buffers), wrong for everything that moves
+  (villagers, the player, swaying trees, water), jitter patched into the projection of the scene passes only, the UI
+  split out of the final target. Too fragile for what it would give; FSR 1 instead (task 1).

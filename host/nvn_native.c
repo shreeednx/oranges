@@ -2474,11 +2474,16 @@ NV(nvnWindowGetCrop) {
 }
 /* (oranges) Frames are paced here, at 60 Hz over the present interval (the console blocks here when every window
    texture waits for display), not in the present: the game presents with locks held. HOS_NO_PACING=1: as fast as
-   it goes. */
+   it goes. HOS_PRESENT_INTERVAL=<n> (debugging): that interval instead of the game's (the game asks for 2: 30 fps). */
 static void pace(int interval) {
-    static int off = -1;
+    static int off = -1, forced;
     static int64_t next;
-    if (off < 0) off = env_on("HOS_NO_PACING");
+    if (off < 0) {
+        off = env_on("HOS_NO_PACING");
+        const char *e = getenv("HOS_PRESENT_INTERVAL");
+        forced = e ? atoi(e) : 0;
+    }
+    if (forced > 0) interval = forced;
     if (off || interval <= 0) return;
     const int64_t period = 16666667LL * interval, now = hos_now_ns();
     int64_t due = __atomic_load_n(&next, __ATOMIC_RELAXED);
