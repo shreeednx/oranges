@@ -1,5 +1,5 @@
 /* The settings menu's model: its tabs and rows, what is selected, and what each input does (F1 opens it, a gamepad's
-   Home too). Modelled on Longshot's Insert menu (gpu/vk/vk_menu.cpp there), much smaller: one tab so far, Controls.
+   Home or Select + Start too). Modelled on Longshot's Insert menu (gpu/vk/vk_menu.cpp there), much smaller: one tab so far, Controls.
    hos_window.c hands it the keys, gamepad buttons and mouse while it is open (and the game gets no input); the Vulkan
    back end draws it at each present from a snapshot (hos_menu_view; host/vk/vk_menu.cpp) and hands back where things
    are (hos_menu_hits) for the mouse. HOS_CONTROL's MENU lines drive it too (a headless run's checks).
@@ -7,7 +7,9 @@
    another control's is moved only once the player says yes.
    Keyboard: arrows choose and change, Enter / Space select, Delete clears a binding, R resets a row, Q / E or Tab
    switch tabs, Esc / Backspace close. Gamepad: the D-pad or the left stick, the buttons bound to A (select), B (close),
-   X (clear) and Y (reset), the shoulders switch tabs. Mouse: point and click, right click closes, the wheel scrolls. */
+   X (clear) and Y (reset), the shoulders switch tabs. Mouse: point and click, right click closes, the wheel scrolls.
+   The Controller row (while a gamepad is connected) chooses which one is the Switch's controller: hos_window.c gives
+   the list (hos_menu_pads) and reads the choice (hos_menu_controller). */
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,8 +89,13 @@ typedef struct { int kind, id; } Row;   /* (id: a setting, an action, or a contr
 enum { ACT_RESET_ALL };
 static Row rows[HOS_MENU_ROWS];
 static int nrows;
+static int npads, pad_in_use = -1;
+static struct { char name[64], key[40]; } pads[HOS_MENU_PADS];
+static char controller_key[40], controller_name[64];
+static int controller_gen;
 static void build_rows(void) {
     nrows = 0;
+    if (npads) rows[nrows++] = (Row){HOS_ROW_CONTROLLER, 0};
     for (int i = 0; i < HOS_SET_N; i++) rows[nrows++] = (Row){HOS_ROW_SETTING, i};
     rows[nrows++] = (Row){HOS_ROW_ACTION, ACT_RESET_ALL};
     rows[nrows++] = (Row){HOS_ROW_HEADING, 0};
@@ -98,6 +105,7 @@ static void build_rows(void) {
 /* ---- the state (under lock) ------------------------------------------------------------------------------------------ */
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int open_;   /* (read without the lock: hos_menu_is_open) */
+static int opened;  /* (ever: until then the selection is the first row, whatever rows come) */
 static int tab, sel, col, pad_last;
 static int mode = HOS_MENU_NORMAL;
 static int64_t capture_end;
@@ -115,10 +123,60 @@ static const char *const tab_names[] = {"Controls"};
 void hos_menu_load(void) {
     pthread_mutex_lock(&lock);
     settings_load();
+    if (!hos_option("controller", controller_key, sizeof controller_key)) controller_key[0] = 0;
+    if (!hos_option("controller_name", controller_name, sizeof controller_name)) controller_name[0] = 0;
     if (!nrows) build_rows();
     pthread_mutex_unlock(&lock);
     hos_controls_load();
 }
+/* ---- the Controller row: Auto, then each connected gamepad (and the chosen one when it is not connected) ---------- */
+static int controller_choice(void) {   /* (the row's position: 0 Auto, 1.. a pad, npads + 1 the chosen one away) */
+    if (!controller_key[0]) return 0;
+    for (int i = 0; i < npads; i++)
+        if (!strcmp(pads[i].key, controller_key)) return i + 1;
+    return npads + 1;
+}
+static void controller_step(int d) {
+    const int away = controller_key[0] && controller_choice() == npads + 1, n = npads + 1 + away;
+    const int c = ((controller_choice() + d) % n + n) % n;
+    if (c == 0) {
+        controller_key[0] = controller_name[0] = 0;
+        hos_option_unset("controller");
+        hos_option_unset("controller_name");
+    } else if (c <= npads) {
+        snprintf(controller_key, sizeof controller_key, "%s", pads[c - 1].key);
+        snprintf(controller_name, sizeof controller_name, "%s", pads[c - 1].name);
+        hos_option_set("controller", controller_key);
+        hos_option_set("controller_name", controller_name);
+    }   /* (else the chosen one that is away: kept as it is) */
+    __atomic_add_fetch(&controller_gen, 1, __ATOMIC_RELEASE);
+}
+void hos_menu_pads(int n, const char names[][64], const char keys[][40], int in_use) {
+    pthread_mutex_lock(&lock);
+    const int had = npads;
+    const Row was = nrows && sel >= 0 && sel < nrows ? rows[sel] : (Row){HOS_ROW_SETTING, 0};
+    npads = n < 0 ? 0 : n > HOS_MENU_PADS ? HOS_MENU_PADS : n;
+    for (int i = 0; i < npads; i++) {
+        snprintf(pads[i].name, sizeof pads[i].name, "%s", names[i]);
+        snprintf(pads[i].key, sizeof pads[i].key, "%s", keys[i]);
+    }
+    pad_in_use = in_use;
+    if (!had != !npads) {   /* (the Controller row comes or goes: the same row stays selected) */
+        build_rows();
+        sel = 0;
+        for (int i = 0; i < nrows && opened; i++)
+            if (rows[i].kind == was.kind && rows[i].id == was.id) sel = i;
+        if (rows[sel].kind == HOS_ROW_HEADING) sel = 0;
+    }
+    pthread_mutex_unlock(&lock);
+}
+int hos_menu_controller(char *key, size_t size) {
+    pthread_mutex_lock(&lock);
+    if (size) snprintf(key, size, "%s", controller_key);
+    pthread_mutex_unlock(&lock);
+    return __atomic_load_n(&controller_gen, __ATOMIC_ACQUIRE);
+}
+
 int hos_menu_is_open(void) { return __atomic_load_n(&open_, __ATOMIC_ACQUIRE); }
 int hos_menu_capturing(void) {
     pthread_mutex_lock(&lock);
@@ -179,6 +237,7 @@ static void set_open(int o) {
     if (o && !nrows) build_rows();
     if (o && !selectable(sel)) sel = 0;
     mode = HOS_MENU_NORMAL;
+    opened |= o;
     __atomic_store_n(&open_, o, __ATOMIC_RELEASE);
     hos_log("menu: %s", o ? "open" : "closed");
 }
@@ -210,11 +269,14 @@ static void action_locked(int a) {
     case HOS_MENU_RIGHT: {
         const int d = a == HOS_MENU_RIGHT ? 1 : -1;
         if (r->kind == HOS_ROW_SETTING) setting_put(r->id, settings[r->id] + d * settings_def[r->id].step);
+        else if (r->kind == HOS_ROW_CONTROLLER) controller_step(d);
         else if (r->kind == HOS_ROW_BINDING) col = col + d < 0 ? 0 : col + d > 2 ? 2 : col + d;
         break;
     }
     case HOS_MENU_OK:
-        if (r->kind == HOS_ROW_SETTING) {   /* (round from the top back to the bottom) */
+        if (r->kind == HOS_ROW_CONTROLLER) {
+            controller_step(1);
+        } else if (r->kind == HOS_ROW_SETTING) {   /* (round from the top back to the bottom) */
             const int v = settings[r->id] + settings_def[r->id].step;
             setting_put(r->id, v > settings_def[r->id].hi ? settings_def[r->id].lo : v);
         } else if (r->kind == HOS_ROW_ACTION) {
@@ -231,6 +293,7 @@ static void action_locked(int a) {
     case HOS_MENU_RESET:
         if (r->kind == HOS_ROW_BINDING) hos_binding_reset(r->id);
         else if (r->kind == HOS_ROW_SETTING) setting_put(r->id, settings_def[r->id].def);
+        else if (r->kind == HOS_ROW_CONTROLLER) while (controller_choice() != 0) controller_step(1);
         break;
     }
 }
@@ -340,7 +403,7 @@ void hos_menu_mouse(float x, float y, int left, int right, float wheel) {
         if (left && h && h->row == -1) tab = h->col;
         if (left && h && h->row >= 0 && selectable(h->row)) {
             const Row *r = &rows[sel];
-            if (r->kind == HOS_ROW_SETTING && h->col >= 0)   /* (the value's left half lowers it, its right half raises it) */
+            if ((r->kind == HOS_ROW_SETTING || r->kind == HOS_ROW_CONTROLLER) && h->col >= 0)   /* (the value's left half lowers it, its right half raises it) */
                 action_locked(x < (h->x0 + h->x1) / 2 ? HOS_MENU_LEFT : HOS_MENU_RIGHT);
             else if (r->kind != HOS_ROW_BINDING || h->col >= 0)
                 action_locked(HOS_MENU_OK);
@@ -380,6 +443,17 @@ void hos_menu_view(HosMenuView *v) {
             o->changed = settings[r->id] != settings_def[r->id].def;
             break;
         case HOS_ROW_ACTION: snprintf(o->label, sizeof o->label, "Reset all controls"); break;
+        case HOS_ROW_CONTROLLER: {
+            snprintf(o->label, sizeof o->label, "Controller");
+            const int c = controller_choice();
+            if (c == 0 && pad_in_use >= 0 && pad_in_use < npads)
+                snprintf(o->value, sizeof o->value, "Auto: %s", pads[pad_in_use].name);
+            else if (c == 0) snprintf(o->value, sizeof o->value, "Auto");
+            else if (c <= npads) snprintf(o->value, sizeof o->value, "%s", pads[c - 1].name);
+            else snprintf(o->value, sizeof o->value, "%s (not connected)", controller_name[0] ? controller_name : "a gamepad");
+            o->changed = c != 0;
+            break;
+        }
         case HOS_ROW_HEADING: snprintf(o->label, sizeof o->label, "Switch input"); break;
         case HOS_ROW_BINDING: {
             const HosBinding b = hos_binding(r->id), d = hos_binding_default(r->id);
@@ -391,7 +465,11 @@ void hos_menu_view(HosMenuView *v) {
         }
     }
     const Row *r = &rows[sel];
-    if (r->kind == HOS_ROW_SETTING) {
+    if (r->kind == HOS_ROW_CONTROLLER) {
+        snprintf(v->help, sizeof v->help, "Which connected gamepad is the Switch's controller. Auto: Steam Input's, when "
+                 "Steam gives one, else the first connected. A gamepad chosen here is used whenever it is connected (Auto "
+                 "meanwhile). Select + Start on any gamepad opens this menu.");
+    } else if (r->kind == HOS_ROW_SETTING) {
         snprintf(v->help, sizeof v->help, "%s", settings_def[r->id].help);
     } else if (r->kind == HOS_ROW_ACTION) {
         snprintf(v->help, sizeof v->help, "Every binding back to its default (the keyboard and gamepad map oranges "
@@ -422,12 +500,12 @@ void hos_menu_view(HosMenuView *v) {
     else if (pad_last)
         snprintf(v->prompts, sizeof v->prompts, "%s",
                  r->kind == HOS_ROW_BINDING ? "D-pad: choose   A: change   X: clear   Y: default   B: close"
-                 : r->kind == HOS_ROW_SETTING ? "D-pad: choose and change   Y: default   B: close"
+                 : r->kind == HOS_ROW_SETTING || r->kind == HOS_ROW_CONTROLLER ? "D-pad: choose and change   Y: default   B: close"
                                               : "D-pad: choose   A: select   B: close");
     else
         snprintf(v->prompts, sizeof v->prompts, "%s",
                  r->kind == HOS_ROW_BINDING ? "Arrows: choose   Enter: change   Delete: clear   R: default   Esc: close"
-                 : r->kind == HOS_ROW_SETTING ? "Arrows: choose and change   R: default   Esc: close"
+                 : r->kind == HOS_ROW_SETTING || r->kind == HOS_ROW_CONTROLLER ? "Arrows: choose and change   R: default   Esc: close"
                                               : "Arrows: choose   Enter: select   Esc: close");
     pthread_mutex_unlock(&lock);
 }

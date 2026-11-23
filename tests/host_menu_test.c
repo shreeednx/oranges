@@ -119,6 +119,31 @@ static int first(void) {
     CHECK(!strcmp(v.rows[v.sel].cell[2], "Right stick down"));
     hos_binding_reset(HOS_CTL_LSTICK_UP), hos_binding_reset(HOS_CTL_RSTICK_DOWN);
 
+    /* the Controller row: there while gamepads are connected (the selection stays on its row), Auto first */
+    const char names[2][64] = {"Steam Controller", "Pro Controller"};
+    const char pad_keys[2][40] = {"03000000de2800000512000000000000", "050000007e0500000920000000000000"};
+    select_row("Stick dead zone");
+    hos_menu_pads(2, names, pad_keys, 0);
+    hos_menu_view(&v);
+    CHECK(v.rows[0].kind == HOS_ROW_CONTROLLER && !strcmp(v.rows[0].value, "Auto: Steam Controller"));
+    CHECK(!strcmp(v.rows[v.sel].label, "Stick dead zone"));
+    char key[40];
+    const int gen = hos_menu_controller(key, sizeof key);
+    CHECK(key[0] == 0);
+    select_row("Controller");
+    hos_menu_action(HOS_MENU_RIGHT), hos_menu_action(HOS_MENU_RIGHT);   /* (Auto, Steam Controller, Pro Controller) */
+    CHECK(hos_menu_controller(key, sizeof key) != gen && !strcmp(key, pad_keys[1]));
+    char saved[64];
+    CHECK(hos_option("controller", saved, sizeof saved) && !strcmp(saved, pad_keys[1]));
+    hos_menu_pads(1, names, pad_keys, 0);   /* (the Pro Controller gone: kept, shown as away) */
+    hos_menu_view(&v);
+    CHECK(!strcmp(v.rows[0].value, "Pro Controller (not connected)"));
+    hos_menu_action(HOS_MENU_RESET);        /* (back to Auto) */
+    CHECK(hos_menu_controller(key, sizeof key) && key[0] == 0 && !hos_option("controller", saved, sizeof saved));
+    hos_menu_pads(0, names, pad_keys, -1);
+    hos_menu_view(&v);
+    CHECK(v.rows[0].kind != HOS_ROW_CONTROLLER && !strcmp(v.rows[v.sel].label, "Stick dead zone"));
+
     /* a setting: the dead zone up one step, saved */
     select_row("Stick dead zone");
     hos_menu_action(HOS_MENU_RIGHT);

@@ -65,15 +65,23 @@ int hos_menu_capturing(void);                  /* a binding waits for its input 
 void hos_menu_load(void);                      /* (the settings from the options file: at the start) */
 void hos_menu_action(int action);
 /* a key or a gamepad input pressed while the menu is open (repeat: held down, again): a binding waiting for its
-   input takes it, else it moves around the menu. F1 and a gamepad's Home open and close the menu (the caller's) */
+   input takes it, else it moves around the menu. F1, a gamepad's Home and Select + Start open and close the menu
+   (the caller's) */
 void hos_menu_key(int scancode, int shift, int repeat);
 void hos_menu_pad(int input, int repeat);
 /* the mouse in the console's 1280x720 screen (over the picture): moved, a left click, a right click, wheel notches
    (up positive) */
 void hos_menu_mouse(float x, float y, int left, int right, float wheel);
 void hos_menu_device(int pad);                 /* the last input came from a gamepad (1) or the keyboard / mouse (0) */
+/* the connected gamepads, for the Controller row (shown while there is one): their names and keys (SDL's GUID of the
+   model, "#2" ... after it for a second one of the same model), and which one the game has (-1 none) */
+#define HOS_MENU_PADS 8
+void hos_menu_pads(int n, const char names[][64], const char keys[][40], int in_use);
+/* the chosen gamepad's key ("" Auto: Steam Input's pad if there is one, else the first connected), and a number that
+   changes each time the choice does */
+int hos_menu_controller(char *key, size_t size);
 
-enum { HOS_ROW_SETTING, HOS_ROW_ACTION, HOS_ROW_BINDING, HOS_ROW_HEADING };
+enum { HOS_ROW_SETTING, HOS_ROW_ACTION, HOS_ROW_BINDING, HOS_ROW_HEADING, HOS_ROW_CONTROLLER };
 enum { HOS_MENU_NORMAL, HOS_MENU_CAPTURE, HOS_MENU_CONFIRM };
 #define HOS_MENU_ROWS 40
 typedef struct {

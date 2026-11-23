@@ -210,7 +210,7 @@ void draw_menu(Draw& c, const HosMenuView& v) {
     c.rect(kL, kT, kR, kT + 56, kBanner, 8);
     c.d->AddLine(c.p(kL, kT + 56), c.p(kR, kT + 56), kEdge, c.s);
     c.text(bold, 15, kL + 22, kT + 28, kAccent, "oranges");
-    c.text_right(body, 13, kR - 22, kT + 28, kDim, "F1 closes");
+    c.text_right(body, 13, kR - 22, kT + 28, kDim, "F1 or Select + Start closes");
     float tx = 640 - 70 * v.ntabs;
     for (int i = 0; i < v.ntabs; i++, tx += 140) {
         const bool on = i == v.tab;
@@ -242,10 +242,13 @@ void draw_menu(Draw& c, const HosMenuView& v) {
         c.text_fit(sel ? bold : body, 15, kNameX + 4, ym, kNameR - kNameX - 26, sel ? kInkBright : kInk, r.label);
         if (r.changed) c.d->AddCircleFilled(c.p(kNameR - 12, ym), 3.2f * c.s, kAccent);
         c.hit(kNameX - 10, y0, kNameR, y1, i, -1);
-        if (r.kind == HOS_ROW_SETTING) {
+        if (r.kind == HOS_ROW_SETTING || r.kind == HOS_ROW_CONTROLLER) {
             c.rect(kValueX, y0, kValueR, y1, sel ? kSel : kCell, 4);
             const ImU32 ink = sel ? kSelInk : kInk;
-            c.text_centre(sel ? bold : body, 15, (kValueX + kValueR) / 2, ym, ink, r.value);
+            ImFont* f = sel ? bold : body;
+            const float room = kValueR - kValueX - 60;   // (between the arrows)
+            if (c.width(f, 15, r.value) <= room) c.text_centre(f, 15, (kValueX + kValueR) / 2, ym, ink, r.value);
+            else c.text_fit(f, 15, kValueX + 30, ym, room, ink, r.value);
             c.text(bold, 15, kValueX + 12, ym, sel ? kSelInk : kDim, "<");
             c.text_right(bold, 15, kValueR - 12, ym, sel ? kSelInk : kDim, ">");
             if (r.restart) c.text(body, 12, kValueR + 12, ym, kDim, "(after a restart)");

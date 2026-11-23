@@ -11,8 +11,10 @@
    Controller) through the bindings (hos_controls.c: the defaults, a gamepad's buttons by position as on a Nintendo
    pad, are listed there), the mouse as the console's USB mouse and, while its left button is down, as one finger on
    the touch screen (the menu's Mouse as touch screen), and the keyboard as the console's USB keyboard too.
-   F1 (or a gamepad's Home) opens the settings menu (hos_menu.c, drawn by host/vk): while it is open the game gets no
-   input at all, and what was held when it closes stays away from the game until it is let go. F11: full screen.
+   F1 (or a gamepad's Home, or Select + Start on any gamepad: Steam keeps Home for itself) opens the settings menu
+   (hos_menu.c, drawn by host/vk): while it is open the game gets no input at all, and what was held when it closes
+   stays away from the game until it is let go. Select + Start held together never reach the game. The menu's
+   Controller row chooses which connected gamepad is the Pro Controller (every one is opened). F11: full screen.
    The game's vibration goes to the gamepad's motors (hos_rumble, times the menu's Vibration). The sound device
    (hos_sound.c) starts here too.
    HOS_INPUT_SCRIPT=<file>: input from a script, added to the player's: one line per change, "<seconds> <what>...",
@@ -385,7 +387,49 @@ static void *guest_thread(void *p) {
 
 static SDL_Window *window;
 static SDL_Renderer *renderer;   /* (the status page's: none when the Vulkan back end presents the game) */
-static SDL_Gamepad *pad;
+static SDL_Gamepad *pad;   /* the Switch's controller: the menu's Controller row's choice among those connected */
+static SDL_Gamepad *pads[HOS_MENU_PADS];   /* every connected gamepad, opened (the menu's chord works on any) */
+static int npads, pad_gen = -1;
+
+/* a gamepad's key for the Controller row: SDL's GUID of its model, "#2" ... for a second one of the same model */
+static void pad_key(int i, char out[40]) {
+    char guid[33];
+    SDL_GUIDToString(SDL_GetGamepadGUIDForID(SDL_GetGamepadID(pads[i])), guid, sizeof guid);
+    int same = 1;
+    for (int j = 0; j < i; j++) {
+        char other[33];
+        SDL_GUIDToString(SDL_GetGamepadGUIDForID(SDL_GetGamepadID(pads[j])), other, sizeof other);
+        same += !strcmp(guid, other);
+    }
+    if (same > 1) snprintf(out, 40, "%s#%d", guid, same);
+    else snprintf(out, 40, "%s", guid);
+}
+/* the game's gamepad: the one the Controller row chose when it is connected, else (Auto) Steam Input's, else the
+   first; the list to the menu */
+static void pads_choose(void) {
+    char want[40], keys[HOS_MENU_PADS][40], names[HOS_MENU_PADS][64];
+    pad_gen = hos_menu_controller(want, sizeof want);
+    int chosen = -1;
+    for (int i = 0; i < npads; i++) {
+        pad_key(i, keys[i]);
+        snprintf(names[i], sizeof names[i], "%s", SDL_GetGamepadName(pads[i]) ? SDL_GetGamepadName(pads[i]) : "Gamepad");
+        if (want[0] && chosen < 0 && !strcmp(keys[i], want)) chosen = i;
+    }
+    for (int i = 0; i < npads && chosen < 0; i++)
+        if (SDL_GetGamepadSteamHandle(pads[i])) chosen = i;
+    if (chosen < 0 && npads) chosen = 0;
+    SDL_Gamepad *now = chosen >= 0 ? pads[chosen] : NULL;
+    if (now != pad) {
+        if (pad) SDL_RumbleGamepad(pad, 0, 0, 0);
+        pad = now;
+        if (pad)
+            hos_log("input: gamepad \"%s\" is the Pro Controller%s", names[chosen],
+                    SDL_GetGamepadSteamHandle(pad) ? " (Steam Input's)" : "");
+        else
+            hos_log("input: no gamepad (the keyboard is the Pro Controller)");
+    }
+    hos_menu_pads(npads, names, keys, chosen);
+}
 
 /* a gamepad axis to a stick value: SDL's -32768..32767 with y down, the menu's dead zone (in % of full) */
 static int32_t pad_axis(SDL_GamepadAxis a, int flip) {
@@ -412,6 +456,8 @@ static uint64_t pad_held(const int32_t axes[4]) {
         if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)b)) held |= 1ull << b;
     if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 10000) held |= 1ull << HOS_PAD_LT;
     if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 10000) held |= 1ull << HOS_PAD_RT;
+    const uint64_t chord = 1ull << SDL_GAMEPAD_BUTTON_BACK | 1ull << SDL_GAMEPAD_BUTTON_START;
+    if ((held & chord) == chord) held &= ~chord;   /* (Select + Start: the menu's, not the game's) */
     return held | hos_pad_stick_bits(axes);
 }
 static int hold_off;   /* the menu closed with something held: the game sees nothing until it is all let go */
@@ -674,21 +720,25 @@ static void window_loop(void) {
                 hos_exit(0);
             case SDL_EVENT_GAMEPAD_ADDED: {
                 const SDL_JoystickID id = e.gdevice.which;
-                hos_log("input: gamepad \"%s\" (%04x:%04x, type %s%s", SDL_GetGamepadNameForID(id),
+                SDL_Gamepad *g = npads < HOS_MENU_PADS ? SDL_OpenGamepad(id) : NULL;
+                hos_log("input: gamepad \"%s\" connected (%04x:%04x, type %s%s)", SDL_GetGamepadNameForID(id),
                         SDL_GetGamepadVendorForID(id), SDL_GetGamepadProductForID(id),
                         SDL_GetGamepadStringForType(SDL_GetGamepadTypeForID(id)),
-                        pad ? "): not used, the first one is" : ")");
-                if (!pad && (pad = SDL_OpenGamepad(id)))
-                    hos_log("input: gamepad \"%s\" is the Pro Controller%s", SDL_GetGamepadName(pad),
-                            SDL_GetGamepadSteamHandle(pad) ? " (Steam Input's)" : "");
+                        !g ? ": not opened" : SDL_GetGamepadSteamHandle(g) ? ", Steam Input's" : "");
+                if (g) pads[npads++] = g, pads_choose();
                 break;
             }
             case SDL_EVENT_GAMEPAD_REMOVED:
-                if (pad && SDL_GetGamepadID(pad) == e.gdevice.which) {
-                    hos_log("input: gamepad \"%s\" removed", SDL_GetGamepadName(pad));
-                    SDL_CloseGamepad(pad);
-                    pad = NULL;
-                }
+                for (int i = 0; i < npads; i++)
+                    if (SDL_GetGamepadID(pads[i]) == e.gdevice.which) {
+                        hos_log("input: gamepad \"%s\" removed", SDL_GetGamepadName(pads[i]));
+                        if (pads[i] == pad) pad = NULL;
+                        SDL_CloseGamepad(pads[i]);
+                        memmove(pads + i, pads + i + 1, (size_t)(npads - i - 1) * sizeof *pads);
+                        npads--;
+                        pads_choose();
+                        break;
+                    }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
                 if (open) menu_wheel += e.wheel.y;
@@ -705,13 +755,18 @@ static void window_loop(void) {
                 else if (open)
                     hos_menu_key((int)e.key.scancode, (e.key.mod & SDL_KMOD_SHIFT) != 0, e.key.repeat);
                 break;
-            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-                if (!pad || SDL_GetGamepadID(pad) != e.gbutton.which) break;
-                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE && menu)
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
+                /* Home, or Select and Start together (Steam keeps Home for itself), on any gamepad: the menu */
+                SDL_Gamepad *g = SDL_GetGamepadFromID(e.gbutton.which);
+                const int b = e.gbutton.button;
+                const int chord = g && ((b == SDL_GAMEPAD_BUTTON_START && SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_BACK)) ||
+                                        (b == SDL_GAMEPAD_BUTTON_BACK && SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_START)));
+                if ((b == SDL_GAMEPAD_BUTTON_GUIDE || chord) && menu)
                     hos_menu_device(1), hos_menu_action(HOS_MENU_TOGGLE);
-                else if (open)
-                    hos_menu_pad(e.gbutton.button, 0);
+                else if (open && pad && SDL_GetGamepadID(pad) == e.gbutton.which)
+                    hos_menu_pad(b, 0);
                 break;
+            }
             case SDL_EVENT_GAMEPAD_AXIS_MOTION: {   /* (a trigger pressed: an input a binding can take) */
                 static int16_t last[2];
                 const int t = e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? 0
@@ -725,6 +780,7 @@ static void window_loop(void) {
                 break;
             }
         }
+        if (hos_menu_controller(NULL, 0) != pad_gen) pads_choose();   /* (the Controller row changed) */
         if (hos_menu_is_open()) {   /* (the mouse, in the console's screen: the menu is drawn over the picture) */
             float x, y;
             mouse_console(&x, &y);

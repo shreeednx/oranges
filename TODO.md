@@ -345,7 +345,7 @@ Left over from it:
 
 - [ ] Try it by hand in the window: keyboard, a gamepad (Home, the D-pad / stick repeat, triggers as bindings) and the
       mouse (hit-testing by the console's 1280x720 coordinates). Only `HOS_CONTROL` drove it so far.
-- [ ] Which gamepad is Npad No.1 (the first one opened today), more than one gamepad (Npad No.2-8): see task 1
+- [x] Which gamepad is Npad No.1 (the Controller row); more than one player (Npad No.2-8): see task 1
 - [ ] The menu is drawn only at the game's presents (30 fps): it freezes while the game does not present (a long load)
 - [ ] Nothing needs a restart yet; the row flag (`restart`, "(after a restart)") is there for the Graphics tab
 
@@ -364,14 +364,17 @@ stick directions (moving a stick was no input to bind).
 - [x] The gamepad's stick directions are bindable inputs (`leftstick_up` ... `rightstick_right`): the stick rows'
       defaults are the gamepad's own directions, an analog amount goes through the binding (swap sticks, a stick
       direction on a button, a button on a stick), and a stick pushed past 60% is taken while a gamepad cell waits.
-- [ ] By hand, from Steam: the controller in the game with the X11 default, binding a stick direction, and the
-      settings menu (Home / Guide opens it, but Steam takes the Guide button for itself: check that the menu can be
-      reached, else another way to open it from a gamepad)
-- [ ] Steam's stand-in pad and a real pad together: only the first gamepad SDL announces is opened today; prefer
-      Steam Input's stand-in pad (a Steam handle) over a real pad Steam also reads, and pick up a pad that comes later.
+- [x] By hand, from Steam (the user): the controller works in the game. The menu could not be opened with Home
+      (Steam keeps it), so Select + Start together on any gamepad opens and closes it now (Longshot's chord; both
+      kept from the game while held together; the first of the two may reach it for a moment).
+- [x] A Controller row on the Controls tab, while a gamepad is connected: Auto (Steam Input's pad when there is one,
+      else the first connected) or a gamepad by name, saved as SDL's GUID of its model (`#2` for a second of the same
+      model) and its name; one chosen and not connected shows as such, and Auto applies meanwhile. Every gamepad is
+      opened; the chosen one is the Pro Controller (its rumble too), and gamepads coming and going are picked up.
+- [ ] By hand: Select + Start from Steam, the Controller row with two gamepads, binding a stick direction.
 - [ ] Later, from Longshot (`host/steam_pads.h`, `host/pad_sdl.c` there): Valve's real pad read beside Steam's
-      stand-in for its motion sensors (gyro aiming in the game's camera, the Switch's motion controls), and which pad is
-      Npad No.1 when there are several (the settings menu's Controls tab).
+      stand-in for its motion sensors (gyro aiming in the game's camera, the Switch's motion controls); more than one
+      player (Npad No.2-8, a gamepad each).
 
 Why first: the player wants to play with this controller now; what is left is checking it by hand.
 
