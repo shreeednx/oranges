@@ -295,7 +295,7 @@ Left over from it:
 
 - [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
       each piece ran on the game. Run it once on the game.
-- [ ] Touch: a tap on the island-name keyboard types nothing (see task 1, with Handheld mode).
+- [ ] Touch: a tap on the island-name keyboard types nothing (see task 2, with Handheld mode).
 - [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
       `HOS_TIME` offset would let runs see daytime.
 
@@ -345,11 +345,36 @@ Left over from it:
 
 - [ ] Try it by hand in the window: keyboard, a gamepad (Home, the D-pad / stick repeat, triggers as bindings) and the
       mouse (hit-testing by the console's 1280x720 coordinates). Only `HOS_CONTROL` drove it so far.
-- [ ] Which gamepad is Npad No.1 (the first one opened today), more than one gamepad (Npad No.2-8)
+- [ ] Which gamepad is Npad No.1 (the first one opened today), more than one gamepad (Npad No.2-8): see task 1
 - [ ] The menu is drawn only at the game's presents (30 fps): it freezes while the game does not present (a long load)
 - [ ] Nothing needs a restart yet; the row flag (`restart`, "(after a restart)") is there for the Graphics tab
 
-## 1. Graphics settings (the settings menu's Graphics tab)
+## 1. The Steam Controller through Steam Input
+
+Started from Steam (a non-Steam game, Steam Input forced on) with a Steam Controller, the game doesn't get a gamepad:
+the controller still acts as Steam's keyboard and mouse (reported by the user, 2026-11-23). Nothing about it has been
+looked at yet. What to find out first, from a Steam-started run's log (launch options `%command% > <file> 2>&1`):
+
+- [ ] Whether SDL sees a gamepad at all: `hos_window.c` logs `input: gamepad "<name>" is the Pro Controller` when it
+      opens one. Log more there: every gamepad SDL lists (name, vendor/product, type, `SDL_GetGamepadSteamHandle`),
+      and the variables Steam sets (`SDL_GAMECONTROLLER_IGNORE_DEVICES`,
+      `SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD`, `SteamAppId` / `SteamGameId`).
+- [ ] No gamepad, the controller still a keyboard and mouse: Steam is giving it its Desktop layout, i.e. it doesn't
+      see the game as the app in front (its per-game layout follows the focused window). Check whether that holds for
+      our native Wayland window (`SDL_SetAppMetadata("oranges", ..., "dev.oranges")` is its app id) and whether
+      `SDL_VIDEO_DRIVER=x11` (XWayland) changes it; also that nothing between Steam and `work/build/oranges` (a script,
+      a wrapper) exits early and makes Steam think the game has stopped.
+- [ ] Steam's stand-in pad present but not used: only the first gamepad SDL announces is opened today; prefer Steam
+      Input's stand-in pad (a Steam handle) over a real pad Steam also reads, and pick up a pad that comes later.
+- [ ] Then by hand with it: the game, and the settings menu (Home / Guide opens it, but Steam takes the Guide button
+      for itself: check that the menu can be reached, else another way to open it from a gamepad)
+- [ ] Later, from Longshot (`host/steam_pads.h`, `host/pad_sdl.c` there): Valve's real pad read beside Steam's
+      stand-in for its motion sensors (gyro aiming in the game's camera, the Switch's motion controls), and which pad is
+      Npad No.1 when there are several (the settings menu's Controls tab).
+
+Why first: the player wants to play with this controller now, and without it the game is keyboard-only for them.
+
+## 2. Graphics settings (the settings menu's Graphics tab)
 
 The resolutions the game supports itself, chosen in the menu (F1: a Graphics tab). Longshot's Graphics tab (its user
 guide's "Every setting") is the model for how they look. The game renders for the mode the console reports:
@@ -376,7 +401,7 @@ the performance mode with Boost.
 
 Why here: the menu is there now (F1), and the game draws right at 1080p already; this is choice, not a fix.
 
-## 2. The renderer's gaps
+## 3. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -384,7 +409,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 3. Clean-ups and checks
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
