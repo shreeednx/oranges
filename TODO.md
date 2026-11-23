@@ -62,8 +62,8 @@ them):
 
 Left over from it:
 
-- [ ] 6 stubs remain, with no caller in main: the polyphase resampler (4), `nn::audio::GetAudioOutPlayedSampleCount`,
-      `nn::err::ReportMultimediaError` (subsdk0's movie player, probably). Implement them if a movie plays.
+- [ ] 5 stubs remain, with no caller in main: the polyphase resampler (4), `nn::err::ReportMultimediaError` (subsdk0's
+      movie player, probably; the opening movie plays without calling them)
 - [ ] The ldn Initialize result (2203-0022) is yuzu's ResultDisabled, not on switchbrew's list. Check it.
 - [ ] Amiibo: port Longshot's tag library (`host/nn_nfp.c` there: the player's own dumps) once there is input.
 - [ ] Screenshots (`nn::album::SaveScreenshot`): write them to a folder as PNG.
@@ -134,13 +134,13 @@ there is a window, `HOS_AUDIO=0/1` overrides it). The mixer runs on the host's c
 stream's frequency ratio follows the queue's average to a target (the device buffer and a half plus 20 ms: 52 ms on
 PipeWire's 1024 frames). On this machine it settles at +0.03%, no underruns in 40 s at 30 fps. After a stall (the
 process stopped for 1.5 s) the mixer renders the owed frames back to back: those that would take the queue past
-target + 40 ms are dropped, and the queue is back at its target in ~4 s. The game uses only the renderer (no AudioOut).
+target + 40 ms are dropped, and the queue is back at its target in ~4 s. (The opening movie plays through AudioOut:
+"Done: the opening movie".)
 
 Left over from it:
 
 - [ ] Process the effects that only pass through today (delay, reverb, biquad filter effects), if the game needs them
 - [ ] 5.1: the game's device sink has 6 channels and `render_frame` can output them; the output is stereo today
-- [ ] AudioOut buffers are released on time but not played (the game doesn't use AudioOut; subsdk0's movie player may)
 - [ ] Choosing the output device (`HOS_AUDIO_DEVICE`), volume, mute when the window loses focus
 
 ## Done: a renderer (the prologue is drawn)
@@ -206,18 +206,39 @@ Left over from it:
       against yet: the creator looks as it did without it)
 - [ ] Indirect draws, texel buffers: still not seen through the opening (to ~195 s)
 
-## 1. The opening movie (a guest abort at ~195 s)
+## Done: the opening movie
 
-After the island questions and the airport announcement, the game plays `Movie/OpeningMovie.webm` (VP9 1920x1080 30
-fps + Vorbis 48 kHz stereo, 65 s: the flight) through subsdk0's `movie::` library, whose hardware decoder (NvMM / NVOMX)
-opens an nvhost channel: `NvRmChannelOpen` -> `NvOsDrvOpen` aborts (the nv driver is never initialized here). The way
-through is HLE of `movie::Extractor` and `movie::Decoder` (subsdk0 exports them by name: `SetDataSource`,
-`GetTrackCount`, `GetTrackConfiguration`, `SelectTrack`, `Read`, `Advance`, `GetSampleTime`, `Configure`, `Start`,
-`AcquireInputBufferIndex`, `SendInputBufferForDecode`, `AcquireOutputBufferIndex`, `GetOutputBuffer`, ...: Android's
-MediaExtractor / MediaCodec in shape) on FFmpeg (libavformat / libavcodec 8 are on this machine; optional like libopus).
-main imports `movie::Buffer`, `movie::MediaData` (key/value metadata: FindInt32, FindString, FindRect), the
-constructors, and SetAllocator / SetThreadPriority / SetCoreMask; the rest it calls through the objects. Check
-`hle.py` hooks a subsdk0 definition (it hooks every game module's imports and the sdk's definitions).
+After the island questions the game plays `Movie/OpeningMovie.webm` (VP9 1920x1080 30 fps + Vorbis 48 kHz stereo, 65 s)
+through subsdk0's `movie::` library: Android's stagefright ported (`movie::Decoder` holds a `DecoderImpl` that drives
+an `android::MediaCodec`). Its video codecs are NVIDIA's hardware OMX components, which open an nvhost channel
+(`NvRmChannelOpen` -> `NvOsDrvOpen` aborted). `host/nn_movie.c` HLEs every `movie::Decoder` method (all virtual, hooked
+at their definitions in subsdk0): a video decoder is ours, on FFmpeg's libavcodec (optional, `HOS_HAVE_FFMPEG`), with
+`DecoderImpl`'s statuses, index lists and client events (read from its code); an audio decoder is passed through to
+the lifted `DecoderImpl` (its software Vorbis codec runs as it is), built as the library's constructor builds it. The
+extractor (WebM) runs lifted. The movie plays to its end (1960 pictures, then the end-of-stream buffer), and + skips
+it as on the console.
+
+Its sound goes out through AudioOut, which was released on a clock and never heard: `nn_audio.c` now mixes each
+running AudioOut's queue into the renderer thread's frames (a buffer is released once played; Stop releases them all,
+as yuzu's does), with its volume and `GetAudioOutPlayedSampleCount`. The dump matches FFmpeg's decode of the movie's
+Vorbis track sample for sample (correlation 1.000, no drift over 40 s). `hos_symbol_lookup` also finds data objects now
+(`gen/hos_symbols.c` lists them: the `movie::Decoder` vtable).
+
+Left over from it:
+
+- [ ] Video output formats other than NV12 (2: ARGB; mode 2 / format 3: into an NVN texture): the game uses NV12 only
+- [ ] The movie's pictures and sound are in sync by the game's player; not measured here
+
+## 1. The stall after the movie (island landing)
+
+About 15 s after the movie ends (or is skipped), while the landing scene loads (`Tutorials_Prologue_DemoLanding`; the
+loading screen with the plane), frames stop: the main thread waits in its frame end (`0x86ba430`) for a light event
+(the word at `0xcd167f44`, the same in every run): one of two slots (`[x19+0x30]`, 64 bytes each: a flag, a pointer,
+the event at +0x30; `x19` is `[[0xcbd1a78]+8]`), waited on when one of the object's items (`[x19+0x70]`, byte +0x104 bit
+3) is not ready. Nothing writes that word in the first 100 s of play. Every other thread is idle (message queues,
+light events), so whatever should finish the item and signal it never ran or failed quietly. It stalls the same way
+on the null back end (`HOS_VK=0`): not the renderer. Find who signals it (a watchpoint from the movie on), and what
+that waits for.
 
 ## 2. The renderer's gaps
 

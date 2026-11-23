@@ -124,13 +124,15 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   (`tests/test_nvn.py` keeps them in sync: regenerate it with
   `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
   Tegra block-linear texture layout (deko3d-derived). `nn_audio.c` is the audio renderer at the API level (Longshot's,
-  `HOS_AUDIO_DUMP=<wav>` also writes what plays) and `hos_sound.c` its sound device (SDL3: the default output, on
-  when there is a window; `HOS_AUDIO=0/1` overrides; the stream's frequency ratio follows the host/device clock
+  `HOS_AUDIO_DUMP=<wav>` also writes what plays; AudioOut is mixed into its output) and `hos_sound.c` its sound
+  device (SDL3: the default output, on when there is a window; `HOS_AUDIO=0/1` overrides; the stream's frequency ratio follows the host/device clock
   drift, frames from a mixer catching up after a stall are dropped), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
   `nn_hid.c` input (from `hos_window.c`), `nn_online.c` the online and wireless services as an offline
   console (nifm, bcat, friends, pctl, prepo, aoc, album, ec, err, ldn, nn::socket), `nn_nfp.c` amiibo (a reader that
   never sees a tag), `nn_codec.c` the hardware Opus decoder (libopus, linked when pkg-config finds it: build.py's
-  `OPTIONAL_LIBRARIES` defines `HOS_HAVE_OPUS`), `nn_diag.c` nn::diag / nn::ro. `hos_window.c` is the window and
+  `OPTIONAL_LIBRARIES` defines `HOS_HAVE_OPUS`), `nn_diag.c` nn::diag / nn::ro, `nn_movie.c` subsdk0's `movie::Decoder` (stagefright's MediaCodec underneath): video
+  decoders on FFmpeg's libavcodec (optional like libopus: `HOS_HAVE_FFMPEG`), audio ones passed to the lifted
+  `DecoderImpl`; `HOS_MOVIE_LOG=1` logs a video decoder's calls. `hos_window.c` is the window and
   the input (SDL3, `HOS_HAVE_SDL3`): the window runs on the process's main thread and the guest's main thread on its
   own; `hos_input()` merges keyboard, gamepad, mouse (touch: its left button) and `HOS_INPUT_SCRIPT`. Key map in its
   header comment. `HOS_NO_WINDOW=1`: no window; `HOS_SCREENSHOT=<bmp>[,s]`: the window's picture; end the program with
@@ -214,14 +216,15 @@ and attribution notices, and note the source file in a comment.
   included, and the character creator with its compute dispatches (NVN1 compute stages: no code-area header, the
   workgroup and shared memory in the control section, `vk_shader.cpp`). Not replayed yet: indirect draws (none seen).
 - With A and + every 1.6 s the game goes through the name, birthday, character creator and island questions, and at
-  ~195 s starts the opening movie (`Movie/OpeningMovie.webm`, subsdk0's `movie::` library), whose hardware decoder
-  aborts in `NvOsDrvOpen`.
-- Next: the opening movie (TODO.md).
+  ~195 s plays the opening movie (`Movie/OpeningMovie.webm`, subsdk0's `movie::` library: `nn_movie.c`; + skips it,
+  so press only A from 190 s to watch it). About 15 s after it, loading the landing scene, frames stop (TODO.md).
+- Next: the stall after the movie (TODO.md).
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with
-  `hos_symbol_lookup`); `hos_system_event_init` binds a game `SystemEventType` to a kernel event the host signals with
-  `hos_kernel_event_signal` (audio renderer, vsync, account async contexts).
+  `hos_symbol_lookup`, which also finds data objects such as vtables); `hos_system_event_init` binds a game
+  `SystemEventType` to a kernel event the host signals with `hos_kernel_event_signal` (audio renderer, vsync, account
+  async contexts).
 - For each wall, `hos_backtrace` (or gdb: lifted frames are `f_<guest address>`, `$rdi` is the guest `Ctx *`) shows the
   `nn::` entry point. Hardware watchpoints on `0x100000000000 + <guest address>` find who writes guest memory.
   host/ builds with `-g`, so gdb reads the kernel's state: `p *hos_current` (a thread's guest registers; `x29` walks

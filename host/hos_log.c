@@ -43,12 +43,16 @@ void hos_dump(Ctx *c) {
             (unsigned long long)c->tpidr_el0, c->tpidrro_el0 ? G32(c->tpidrro_el0 + 0x110) : 0);
 }
 
-extern const uint32_t hos_symbol_count, hos_symbol_addr[];   /* (gen/hos_symbols.c) */
+extern const uint32_t hos_symbol_count, hos_symbol_addr[];   /* (gen/hos_symbols.c: functions) */
 extern const char *const hos_symbol_name[];
+extern const uint32_t hos_object_count, hos_object_addr[];   /* (and data objects: vtables, ...) */
+extern const char *const hos_object_name[];
 
 uint64_t hos_symbol_lookup(const char *name) {
     for (uint32_t i = 0; i < hos_symbol_count; i++)
         if (!strcmp(hos_symbol_name[i], name)) return hos_symbol_addr[i];
+    for (uint32_t i = 0; i < hos_object_count; i++)
+        if (!strcmp(hos_object_name[i], name)) return hos_object_addr[i];
     return 0;
 }
 

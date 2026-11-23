@@ -936,7 +936,8 @@ static volatile int renderer_running;
 static volatile int64_t elapsed_frames;
 static pthread_t renderer_thread;
 static int renderer_started;
-static void audio_out_frame(void);   /* (AudioOut: below) */
+static int audio_out_running(void);   /* (AudioOut: below) */
+static void audio_out_mix(int16_t *pcm);
 
 static void sleep_until(int64_t t) {
     const int64_t d = t - hos_now_ns();
@@ -952,13 +953,22 @@ static void *renderer_main(void *p) {
     for (;;) {
         sleep_until(next);
         next = audio_mix_deadline(hos_now_ns(), next, period);
-        audio_out_frame();
-        if (!renderer_running) continue;
+        const int rendering = renderer_running;
         au_lock();
-        if (ncmds && hos_now_ns() - last_update_ns > 50000000) commit();   /* (no update came: see "parameter updates") */
-        render_frame(pcm, out_channels);
+        if (!rendering && !audio_out_running()) {
+            au_unlock();
+            continue;
+        }
+        if (rendering) {
+            if (ncmds && hos_now_ns() - last_update_ns > 50000000) commit();   /* (no update came: "parameter updates") */
+            render_frame(pcm, out_channels);
+        } else {
+            memset(pcm, 0, sizeof pcm);
+        }
+        audio_out_mix(pcm);
         au_unlock();
         output_frame(pcm);
+        if (!rendering) continue;
         elapsed_frames++;
         if (renderer_event) hos_kernel_event_signal(renderer_event);
     }
@@ -1837,7 +1847,7 @@ HLE(_ZN2nn5audio22ProcessAuxLightLimiterEPNS0_19AuxLightLimiterTypeEPiPKij) {   
         memmove(GP(ARG(1)), GP(ARG(2)), n);
 }
 
-/* ---- AudioOut: buffers of PCM16 at 48 kHz stereo, released once they would have played (not heard yet) --------- */
+/* ---- AudioOut: buffers of PCM16 at 48 kHz stereo, mixed into the output with the renderer's frames ------------ */
 #define MAX_AOUT 4
 #define MAX_AOUT_BUF 32
 typedef struct {
@@ -1845,31 +1855,46 @@ typedef struct {
     uint32_t event;                 /* (the writable handle of the game's buffer event, 0: none) */
     uint64_t queued[MAX_AOUT_BUF], released[MAX_AOUT_BUF];
     int nqueued, nreleased;
-    int64_t due;                    /* when the oldest queued buffer is done */
+    uint64_t pos;                   /* (bytes of the oldest queued buffer played) */
+    uint64_t played;                /* (samples played since it was opened: GetAudioOutPlayedSampleCount) */
+    float volume;
 } AudioOut;
 static AudioOut aouts[MAX_AOUT];
 #define K_AOUT 10
 /* AudioOutBuffer: {next, data, buffer size, data size} (both sides of it are ours) */
-static int64_t aout_duration(uint64_t buf) { return (int64_t)(G64(buf + 0x18) / 4) * 1000000000LL / RATE; }
 static AudioOut *aout_of(uint64_t obj) {
     const int i = get_handle(obj, K_AOUT);
     return i >= 0 && i < MAX_AOUT && aouts[i].used ? &aouts[i] : NULL;
 }
-static void audio_out_frame(void) {   /* (the renderer thread, every 5 ms) */
-    au_lock();
-    const int64_t now = hos_now_ns();
+static int audio_out_running(void) {   /* (under au_lock) */
+    for (int i = 0; i < MAX_AOUT; i++)
+        if (aouts[i].used && aouts[i].running) return 1;
+    return 0;
+}
+/* The renderer thread, each frame (under au_lock): FRAME samples of each running AudioOut's queue added to pcm (stereo);
+   a buffer played to its end is released. An empty queue plays silence. */
+static void audio_out_mix(int16_t *pcm) {
     for (int i = 0; i < MAX_AOUT; i++) {
         AudioOut *a = &aouts[i];
-        int released = 0;
-        while (a->used && a->running && a->nqueued && now >= a->due && a->nreleased < MAX_AOUT_BUF) {
-            a->released[a->nreleased++] = a->queued[0];
-            memmove(a->queued, a->queued + 1, (size_t)(--a->nqueued) * sizeof a->queued[0]);
-            a->due = a->nqueued ? a->due + aout_duration(a->queued[0]) : 0;
-            released = 1;
+        if (!a->used || !a->running) continue;
+        int at = 0, released = 0;
+        while (at < FRAME && a->nqueued && a->nreleased < MAX_AOUT_BUF) {
+            const uint64_t buf = a->queued[0], data = G64(buf + 8), size = G64(buf + 0x18) & ~3ull;
+            const int n = (int)((size - a->pos) / 4 < (uint64_t)(FRAME - at) ? (size - a->pos) / 4 : (uint64_t)(FRAME - at));
+            const int16_t *src = n > 0 && hos_guest_range(data + a->pos, (uint64_t)n * 4) ? (const int16_t *)GP(data + a->pos) : NULL;
+            for (int k = 0; src && k < 2 * n; k++) {
+                const int v = pcm[2 * at + k] + (int)(src[k] * a->volume);
+                pcm[2 * at + k] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+            }
+            at += n > 0 ? n : 0, a->pos += n > 0 ? (uint64_t)n * 4 : 0, a->played += n > 0 ? (uint64_t)n : 0;
+            if (a->pos >= size) {   /* (played: released) */
+                a->released[a->nreleased++] = buf;
+                memmove(a->queued, a->queued + 1, (size_t)(--a->nqueued) * sizeof a->queued[0]);
+                a->pos = 0, released = 1;
+            }
         }
         if (released && a->event) hos_kernel_event_signal(a->event);
     }
-    au_unlock();
 }
 static void open_audio_out(Ctx *c, uint64_t obj, uint64_t event) {
     au_lock();
@@ -1878,7 +1903,7 @@ static void open_audio_out(Ctx *c, uint64_t obj, uint64_t event) {
     au_unlock();
     if (i == MAX_AOUT) { RET(0x1A9 << 9 | 1); return; }
     memset(&aouts[i], 0, sizeof aouts[i]);
-    aouts[i].used = 1;
+    aouts[i].used = 1, aouts[i].volume = 1.0f;
     if (event) aouts[i].event = hos_system_event_init(c, event, 1);
     put_handle(obj, K_AOUT, i);
     renderer_start();
@@ -1897,15 +1922,27 @@ HLE(_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE)
 HLE(_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE) {
     au_lock();
     AudioOut *a = aout_of(ARG(0));
-    if (a && !a->running) a->running = 1, a->due = a->nqueued ? hos_now_ns() + aout_duration(a->queued[0]) : 0;
+    if (a) a->running = 1;
     au_unlock();
     RET(0);
 }
+/* Stop: the queued buffers are all released, played or not (yuzu's audio_out_system.cpp, Stop: a forced release) */
 HLE(_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE) {
     au_lock();
     AudioOut *a = aout_of(ARG(0));
-    if (a) a->running = 0;
+    int released = 0;
+    if (a) {
+        a->running = 0;
+        while (a->nqueued && a->nreleased < MAX_AOUT_BUF) {
+            a->released[a->nreleased++] = a->queued[0];
+            memmove(a->queued, a->queued + 1, (size_t)(--a->nqueued) * sizeof a->queued[0]);
+            released = 1;
+        }
+        a->pos = 0;
+    }
+    const uint32_t event = a ? a->event : 0;
     au_unlock();
+    if (released && event) hos_kernel_event_signal(event);
 }
 HLE(_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE) {
     au_lock();
@@ -1913,7 +1950,28 @@ HLE(_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE) {
     if (a) a->used = 0;
     au_unlock();
 }
-HLE(_ZN2nn5audio17SetAudioOutVolumeEPNS0_8AudioOutEf) { (void)c; }
+HLE(_ZN2nn5audio17SetAudioOutVolumeEPNS0_8AudioOutEf) {   /* (the volume: v0) */
+    float v;
+    memcpy(&v, &c->vreg[0][0], 4);
+    au_lock();
+    AudioOut *a = aout_of(ARG(0));
+    if (a && v == v) a->volume = v < 0 ? 0 : v > 2 ? 2 : v;
+    au_unlock();
+}
+HLE(_ZN2nn5audio17GetAudioOutVolumeEPKNS0_8AudioOutE) {
+    au_lock();
+    AudioOut *a = aout_of(ARG(0));
+    const float v = a ? a->volume : 1.0f;
+    au_unlock();
+    memcpy(&c->vreg[0][0], &v, 4);
+}
+HLE(_ZN2nn5audio28GetAudioOutPlayedSampleCountEPKNS0_8AudioOutE) {
+    au_lock();
+    AudioOut *a = aout_of(ARG(0));
+    const uint64_t n = a ? a->played : 0;
+    au_unlock();
+    RET(n);
+}
 HLE(_ZN2nn5audio21GetAudioOutSampleRateEPKNS0_8AudioOutE) { RET(RATE); }
 HLE(_ZN2nn5audio23GetAudioOutChannelCountEPKNS0_8AudioOutE) { RET(2); }
 HLE(_ZN2nn5audio23GetAudioOutSampleFormatEPKNS0_8AudioOutE) { RET(2); }   /* SampleFormat_PcmInt16 */
@@ -1927,7 +1985,7 @@ HLE(_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBufferE) {
     AudioOut *a = aout_of(ARG(0));
     const int ok = a && a->nqueued < MAX_AOUT_BUF && hos_guest_range(ARG(1), 0x20);
     if (ok) {
-        if (!a->nqueued && a->running) a->due = hos_now_ns() + aout_duration(ARG(1));
+        if (!a->nqueued) a->pos = 0;
         a->queued[a->nqueued++] = ARG(1);
     }
     au_unlock();

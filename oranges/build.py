@@ -69,7 +69,7 @@ def optional_library(name: str) -> tuple[list[str], list[str]]:
 
 
 OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS", "sdl3": "HOS_HAVE_SDL3",    # (pkg-config name: the macro host/ tests)
-                      "vulkan": "HOS_HAVE_VULKAN"}
+                      "vulkan": "HOS_HAVE_VULKAN", "libavcodec libavutil": "HOS_HAVE_FFMPEG"}
 EDEN = ROOT / "third_party" / "eden"         # eden's shader recompiler and sirit (C++, with the Vulkan back end)
 KHRONOS = ROOT / "third_party" / "khronos" / "include"
 
