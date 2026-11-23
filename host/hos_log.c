@@ -28,6 +28,11 @@ void hos_log(const char *fmt, ...) {
     fflush(stderr);
 }
 
+void hos_exit(int code) {
+    fflush(NULL);
+    _Exit(code);
+}
+
 void hos_dump(Ctx *c) {
     for (int i = 0; i < 32; i += 4)
         hos_log("  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx  %s %016llx", i, (unsigned long long)c->x[i],
@@ -92,7 +97,7 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
         hos_backtrace(c);
     }
     fflush(stderr);
-    exit(70);
+    hos_exit(70);
 }
 
 /* ---- native crashes: a signal in lifted or host code. The guest registers are those of the context the thread runs

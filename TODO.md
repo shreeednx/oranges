@@ -68,20 +68,48 @@ Left over from it:
 - [ ] Why the game stalls when the bcat mount fails is not understood (a real console may fail it too, without a
       network). Look again if another service's failure stalls it the same way.
 
-## 1. A window and input
+## 1. The game never reads the pad (next wall)
 
-- [ ] Open a window (SDL or similar) and drive the frame from it
-- [ ] Map keyboard and gamepad input into `host/nn_hid.c` (`hos_input()` is where they come in)
-- [ ] Mouse and touch from the window
-- [ ] Optional: scripted input for test runs (Longshot's `HOS_INPUT_SCRIPT`)
+It initializes hid (InitializeNpad, the style set, hold type, mouse, keyboard, touch screen) and presents frames at
+30 fps, but in 100 s it never calls GetNpadStates or any other state read (counted with gdb breakpoints on the
+`imp__ZN2nn3hid*` HLEs). So it is still in a stage before its title screen, which reads no input: input can't move it.
 
-## 2. Sound
+- [ ] Find what that stage waits for (sample the main thread's guest backtrace over several frames; look for a loader
+      thread, a GPU result rx_null.c does not give, or a service answer)
+
+## 2. An intermittent frame stall
+
+About 1 run in 7 stops presenting frames within the first 20 s (seen with the last commit's host code too, and not
+under gdb in 6 tries). The bcat mount failure made it happen every time. In those samples the main thread waited in
+ArbitrateLock (a guest mutex) or WaitForAddress.
+
+- [ ] Catch one: a watchdog that dumps every thread's guest backtrace (`hos_backtrace`) when no frame was presented
+      for 5 s would find it without gdb's timing changes
+
+## Done: a window and input
+
+`host/hos_window.c` (SDL3, optional like libopus): a 1280x720 window on the process's main thread (the guest's main
+thread moved to a host thread of its own), with a status page until there is a renderer (frames, fps, the input).
+Keyboard and the first gamepad are Npad No.1 (a Pro Controller: buttons by position, stick directions as the console
+sets them), the mouse is the USB mouse and its left button a finger on the touch screen, the keyboard is also the USB
+keyboard (`GetKeyCode`: US layout), the game's vibration goes to the gamepad. `HOS_INPUT_SCRIPT` scripts input (with
+QUIT), `HOS_SCREENSHOT` saves the window's picture, `HOS_NO_WINDOW=1` runs without a window. Every exit goes through
+`hos_exit` (`_Exit`: library teardown crashed while other threads ran).
+
+Left over from it:
+
+- [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window. Pace
+      them by the window's presents once the Vulkan back end draws into it
+- [ ] Key remapping (a config file), more than one gamepad (Npad No.2-8), motion from a gamepad's gyro
+- [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
+
+## 3. Sound
 
 - [ ] A sound device for `host/nn_audio.c`. The renderer already mixes and `HOS_AUDIO_DUMP=<file.wav>` writes what
       would play. Swap `output_open` / `output_frame` for a real sink.
 - [ ] Process the effects that only pass through today (delay, reverb, biquad filter effects), if the game needs them
 
-## 3. The renderer
+## 4. The renderer
 
 - [ ] A Vulkan back end in place of `host/rx_null.c`, replaying the recorded NVN commands (Longshot's `gpu/vk`, made
       for NVN2: adapt it to NVN1)
@@ -89,7 +117,7 @@ Left over from it:
 - [ ] Textures: deswizzle the block-linear layouts (`host/nvn_layout.c` already computes them) and ASTC/BCn formats
 - [ ] Present the window textures to the real window
 
-## 4. Clean-ups and checks
+## 5. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.

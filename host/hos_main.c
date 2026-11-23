@@ -100,6 +100,8 @@ static void boot_call(Ctx *c, uint64_t sp, uint64_t addr, const char *what) {
     hos_call(c, addr, what);
 }
 
+static void boot(void);
+
 int main(int argc, char **argv) {
     const char *t = getenv("HOS_TRACE");
     hos_trace = t && *t && strcmp(t, "0");
@@ -127,6 +129,12 @@ int main(int argc, char **argv) {
     hos_kernel_init();
     hos_mem_init();
     load_image(path);
+    hos_window_run(boot);
+    return 0;
+}
+
+/* the guest's boot, on the thread that is its main thread: the SDK's entry points in order, then nnMain */
+static void boot(void) {
     Ctx *c = main_thread();
     const uint64_t sp = c->x[31];
 
@@ -145,5 +153,4 @@ int main(int argc, char **argv) {
     }
     boot_call(c, sp, hos_entry_nnMain, "nnMain");
     hos_log("nnMain returned");
-    return 0;
 }

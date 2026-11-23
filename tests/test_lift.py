@@ -1,3 +1,4 @@
+import os
 import shutil
 import struct
 
@@ -79,7 +80,8 @@ def test_write_compile_link_run(exefs, tmp_path):
     assert (gen / "a64_table.c").exists() and (gen / "a64_suyu.h").exists()
     assert (gen / "hos_image.c").exists() and (gen / "a64_stubs.c").exists()
     exe = build.build(work, jobs=2, say=lambda *_: None)
-    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
+    env = dict(os.environ, HOS_NO_WINDOW="1")   # (no window in a test)
+    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60, env=env)
     assert run.returncode == 70, run.stderr                   # (hos_fatal)
     assert "image: 2 MB at 0x8000000, 6 segments, 7 lifted functions" in run.stderr
     assert "boot: _init_libc0" in run.stderr and "svc 0x26 Break" in run.stderr

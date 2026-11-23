@@ -28,6 +28,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
 .venv/bin/oranges build                           # compile work/gen + rt + host/, link work/build/oranges
 ./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
+HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
 .venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
 .venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
 ```
@@ -93,10 +94,14 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
   Tegra block-linear texture layout (deko3d-derived). `nn_audio.c` is the audio renderer at the API level (Longshot's,
   no sound device yet: `HOS_AUDIO_DUMP=<wav>`), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
-  `nn_hid.c` input (neutral until there is a window), `nn_online.c` the online and wireless services as an offline
+  `nn_hid.c` input (from `hos_window.c`), `nn_online.c` the online and wireless services as an offline
   console (nifm, bcat, friends, pctl, prepo, aoc, album, ec, err, ldn, nn::socket), `nn_nfp.c` amiibo (a reader that
   never sees a tag), `nn_codec.c` the hardware Opus decoder (libopus, linked when pkg-config finds it: build.py's
-  `OPTIONAL_LIBRARIES` defines `HOS_HAVE_OPUS`), `nn_diag.c` nn::diag / nn::ro. Device limits are the game's own
+  `OPTIONAL_LIBRARIES` defines `HOS_HAVE_OPUS`), `nn_diag.c` nn::diag / nn::ro. `hos_window.c` is the window and
+  the input (SDL3, `HOS_HAVE_SDL3`): the window runs on the process's main thread and the guest's main thread on its
+  own; `hos_input()` merges keyboard, gamepad, mouse (touch: its left button) and `HOS_INPUT_SCRIPT`. Key map in its
+  header comment. `HOS_NO_WINDOW=1`: no window; `HOS_SCREENSHOT=<bmp>[,s]`: the window's picture; end the program with
+  `hos_exit` (no exit handlers: library teardown crashes while game threads run). Device limits are the game's own
   driver's (API 55.15), read by running the sdk's `nvnDeviceGetInteger` under Unicorn.
   IPC requests to services nobody emulates are answered empty (success, zeroed outputs) and logged once per service
   and command with a backtrace. Native
@@ -160,7 +165,10 @@ and attribution notices, and note the source file in a comment.
   real server sends.
 - 6 OS-facing imports are still stubs (no caller in main). A service's answer can change the game's path: a failed
   bcat mount stopped the frame loop, so check that frames still flow (`nvn: N frames presented`) after changing one.
-- Next: a window with real input, a sound device for `nn_audio.c`, and the Vulkan back end in place of `rx_null.c`.
+- The game initializes hid but reads no input in its first 100 s (a stage before the title screen), and about 1 run in
+  7 its frames stop within 20 s (a race, not seen under gdb). Count frames over several runs before trusting a change.
+- Next: what the game waits for before it reads input, the frame stall, a sound device for `nn_audio.c`, and the
+  Vulkan back end in place of `rx_null.c`.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

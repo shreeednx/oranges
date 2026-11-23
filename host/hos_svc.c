@@ -128,7 +128,7 @@ void a64_svc(Ctx *A64_NOESC c, uint32_t imm) {
         c->x[0] = 0, c->x[1] = 0;
         return;
     }
-    case 0x07: hos_log("ExitProcess"); exit(0);
+    case 0x07: hos_log("ExitProcess"); hos_exit(0);
     case 0x15:     /* CreateTransferMemory(-, addr, size, perm) -> handle */
         c->x[1] = hos_handle_new(HOS_H_TRANSFER, NULL, c->x[1], c->x[2], c->x[3]);
         c->x[0] = 0;

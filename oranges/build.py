@@ -43,7 +43,7 @@ def optional_library(name: str) -> tuple[list[str], list[str]]:
     return cflags.split(), libs.split()
 
 
-OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS"}   # (pkg-config name: the macro host/ tests)
+OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS", "sdl3": "HOS_HAVE_SDL3"}   # (pkg-config name: the macro host/ tests)
 
 
 def host_libraries() -> tuple[list[str], list[str]]:

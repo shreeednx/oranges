@@ -66,6 +66,8 @@ extern int hos_trace;
 void hos_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 __attribute__((noreturn)) void hos_fatal(Ctx *c, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void hos_dump(Ctx *c);   /* the guest registers, to the log */
+/* end the program now: output flushed, no exit handlers (other threads run on, in libraries' teardown they crash) */
+__attribute__((noreturn)) void hos_exit(int code);
 void hos_crash_init(void);   /* native crashes (signals) logged with the guest state of the thread */
 extern __thread Ctx *hos_current;   /* the guest context this host thread runs */
 void hos_backtrace(Ctx *c);   /* the guest call chain (its frame pointers), with the nearest named function */
@@ -119,6 +121,49 @@ void hos_kernel_event_signal(uint32_t handle);
 /* an nn::os::SystemEventType of the game's, bound to a new kernel event (as an IPC service's event would be): the
    writable handle, for hos_kernel_event_signal. autoclear: EventClearMode_AutoClear */
 uint32_t hos_system_event_init(Ctx *c, uint64_t event, int autoclear);
+
+/* ---- the window and the player's input (hos_window.c) */
+/* HidNpadButton bits */
+#define HOS_BTN_A (1ull << 0)
+#define HOS_BTN_B (1ull << 1)
+#define HOS_BTN_X (1ull << 2)
+#define HOS_BTN_Y (1ull << 3)
+#define HOS_BTN_LS (1ull << 4)
+#define HOS_BTN_RS (1ull << 5)
+#define HOS_BTN_L (1ull << 6)
+#define HOS_BTN_R (1ull << 7)
+#define HOS_BTN_ZL (1ull << 8)
+#define HOS_BTN_ZR (1ull << 9)
+#define HOS_BTN_PLUS (1ull << 10)
+#define HOS_BTN_MINUS (1ull << 11)
+#define HOS_BTN_LEFT (1ull << 12)
+#define HOS_BTN_UP (1ull << 13)
+#define HOS_BTN_RIGHT (1ull << 14)
+#define HOS_BTN_DOWN (1ull << 15)
+#define HOS_BTN_LSTICK_LEFT (1ull << 16)
+#define HOS_BTN_LSTICK_UP (1ull << 17)
+#define HOS_BTN_LSTICK_RIGHT (1ull << 18)
+#define HOS_BTN_LSTICK_DOWN (1ull << 19)
+#define HOS_BTN_RSTICK_LEFT (1ull << 20)
+#define HOS_BTN_RSTICK_UP (1ull << 21)
+#define HOS_BTN_RSTICK_RIGHT (1ull << 22)
+#define HOS_BTN_RSTICK_DOWN (1ull << 23)
+typedef struct {
+    uint64_t buttons;              /* Npad No.1's, HOS_BTN_* (stick directions included) */
+    int32_t stick[4];              /* left x, y, right x, y: -32767..32767, up positive */
+    int32_t mouse_x, mouse_y;      /* in the console's 1280x720 screen */
+    int32_t wheel;                 /* wheel notches turned since the start (up positive) */
+    uint32_t mouse_buttons;        /* nn::hid MouseButton bits: left, right, middle, forward, back */
+    int mouse_in;                  /* the pointer is over the picture */
+    int touch;                     /* one finger on the touch screen, at touch_x, touch_y (1280x720) */
+    int32_t touch_x, touch_y;
+    uint32_t modifiers;            /* nn::hid KeyboardModifier bits */
+    uint8_t keys[32];              /* keys down, a bit per HID usage id */
+} HosInput;
+void hos_input(HosInput *out);     /* the input now: the window's, and HOS_INPUT_SCRIPT's */
+void hos_rumble(int motor, float amplitude);   /* a gamepad's motor (0 low, 1 high frequency): 0..1 */
+/* run the game (guest_main): beside a window when there is one, else on this thread */
+void hos_window_run(void (*guest_main)(void));
 
 /* ---- IPC (hos_ipc.c): sessions, sm:, and the services the host emulates. A service is a HosIface whose dispatch
    reads r->cmd and r->in, writes its output with hos_ipc_out*, and returns a result code (HOS_IPC_UNKNOWN: a command
