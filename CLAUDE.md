@@ -32,6 +32,7 @@ HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, s
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
+HOS_AUDIO=1 HOS_NO_WINDOW=1 ./work/build/oranges   # sound without a window (headless runs are quiet by default)
 .venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
 .venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
 ```
@@ -102,7 +103,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   (`tests/test_nvn.py` keeps them in sync: regenerate it with
   `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
   Tegra block-linear texture layout (deko3d-derived). `nn_audio.c` is the audio renderer at the API level (Longshot's,
-  no sound device yet: `HOS_AUDIO_DUMP=<wav>`), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
+  `HOS_AUDIO_DUMP=<wav>` also writes what plays) and `hos_sound.c` its sound device (SDL3: the default output, on
+  when there is a window; `HOS_AUDIO=0/1` overrides; the stream's frequency ratio follows the host/device clock
+  drift, frames from a mixer catching up after a stall are dropped), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
   `nn_hid.c` input (from `hos_window.c`), `nn_online.c` the online and wireless services as an offline
   console (nifm, bcat, friends, pctl, prepo, aoc, album, ec, err, ldn, nn::socket), `nn_nfp.c` amiibo (a reader that
   never sees a tag), `nn_codec.c` the hardware Opus decoder (libopus, linked when pkg-config finds it: build.py's
@@ -186,8 +189,7 @@ and attribution notices, and note the source file in a comment.
   a crash at guest address 8 before the first frame, about 1 run in 10 with 4 processes at once. `oranges/patches.py`
   makes it wait for the init (0 crashes in 80 runs). Races like it show up under load: run many times (4 at a time,
   30 s each) and count frames before trusting a change.
-- Next: the Vulkan back end in place of `rx_null.c` (the prologue can't be played blind), a sound device for
-  `nn_audio.c`.
+- Next: the Vulkan back end in place of `rx_null.c` (the prologue can't be played blind).
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

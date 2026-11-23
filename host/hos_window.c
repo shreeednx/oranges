@@ -15,7 +15,7 @@
        A Space / Enter           B Left Shift / Backspace  X E          Y F
        L Q   R R   ZL Z   ZR C   + Escape   - Tab          stick clicks X (L), N (R)
        F11: full screen
-   The game's vibration goes to the gamepad's motors (hos_rumble).
+   The game's vibration goes to the gamepad's motors (hos_rumble). The sound device (hos_sound.c) starts here too.
    HOS_INPUT_SCRIPT=<file>: input from a script, added to the player's: one line per change, "<seconds> <what>...",
    held from that time (since boot) until the next line. What: button names (A B X Y L R ZL ZR PLUS MINUS UP DOWN LEFT
    RIGHT LS RS), LSTICK=x,y / RSTICK=x,y (-1..1, up positive), TOUCH=x,y (1280x720), QUIT (ends the program). '#'
@@ -296,14 +296,13 @@ static void draw_status(void) {
 static int window_open(void) {
     const char *off = getenv("HOS_NO_WINDOW");
     if (off && *off && strcmp(off, "0")) return 0;
-    SDL_SetAppMetadata("oranges", NULL, "dev.oranges");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         hos_log("window: none (%s): the game runs without one", SDL_GetError());
         return 0;
     }
     if (!SDL_CreateWindowAndRenderer("oranges", 1280, 720, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
         hos_log("window: none (%s): the game runs without one", SDL_GetError());
-        SDL_Quit();
+        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);   /* (not the sound's) */
         return 0;
     }
     SDL_SetRenderVSync(renderer, 1);
@@ -383,7 +382,10 @@ static void window_loop(void) {
 void hos_window_run(void (*guest_main)(void)) {
     script_load();
 #ifdef HOS_HAVE_SDL3
-    if (window_open()) {
+    SDL_SetAppMetadata("oranges", NULL, "dev.oranges");
+    const int windowed = window_open();
+    hos_sound_init(windowed);
+    if (windowed) {
         static GuestMain g;
         g.fn = guest_main;
         pthread_attr_t a;
@@ -393,6 +395,8 @@ void hos_window_run(void (*guest_main)(void)) {
         if (pthread_create(&t, &a, guest_thread, &g)) hos_fatal(NULL, "the game's main thread could not start");
         window_loop();
     }
+#else
+    hos_sound_init(0);
 #endif
     guest_main();
 }

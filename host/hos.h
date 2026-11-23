@@ -173,6 +173,11 @@ void hos_rumble(int motor, float amplitude);   /* a gamepad's motor (0 low, 1 hi
 /* run the game (guest_main): beside a window when there is one, else on this thread */
 void hos_window_run(void (*guest_main)(void));
 
+/* ---- the sound device (hos_sound.c) */
+void hos_sound_init(int window);   /* (the main thread, before the game) whether there is sound, and SDL's audio */
+/* one audio frame of interleaved PCM16, from the audio renderer's thread: to the device (opened at the first) */
+void hos_sound_play(const int16_t *pcm, int frames, int channels, int frequency);
+
 /* ---- IPC (hos_ipc.c): sessions, sm:, and the services the host emulates. A service is a HosIface whose dispatch
    reads r->cmd and r->in, writes its output with hos_ipc_out*, and returns a result code (HOS_IPC_UNKNOWN: a command
    it does not know, answered empty and logged). */

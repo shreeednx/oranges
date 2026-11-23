@@ -127,13 +127,23 @@ Left over from it:
 - [ ] Key remapping (a config file), more than one gamepad (Npad No.2-8), motion from a gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
-## 1. Sound
+## Done: sound
 
-- [ ] A sound device for `host/nn_audio.c`. The renderer already mixes and `HOS_AUDIO_DUMP=<file.wav>` writes what
-      would play. Swap `output_open` / `output_frame` for a real sink.
+`host/hos_sound.c` plays what `nn_audio.c`'s renderer mixes on SDL3's default output (48 kHz stereo PCM16; on when
+there is a window, `HOS_AUDIO=0/1` overrides it). The mixer runs on the host's clock and the device on its own, so the
+stream's frequency ratio follows the queue's average to a target (the device buffer and a half plus 20 ms: 52 ms on
+PipeWire's 1024 frames). On this machine it settles at +0.03%, no underruns in 40 s at 30 fps. After a stall (the
+process stopped for 1.5 s) the mixer renders the owed frames back to back: those that would take the queue past
+target + 40 ms are dropped, and the queue is back at its target in ~4 s. The game uses only the renderer (no AudioOut).
+
+Left over from it:
+
 - [ ] Process the effects that only pass through today (delay, reverb, biquad filter effects), if the game needs them
+- [ ] 5.1: the game's device sink has 6 channels and `render_frame` can output them; the output is stereo today
+- [ ] AudioOut buffers are released on time but not played (the game doesn't use AudioOut; subsdk0's movie player may)
+- [ ] Choosing the output device (`HOS_AUDIO_DEVICE`), volume, mute when the window loses focus
 
-## 2. The renderer (the next wall: the prologue can't be played blind)
+## 1. The renderer (the next wall: the prologue can't be played blind)
 
 - [ ] A Vulkan back end in place of `host/rx_null.c`, replaying the recorded NVN commands (Longshot's `gpu/vk`, made
       for NVN2: adapt it to NVN1)
@@ -141,7 +151,7 @@ Left over from it:
 - [ ] Textures: deswizzle the block-linear layouts (`host/nvn_layout.c` already computes them) and ASTC/BCn formats
 - [ ] Present the window textures to the real window
 
-## 3. Clean-ups and checks
+## 2. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.

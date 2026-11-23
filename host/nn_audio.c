@@ -7,16 +7,16 @@
        -> their destination mix or splitter (per channel pair volumes)
        -> sub mixes in dependency order (sub mix volume, then to their destination)
        -> the final mix (volume) -> the device sink (its channel map, down to stereo)
-       -> the output
+       -> the sound device (hos_sound.c)
    and signals the renderer event the game's audio thread waits on. I3DL2 reverb is processed locally; Aux effects
    exchange planar PCM32 with the game's CPU effect workers. The other effects (delay, reverb, biquad filter effects)
    are accepted and pass their input through. Played sample counts and released wave buffers go back to the game as on
    hardware, and the game's parameter changes take effect together at RequestUpdateAudioRenderer.
-   There is no sound device yet: HOS_AUDIO_DUMP=<file.wav> writes what would play.
+   HOS_AUDIO_DUMP=<file.wav> also writes what plays (checking without speakers; HOS_AUDIO in hos_sound.c).
 
    (oranges) Ported from Longshot's host/nn_audio.c (https://git.magicbean.dev/MagicBeanDev/Longshot, commit 67ba729d,
-   GPL-3.0-or-later): its renderer, mixer and parameter updates as they are; its Windows/SDL output, controller speaker,
-   TV delay and menu volume are left out. Added for the game's SDK: the 8-argument AcquireVoiceSlot, short biquad
+   GPL-3.0-or-later): its renderer, mixer and parameter updates as they are; its Windows/SDL output (hos_sound.c
+   instead), controller speaker, TV delay and menu volume are left out. Added for the game's SDK: the 8-argument AcquireVoiceSlot, short biquad
    parameters, GetVoicePlayState, AudioOut, delay / reverb / biquad filter effects and circular buffer sinks (accepted,
    no processing), performance info, the aux light limiter. */
 #include "hos.h"
@@ -883,7 +883,7 @@ static int64_t audio_mix_deadline(int64_t now, int64_t next, int64_t period) {
     return next;
 }
 
-/* ---- the output: none yet (a sound device comes later); HOS_AUDIO_DUMP=<file.wav> writes what would play ---------- */
+/* ---- the output: the sound device, and HOS_AUDIO_DUMP=<file.wav> ------------------------------------------------ */
 static FILE *dump;
 static uint32_t dump_bytes;
 static const int out_channels = 2;
@@ -917,6 +917,7 @@ static void output_open(void) {
     hos_log("audio: writing what plays to %s", path);
 }
 static void output_frame(const int16_t *pcm) {
+    hos_sound_play(pcm, FRAME, out_channels, RATE);
     if (!dump) return;
     fwrite(pcm, (size_t)(2 * out_channels), FRAME, dump);
     dump_bytes += (uint32_t)(FRAME * 2 * out_channels);
