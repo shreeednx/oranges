@@ -253,10 +253,35 @@ Left over from it:
 - [ ] A gdb hardware watchpoint set before `run` on the event word (a page mapped later) never fired, though the word
       was written (signalled at init, a waiter's 1). Not understood; set watchpoints once the page exists.
 
-## 1. Further into the prologue
+## Done: the orientation and the tent (driving the game live)
 
-The landing reaches a shopkeeper's dialogue at the dock (~245 s with A and + every 1.5 s; the script used stops at 250
-s). Script A further and see where the prologue goes next: the next wall, or what the renderer gets wrong.
+From the dock (~265 s) the player walks to the plaza, the manager gives an orientation, a shopkeeper hands over a tent,
+the player pitches it (pockets, Build Here, the preview, the landscaping question) and reports back. The manager then
+sends the player off to help the villagers find their spots. No wall and nothing drawn wrong on the way (the minimap,
+the pockets, the placement grid included), 29.9 fps throughout.
+
+A fixed script can't get there: every island is laid out at random (the map, the airport's colour, the villagers,
+the player's look), so a route that works once walks into a tree the next time. The game seeds sead's RNGs from the
+tick (`nn::os::GetSystemTick`, inlined in 671 functions), so a fixed `RandomEntropy` changes nothing. Instead
+`HOS_CONTROL=<fifo>` (`hos_window.c`) drives a running game: lines of `<seconds> <inputs>`, `SHOT <bmp>` (the next
+presented picture, the line waits for it), `DUMP` (every thread), `PROFILE <s> [thread]`, `QUIT`. CLAUDE.md has the
+recipe. Things learned on the way:
+
+- An apparent wall at the plaza (no talk, no tree shake, the manager's orientation never starting) was the input script:
+  cut after `265.8 A`, its last line held A down for good. A script's last line is held to the end (documented now).
+- The orientation starts when the player talks to the manager (or to a shopkeeper: the manager's talk
+  class, `0x8a06560`, takes over a talk with `rcm` / `rct`). Then a shopkeeper gives the tent; the manager only
+  repeats where to get it.
+- `nn_hid.c`'s Npad states are a real history now (the input sampled every 5 ms, GetNpadStates the latest 16).
+  Before, every state of a read held the input of the moment and one counter shared by every hid read numbered them.
+  It wasn't the cause of anything seen, but the console's history is a time series and the game reads 16 a frame.
+- `vk_replay.cpp` logs each counter type the game reports, once: only timestamps (0, 16) so far.
+
+## 1. Further into the prologue: the villagers
+
+The manager asks the player to help the two villagers find spots for their tents (somewhere on the island; the minimap
+shows the player only). Then on the console: their building sites, the campfire (fruit and branches), the first
+night and the first save (`deviceSave:/main.dat`; nothing has been written so far). Drive it with `HOS_CONTROL`.
 
 ## 2. The renderer's gaps
 

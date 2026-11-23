@@ -19,8 +19,14 @@
    HOS_INPUT_SCRIPT=<file>: input from a script, added to the player's: one line per change, "<seconds> <what>...",
    held from that time (since boot) until the next line. What: button names (A B X Y L R ZL ZR PLUS MINUS UP DOWN LEFT
    RIGHT LS RS), LSTICK=x,y / RSTICK=x,y (-1..1, up positive), TOUCH=x,y (1280x720), QUIT (ends the program). '#'
-   starts a comment.
-   HOS_SCREENSHOT=<file.bmp>[,seconds]: the window's picture, saved once, that long after the start (default 10). */
+   starts a comment. The last line's inputs are held to the end: end a script with a line of none (a script cut
+   after "265.8 A" held A down, and the game saw no press after it).
+   HOS_SCREENSHOT=<file.bmp>[,seconds]: the window's picture, saved once, that long after the start (default 10).
+   HOS_CONTROL=<fifo>: input while the game runs (made if missing; with a random island a fixed script goes astray).
+   Lines run in order, each to its end before the next: "<seconds> [inputs...]" holds those inputs (the script's
+   names) that long and releases them ("0.2 A", "3 LSTICK=0,1", "1.5": nothing), "SHOT <file.bmp>" saves the next
+   presented picture (the Vulkan back end's), "DUMP" logs every thread (hos_kernel_dump), "PROFILE <s> [thread]" samples
+   one (HOS_PROFILE), "QUIT" ends the program. Added to the player's and the script's. */
 #include "hos.h"
 
 #include <ctype.h>
@@ -28,6 +34,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
 #ifdef HOS_HAVE_SDL3
 #include <SDL3/SDL.h>
@@ -67,6 +75,19 @@ static ScriptStep *script;
 static int script_len;
 static void *script_quit(void *p);
 
+/* one input of a script line (upper-cased in place): 0 when it is not one */
+static int parse_input(char *tok, ScriptStep *s) {
+    for (char *p = tok; *p && *p != '='; p++) *p = (char)toupper((unsigned char)*p);
+    double x, y;
+    if (sscanf(tok, "LSTICK=%lf,%lf", &x, &y) == 2) return s->stick[0] = clamp_stick(x), s->stick[1] = clamp_stick(y), 1;
+    if (sscanf(tok, "RSTICK=%lf,%lf", &x, &y) == 2) return s->stick[2] = clamp_stick(x), s->stick[3] = clamp_stick(y), 1;
+    if (sscanf(tok, "TOUCH=%lf,%lf", &x, &y) == 2) return s->touch = 1, s->touch_x = (int32_t)x, s->touch_y = (int32_t)y, 1;
+    if (!strcmp(tok, "QUIT")) return s->quit = 1;
+    for (size_t i = 0; i < sizeof button_names / sizeof *button_names; i++)
+        if (!strcmp(tok, button_names[i].name)) return s->buttons |= button_names[i].bit, 1;
+    return 0;
+}
+
 static void script_load(void) {
     const char *path = getenv("HOS_INPUT_SCRIPT");
     if (!path || !*path) return;
@@ -81,18 +102,8 @@ static void script_load(void) {
         if (!tok) continue;
         ScriptStep s = {0};
         s.at_ns = (int64_t)(strtod(tok, NULL) * 1e9);
-        while ((tok = strtok(NULL, " \t\r\n"))) {
-            for (char *p = tok; *p && *p != '='; p++) *p = (char)toupper((unsigned char)*p);
-            double x, y;
-            int known = 0;
-            if (sscanf(tok, "LSTICK=%lf,%lf", &x, &y) == 2) s.stick[0] = clamp_stick(x), s.stick[1] = clamp_stick(y), known = 1;
-            else if (sscanf(tok, "RSTICK=%lf,%lf", &x, &y) == 2) s.stick[2] = clamp_stick(x), s.stick[3] = clamp_stick(y), known = 1;
-            else if (sscanf(tok, "TOUCH=%lf,%lf", &x, &y) == 2) s.touch = 1, s.touch_x = (int32_t)x, s.touch_y = (int32_t)y, known = 1;
-            else if (!strcmp(tok, "QUIT")) s.quit = 1, known = 1;
-            for (size_t i = 0; i < sizeof button_names / sizeof *button_names && !known; i++)
-                if (!strcmp(tok, button_names[i].name)) s.buttons |= button_names[i].bit, known = 1;
-            if (!known) hos_fatal(NULL, "HOS_INPUT_SCRIPT: %s: \"%s\" is not an input", path, tok);
-        }
+        while ((tok = strtok(NULL, " \t\r\n")))
+            if (!parse_input(tok, &s)) hos_fatal(NULL, "HOS_INPUT_SCRIPT: %s: \"%s\" is not an input", path, tok);
         if (n == cap) script = realloc(script, sizeof *script * (size_t)(cap = cap ? 2 * cap : 64));
         script[n++] = s;
     }
@@ -127,6 +138,117 @@ static void *script_quit(void *p) {
     hos_exit(0);
 }
 
+/* ---- HOS_CONTROL: input and screenshots from a FIFO while the game runs ------------------------------------------- */
+static ScriptStep live;   /* the control's input now (under input_lock) */
+static pthread_mutex_t shot_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t shot_cond = PTHREAD_COND_INITIALIZER;
+static char shot_path[512];
+static int shot_state;   /* 1: asked for, 2: taken */
+
+int hos_control_shot(char *path, size_t size) {
+    if (!__atomic_load_n(&shot_state, __ATOMIC_ACQUIRE)) return 0;
+    pthread_mutex_lock(&shot_lock);
+    const int asked = shot_state == 1;
+    if (asked) snprintf(path, size, "%s", shot_path);
+    pthread_mutex_unlock(&shot_lock);
+    return asked;
+}
+
+void hos_control_shot_done(void) {
+    pthread_mutex_lock(&shot_lock);
+    shot_state = 2;
+    pthread_cond_broadcast(&shot_cond);
+    pthread_mutex_unlock(&shot_lock);
+}
+
+static void control_sleep(double seconds) {
+    if (seconds <= 0) return;
+    struct timespec ts = {(time_t)seconds, (long)((seconds - (double)(time_t)seconds) * 1e9)};
+    nanosleep(&ts, NULL);
+}
+
+/* one line: "SHOT <path>" (the next presented picture; the line returns once it is saved, 5 s at most), "DUMP" (every
+   thread), "PROFILE <s> [thread name]" (HOS_PROFILE's samples, MainThread's by default), "QUIT", or
+   "<seconds> [inputs...]": the inputs held that long, then released */
+static void control_line(char *line) {
+    char *tok = strtok(line, " \t\r\n");
+    if (!tok || *tok == '#') return;
+    if (!strcasecmp(tok, "SHOT")) {
+        const char *path = strtok(NULL, "\r\n");
+        if (!path) return;
+        while (*path == ' ' || *path == '\t') path++;
+        pthread_mutex_lock(&shot_lock);
+        snprintf(shot_path, sizeof shot_path, "%s", path);
+        __atomic_store_n(&shot_state, 1, __ATOMIC_RELEASE);
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += 5;
+        while (shot_state == 1)
+            if (pthread_cond_timedwait(&shot_cond, &shot_lock, &until)) break;
+        if (shot_state == 1) hos_log("control: no picture presented for %s", shot_path);
+        shot_state = 0;
+        pthread_mutex_unlock(&shot_lock);
+        return;
+    }
+    if (!strcasecmp(tok, "DUMP")) {
+        hos_kernel_dump("control: DUMP");
+        return;
+    }
+    if (!strcasecmp(tok, "PROFILE")) {
+        const char *secs = strtok(NULL, " \t\r\n"), *name = strtok(NULL, "\r\n");
+        hos_kernel_profile(secs ? atof(secs) : 5, name ? name : "MainThread");
+        return;
+    }
+    if (!strcasecmp(tok, "QUIT")) {
+        hos_log("control: QUIT");
+        hos_exit(0);
+    }
+    char *end;
+    const double seconds = strtod(tok, &end);
+    if (end == tok) {
+        hos_log("control: \"%s\" is not a duration, SHOT or QUIT", tok);
+        return;
+    }
+    ScriptStep s = {0};
+    while ((tok = strtok(NULL, " \t\r\n")))
+        if (!parse_input(tok, &s)) {
+            hos_log("control: \"%s\" is not an input", tok);
+            return;
+        }
+    pthread_mutex_lock(&input_lock);
+    live = s;
+    pthread_mutex_unlock(&input_lock);
+    control_sleep(seconds);
+    pthread_mutex_lock(&input_lock);
+    memset(&live, 0, sizeof live);
+    pthread_mutex_unlock(&input_lock);
+}
+
+static void *control_thread(void *p) {
+    const char *path = p;
+    char line[1024];
+    for (;;) {
+        FILE *f = fopen(path, "r");   /* (a FIFO: blocks until a writer opens it, read to its end, open again) */
+        if (!f) {
+            hos_log("control: %s cannot be opened", path);
+            return NULL;
+        }
+        while (fgets(line, sizeof line, f)) control_line(line);
+        fclose(f);
+    }
+}
+
+static void control_start(void) {
+    const char *path = getenv("HOS_CONTROL");
+    if (!path || !*path) return;
+    struct stat st;
+    if (stat(path, &st) && mkfifo(path, 0600)) hos_fatal(NULL, "HOS_CONTROL: %s cannot be made", path);
+    pthread_t t;
+    pthread_create(&t, NULL, control_thread, (void *)path);
+    pthread_detach(t);
+    hos_log("control: reading %s", path);
+}
+
 /* stick directions as buttons, as the console sets them (past half way) */
 static uint64_t stick_buttons(const int32_t s[4]) {
     const int32_t t = 16384;
@@ -145,9 +267,12 @@ static uint64_t stick_buttons(const int32_t s[4]) {
 void hos_input(HosInput *out) {
     pthread_mutex_lock(&input_lock);
     *out = player;
+    const ScriptStep live_now = live;
     pthread_mutex_unlock(&input_lock);
-    const ScriptStep *s = script_now();
-    if (s) {
+    const ScriptStep *steps[2] = {script_now(), &live_now};
+    for (int k = 0; k < 2; k++) {
+        const ScriptStep *s = steps[k];
+        if (!s) continue;
         out->buttons |= s->buttons;
         for (int i = 0; i < 4; i++)
             if (s->stick[i]) out->stick[i] = s->stick[i];
@@ -404,6 +529,7 @@ static void window_loop(void) {
 
 void hos_window_run(void (*guest_main)(void)) {
     script_load();
+    control_start();
 #ifdef HOS_HAVE_SDL3
     SDL_SetAppMetadata("oranges", NULL, "dev.oranges");
     const int windowed = window_open();

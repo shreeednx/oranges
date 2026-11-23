@@ -29,6 +29,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges build                           # compile work/gen + rt + host/ (+ vk, eden), link work/build/oranges
 ./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
 HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
+HOS_CONTROL=ctl.fifo HOS_NO_WINDOW=1 ./work/build/oranges &   # drive it live: one line, or several, at a time:
+printf '2 LSTICK=0,1\n0.2 A\n1.5\nSHOT a.bmp\n' > ctl.fifo  # hold 2 s, press, wait; the picture (also DUMP, PROFILE, QUIT)
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
@@ -134,8 +136,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   decoders on FFmpeg's libavcodec (optional like libopus: `HOS_HAVE_FFMPEG`), audio ones passed to the lifted
   `DecoderImpl`; `HOS_MOVIE_LOG=1` logs a video decoder's calls. `hos_window.c` is the window and
   the input (SDL3, `HOS_HAVE_SDL3`): the window runs on the process's main thread and the guest's main thread on its
-  own; `hos_input()` merges keyboard, gamepad, mouse (touch: its left button) and `HOS_INPUT_SCRIPT`. Key map in its
-  header comment. `HOS_NO_WINDOW=1`: no window; `HOS_SCREENSHOT=<bmp>[,s]`: the window's picture; end the program with
+  own; `hos_input()` merges keyboard, gamepad, mouse (touch: its left button), `HOS_INPUT_SCRIPT` (a line's inputs
+  are held until the next line: end a script with an empty one) and `HOS_CONTROL` (a FIFO read while the game runs:
+  input, `SHOT` pictures, `DUMP`, `PROFILE`). Key map in its header comment. `HOS_NO_WINDOW=1`: no window; `HOS_SCREENSHOT=<bmp>[,s]`: the window's picture; end the program with
   `hos_exit` (no exit handlers: library teardown crashes while game threads run). Device limits are the game's own
   driver's (API 55.15), read by running the sdk's `nvnDeviceGetInteger` under Unicorn.
   IPC requests to services nobody emulates are answered empty (success, zeroed outputs) and logged once per service
@@ -219,12 +222,16 @@ and attribution notices, and note the source file in a comment.
   ~195 s plays the opening movie (`Movie/OpeningMovie.webm`, subsdk0's `movie::` library: `nn_movie.c`; + skips it,
   so press only A from 190 s to watch it). After it the landing scene loads (`Tutorials_Prologue_DemoLanding`: the
   plane, the island from above, then a shopkeeper at the dock, ~245 s).
+- From the dock (~265 s) the player has control, and every island is random (sead's RNGs are seeded from the tick), so
+  a fixed script goes astray: drive it with `HOS_CONTROL`. Walk to the plaza and talk to the island's manager (the
+  orientation), then to one of the shopkeepers (the tent: X, Build Here), pitch it and report back to the manager, who
+  sends the player to help the villagers. Drawn right and at 29.9 fps all the way.
 - `nn_audio.c` keeps its state in tables and puts a handle in the first word of the game's audio objects; the SDK's
   Release* / Remove* zero that word, and games read it: the game's sound system re-acquires on a scene change only the
   sub mixes whose word is 0. Left holding our handle they were never re-acquired, every Aux added to them later was
   refused, and a job waiting for those effects to detach (IsAuxRemovable) stalled the frame loop after the movie.
   An HLE object's fields the SDK writes are part of its API.
-- Next: the renderer's gaps (TODO.md).
+- Next: the prologue's villagers, campfire and first save; the renderer's gaps (TODO.md).
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

@@ -3,7 +3,10 @@
    One Pro Controller (Npad No.1, full key) is connected, a USB mouse and keyboard too, and the touch screen is there.
    What they do is the window's (hos_window.c: hos_input, the keyboard and a gamepad as the pad, the mouse, its left
    button as a finger) and HOS_INPUT_SCRIPT's. Every state carries a sampling number that goes up with each read, as
-   the console's do (the game drops states it has seen).
+   the console's do (the game drops states it has seen). The Npads' states are a real history, as the console's: the
+   input sampled every 5 ms (at each read, for the periods since the last), GetNpadStates the latest of them (the game
+   reads 16 at a time, for every Npad each frame; before, each state of a read held the input of the moment, and the
+   one counter shared by every read moved Npad No.1's numbers on by about as many reads a frame).
 
    Layouts, from Longshot's host/nn_hid.c (https://git.magicbean.dev/MagicBeanDev/Longshot, commit 67ba729d,
    GPL-3.0-or-later) and the SDK:
@@ -17,6 +20,7 @@
      VibrationDeviceHandle: {u8 style (3 full key), u8 npad id, u8 device index, u8 reserved} */
 #include "hos.h"
 
+#include <pthread.h>
 #include <string.h>
 
 #define NPAD_NO1 0
@@ -40,24 +44,49 @@ static int clamp_count(int64_t n, int max) { return n < 0 ? 0 : n > max ? max : 
 
 /* ---- Npads ------------------------------------------------------------------------------------------------------ */
 static uint32_t supported_styles = STYLE_FULLKEY;
+
+#define NPAD_PERIOD_NS 5000000   /* (the history's sampling period) */
+#define NPAD_HISTORY 32          /* (a power of two; a read takes 16 at most) */
+static pthread_mutex_t npad_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { uint64_t buttons; int32_t stick[4]; } npad_history[NPAD_HISTORY];   /* (by sampling number) */
+static int64_t npad_sampling, npad_sampled_ns;   /* the latest state's number and time (under npad_lock) */
+
+/* the samples since the last, each with the input now (under npad_lock) */
+static void npad_sample(void) {
+    const int64_t now = hos_now_ns();
+    int64_t n = npad_sampling ? (now - npad_sampled_ns) / NPAD_PERIOD_NS : 1;
+    if (n <= 0) return;
+    npad_sampled_ns = n > NPAD_HISTORY ? now : npad_sampled_ns + n * NPAD_PERIOD_NS;
+    if (n > NPAD_HISTORY) n = NPAD_HISTORY;   /* (the older ones would be overwritten) */
+    HosInput in;
+    hos_input(&in);
+    for (; n > 0; n--) {
+        const int64_t s = ++npad_sampling;
+        npad_history[s & (NPAD_HISTORY - 1)].buttons = in.buttons;
+        memcpy(npad_history[s & (NPAD_HISTORY - 1)].stick, in.stick, 16);
+    }
+}
+
 /* GetNpadStates(State* out, int count, unsigned int const& npadId) -> how many written, the latest first */
 static void npad_states(Ctx *c) {
     FIRST_READ("the Npads");
-    const int count = clamp_count((int32_t)ARG(1), 16);
+    int count = clamp_count((int32_t)ARG(1), 16);
     if (!hos_guest_range(ARG(0), (uint64_t)count * STATE_SIZE) || !hos_guest_range(ARG(2), 4)) { RET(0); return; }
     const int connected = G32(ARG(2)) == NPAD_NO1;
-    HosInput in;
-    hos_input(&in);
-    const int64_t s = next_sampling();
+    pthread_mutex_lock(&npad_lock);
+    npad_sample();
+    const int64_t s = npad_sampling;
+    if (count > s) count = (int)s;
     for (int i = 0; i < count; i++) {
         const uint64_t e = ARG(0) + (uint64_t)i * STATE_SIZE;
         memset(GP(e), 0, STATE_SIZE);
         G64(e) = (uint64_t)(s - i);
         if (!connected) continue;
-        G64(e + 8) = in.buttons;
-        memcpy(GP(e + 16), in.stick, 16);
+        G64(e + 8) = npad_history[(s - i) & (NPAD_HISTORY - 1)].buttons;
+        memcpy(GP(e + 16), npad_history[(s - i) & (NPAD_HISTORY - 1)].stick, 16);
         G32(e + 32) = ATTR_CONNECTED;
     }
+    pthread_mutex_unlock(&npad_lock);
     RET(count);
 }
 HLE(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj) { npad_states(c); }

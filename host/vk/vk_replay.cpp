@@ -1302,6 +1302,8 @@ void cpu_ops() {
             memcpy(&r, o.bytes, sizeof r);
             NVNcounterData d = {0, 0};
             const uint32_t type = (uint32_t)r.type;
+            if (static uint32_t seen; type < 32 && !(__atomic_fetch_or(&seen, 1u << type, __ATOMIC_RELAXED) & (1u << type)))
+                hos_log("vk: the game reports counter type %u (first at %.1f s)", type, hos_now_ns() / 1e9);
             if (type == NVN_COUNTER_TYPE_TIMESTAMP || type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) d.timestamp = a64_cntpct_host();
             if (r.type & NVN_COUNTER_WRITTEN) continue;
             nvn_gpu_write(r.addr, &d, sizeof d);

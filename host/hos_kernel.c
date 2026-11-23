@@ -682,6 +682,7 @@ static void profile(double seconds, const char *want) {
     KThread *t = thread_named(want);
     if (!t) { hos_log("profile: no thread \"%s\"", want); return; }
     hos_log("profile: thread %#x \"%s\" for %.0f s", t->handle, want, seconds);
+    memset(prof, 0, sizeof prof);
     const int64_t end = hos_now_ns() + (int64_t)(seconds * 1e9);
     uint64_t samples = 0, in_svc[0x80] = {0};
     while (hos_now_ns() < end) {
@@ -741,6 +742,8 @@ static void *sampler_main(void *p) {
     }
     return NULL;
 }
+
+void hos_kernel_profile(double seconds, const char *thread) { profile(seconds, thread); }
 
 void hos_sampler_start(void) {
     pthread_t t;

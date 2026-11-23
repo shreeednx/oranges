@@ -19,6 +19,8 @@
 #include "vk_log.h"
 
 extern "C" int64_t hos_now_ns(void);
+extern "C" int hos_control_shot(char* path, size_t size);   // (hos.h)
+extern "C" void hos_control_shot_done(void);
 
 namespace ovk {
 

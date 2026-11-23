@@ -103,6 +103,7 @@ Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority);
 uint64_t hos_main_thread_handle(void);
 /* every running thread to the log: its name, what it waits for (or the SVC it is in) and its guest backtrace */
 void hos_kernel_dump(const char *why);
+void hos_kernel_profile(double seconds, const char *thread);   /* HOS_PROFILE now, on the calling thread */
 void hos_kernel_svc_mark(Ctx *c, uint32_t imm_plus_1);   /* (hos_svc.c) the SVC c's thread is in, plus 1; 0 after */
 /* a host thread for debugging (hos_kernel.c): HOS_SAMPLE=<s> hos_kernel_dump every s seconds; HOS_WATCHDOG=<s>
    (default 5, 0 off) hos_kernel_dump once when no frame was presented for s seconds (the first one included);
@@ -170,6 +171,10 @@ typedef struct {
 } HosInput;
 void hos_input(HosInput *out);     /* the input now: the window's, and HOS_INPUT_SCRIPT's */
 void hos_rumble(int motor, float amplitude);   /* a gamepad's motor (0 low, 1 high frequency): 0..1 */
+/* HOS_CONTROL's SHOT, for the back end at each present: whether a picture is asked for (its path in path), and that
+   it is saved */
+int hos_control_shot(char *path, size_t size);
+void hos_control_shot_done(void);
 /* run the game (guest_main): beside a window when there is one, else on this thread */
 void hos_window_run(void (*guest_main)(void));
 /* the Vulkan back end (host/vk/vk_device.cpp), started on the main thread: window an SDL_Window (null: headless);

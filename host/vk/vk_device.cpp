@@ -143,7 +143,8 @@ struct Shot {
 } shot;
 
 void write_bmp(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
-    FILE* f = fopen(path, "wb");
+    const std::string part = std::string(path) + ".part";   // (renamed once written: whoever waits sees it whole)
+    FILE* f = fopen(part.c_str(), "wb");
     if (!f) {
         hos_log("vk: screenshot %s cannot be written", path);
         return;
@@ -162,6 +163,7 @@ void write_bmp(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
         fwrite(line.data(), 1, row, f);
     }
     fclose(f);
+    rename(part.c_str(), path);
     hos_log("vk: screenshot %s (%ux%u)", path, w, h);
 }
 
@@ -252,6 +254,13 @@ void periodic_shots(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
 }
 void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
     periodic_shots(image, format, w, h);
+    if (char path[512]; hos_control_shot(path, sizeof path)) {   // (HOS_CONTROL's SHOT)
+        const std::string keep = shot.path;
+        shot.path = path;
+        take_screenshot(image, format, w, h);
+        shot.path = keep;
+        hos_control_shot_done();
+    }
     if (shot.at == -1) {
         shot.at = -2;
         const char* s = getenv("HOS_SCREENSHOT");
