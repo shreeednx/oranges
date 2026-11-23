@@ -133,6 +133,7 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
     (void)t, (void)level, (void)layer0, (void)r, (void)src, (void)row, (void)img;
 }
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
+void rx_nvn_flushed(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
 void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) { (void)gpu, (void)value; }

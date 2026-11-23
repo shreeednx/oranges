@@ -415,7 +415,14 @@ NV(nvnMemoryPoolGetBufferAddress) {
     if (no_pool(c, "buffer address")) { RET(0); return; }
     RET(((const nvn_pool *)P(0))->gpu);
 }
-NV(nvnMemoryPoolFlushMappedRange) { UNUSED; (void)c; }   /* the GPU reads guest memory as it is */
+/* the GPU reads guest memory as it is; the back end hears of the range (what it copied out of guest memory, textures,
+   is stale there) */
+NV(nvnMemoryPoolFlushMappedRange) {
+    UNUSED;
+    if (no_pool(c, "flush mapped range")) return;
+    const nvn_pool *o = (const nvn_pool *)P(0);
+    if ((int64_t)U64(1) >= 0) rx_nvn_flushed(o->gpu + U64(1), U64(2));
+}
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */
     UNUSED;
     if (no_pool(c, "invalidate mapped range")) return;
@@ -511,7 +518,11 @@ NV(nvnBufferGetAddress) {
 NV(nvnBufferGetMemoryPool) { UNUSED; RETP(((const nvn_buffer *)P(0))->pool); }
 NV(nvnBufferGetMemoryOffset) { UNUSED; RET((uint64_t)((const nvn_buffer *)P(0))->off); }
 NV(nvnBufferGetSize) { UNUSED; RET(((const nvn_buffer *)P(0))->size); }
-NV(nvnBufferFlushMappedRange) { UNUSED; (void)c; }
+NV(nvnBufferFlushMappedRange) {   /* (as nvnMemoryPoolFlushMappedRange) */
+    UNUSED;
+    const nvn_buffer *o = (const nvn_buffer *)P(0);
+    if (o->pool) rx_nvn_flushed(POOL(o->pool)->gpu + (uint64_t)o->off + U64(1), U64(2));
+}
 NV(nvnBufferInvalidateMappedRange) {
     UNUSED;
     const nvn_buffer *o = (const nvn_buffer *)P(0);

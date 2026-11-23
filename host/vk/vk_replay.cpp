@@ -45,6 +45,7 @@ void texels_to_guest(const nvn_tex* t, unsigned level, unsigned layer0, const NV
 void texels_from_guest(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, uint8_t* dst,
                        size_t row, size_t img);
 int trace_left();
+int images_dirty(uint64_t gpu, uint64_t size);
 void dump_depth(Image* im, const char* path);
 void save_image_bmp(VkImage image, VkFormat format, uint32_t w, uint32_t h, const char* path);
 
@@ -791,6 +792,11 @@ bool push_descriptors(const Program& p, VkPipelineBindPoint point) {
                     if (Image* im = image_of(rp.cb, &t)) ii.imageView = view_of(im, &v, hv, b.tex_type, false);
                     ii.sampler = sampler_of((int)(h >> 20));
                 }
+                if (trace_on && known && b.tex_type == 3)
+                    hos_log("vk trace:   array texture: depth %u levels %u target %d; view %d: target %d/%d layers %d/%u+%u levels %d/%u+%u format %d/%#x",
+                            t.d.depth, t.d.levels, t.d.target, hv, hv ? v.set_target : 0, hv ? v.target : 0, hv ? v.set_layers : 0,
+                            hv ? v.min_layer : 0, hv ? v.nlayers : 0, hv ? v.set_levels : 0, hv ? v.base_level : 0, hv ? v.nlevels : 0,
+                            hv ? v.set_format : 0, hv ? v.format : 0);
                 if (trace_on)
                     hos_log("vk trace:   texture binding %u (type %d): c%u+%#x handle %#x -> %s %#llx %ux%u format %#x target %d, view %s", b.binding, b.tex_type,
                             b.index, b.offset, h, known ? "texture" : "nothing", known ? (unsigned long long)t.gpu : 0ull,
@@ -1603,6 +1609,13 @@ void rx_nvn_write_texels(const nvn_tex* t, unsigned level, unsigned layer0, cons
     if (Image* im = image_find(t)) image_dirty(im);
 }
 void rx_nvn_invalidate(uint64_t, uint64_t) {}
+void rx_nvn_flushed(uint64_t gpu, uint64_t size) {
+    if (!up() || !size) return;
+    std::lock_guard lk(big_lock);
+    const int n = images_dirty(gpu, size);
+    if (n) vk_log_limited("flushed", 8, "vk: the CPU wrote %#llx + %#llx: %d texture(s) filled again", (unsigned long long)gpu,
+                          (unsigned long long)size, n);
+}
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) {
     if (up()) pool_created(gpu, size);
 }

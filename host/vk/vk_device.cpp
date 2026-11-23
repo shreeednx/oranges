@@ -168,6 +168,7 @@ void write_bmp(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
 void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h);
 }  // namespace
 void dump_written_images(const char* dir);   // (vk_texture.cpp)
+void texdump(VkCommandBuffer cb);
 void save_rgba_bmp(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) { write_bmp(path, rgba, w, h); }
 void save_image_bmp(VkImage image, VkFormat format, uint32_t w, uint32_t h, const char* path) {
     const std::string keep = shot.path;
@@ -266,6 +267,7 @@ void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
     shot.at = -2;
     take_screenshot(image, format, w, h);
     if (const char* dir = getenv("HOS_VK_DUMP")) dump_written_images(dir);   // (debugging: every image the GPU wrote)
+    texdump(VK_NULL_HANDLE);
 }
 
 }  // namespace

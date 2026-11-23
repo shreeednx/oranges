@@ -267,6 +267,9 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
                          size_t row, size_t img);
 /* the CPU is about to read memory the GPU may have written: GPU results there go to guest memory now */
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size);
+/* (oranges) the CPU wrote [gpu, gpu + size) (nvnMemoryPoolFlushMappedRange, nvnBufferFlushMappedRange): what the
+   back end copied out of it (texture images) is stale */
+void rx_nvn_flushed(uint64_t gpu, uint64_t size);
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size);   /* (the Vulkan back end imports it early; WebGPU: nothing) */
 /* virtual pages [gpu, gpu + size) mapped now are about to be unmapped or remapped: what the GPU drew into textures
    there goes into their memory first (the Vulkan back end; WebGPU: nothing) */

@@ -4,10 +4,11 @@
 // memory: the Tegra block-linear layout (host/nvn_layout.c: levels, block heights, layer size) is deswizzled on the CPU
 // into a staging buffer. One the GPU has written (a render target, a copy or clear destination) is never filled from
 // guest memory again. Others are checked once a frame with a fingerprint of their storage (a few kilobytes of it), and
-// filled again when it changed: the game loads textures into memory it reuses.
+// every few frames by a hash of all of it (32 MB a frame at most), and filled again when it changed: the game loads
+// textures into memory it reuses, and writes its font's glyphs into a texture as text needs them.
 //
-// Formats: BCn as they are; ASTC is not on desktop GPUs and is not decoded yet (a grey placeholder); RGB (3-component)
-// and 5-bit formats are left out. Views follow the type the shader declares (a 2D array texture sampled as 2D gets a
+// Formats: BCn as they are; ASTC, which desktop GPUs do not sample, decoded to RGBA8 on the CPU (suyu's decoder,
+// third_party/eden/video_core/textures); RGB (3-component) and 5-bit formats are left out. Views follow the type the shader declares (a 2D array texture sampled as 2D gets a
 // 2D view of its first layer), with the registration's levels, layers, format and swizzle.
 #include <algorithm>
 #include <cstdio>
@@ -15,7 +16,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include <span>
+
 #include "shader_recompiler/shader_info.h"
+#include "video_core/textures/astc.h"
 #include "vk.h"
 
 namespace ovk {
@@ -32,8 +36,12 @@ struct Image {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     bool written = false, filled = false;
     uint64_t fingerprint = 0, checked_frame = ~0ull;
+    uint64_t content = 0, content_frame = 0;   // (a hash of all of the storage, and the frame it was taken)
     std::unordered_map<uint64_t, VkImageView> views;
 };
+
+void staging_release();
+void save_image_bmp(VkImage image, VkFormat format, uint32_t w, uint32_t h, const char* path);
 
 namespace {
 
@@ -236,6 +244,33 @@ void to_general(VkCommandBuffer cb, Image* im) {
                          nullptr, 1, &b);
 }
 
+/// a hash of n bytes, four 64-bit lanes at a time (memory speed: the whole of a texture's storage is hashed)
+uint64_t fast_hash(const uint8_t* p, uint64_t n) {
+    constexpr uint64_t k = 0x9E3779B97F4A7C15ull;
+    uint64_t h[4] = {n, k, ~n, k ^ n};
+    uint64_t i = 0;
+    for (; i + 32 <= n; i += 32)
+        for (int l = 0; l < 4; l++) {
+            uint64_t v;
+            memcpy(&v, p + i + 8 * l, 8);
+            h[l] = (h[l] ^ v) * k;
+            h[l] ^= h[l] >> 29;
+        }
+    uint64_t r = h[0] ^ (h[1] << 1) ^ (h[2] << 2) ^ (h[3] << 3);
+    for (; i < n; i++) r = (r ^ p[i]) * 0x100000001b3ull;
+    return r;
+}
+
+/// all of an image's storage hashed (0: not contiguous host memory)
+uint64_t content_hash(const Image* im) {
+    const uint8_t* p = nvn_gpu_host(im->gpu);
+    if (!p || nvn_gpu_contiguous(im->gpu, im->L.size) < im->L.size) return 0;
+    return fast_hash(p, im->L.size);
+}
+uint64_t hash_budget = 0;   // (bytes of storage still to hash this frame)
+constexpr uint64_t kHashBudget = 32ull << 20;
+constexpr uint64_t kHashEvery = 4;   // (frames between an image's whole-storage checks, budget allowing)
+
 /// a fingerprint of the storage: all of it when small, else 64 spans of 64 bytes spread over it
 uint64_t fingerprint(const Image* im) {
     const uint64_t size = im->L.size;
@@ -290,8 +325,16 @@ void fill(VkCommandBuffer cb, Image* im) {
     std::vector<VkBufferImageCopy> copies;
     for (const Part& p : parts) {
         uint8_t* out = st.map + p.at;
-        if (astc) {   // (not decoded yet: a grey placeholder)
-            for (uint64_t i = 0; i < (uint64_t)p.w * p.h * p.depth; i++) out[4 * i] = out[4 * i + 1] = out[4 * i + 2] = 0x80, out[4 * i + 3] = 0xff;
+        if (astc) {   // (the blocks deswizzled, then decoded to RGBA8 by suyu's decoder: desktop GPUs sample no ASTC)
+            const uint32_t row = (p.w + bw - 1) / bw * bpb, rows = (p.h + bh - 1) / bh;
+            const uint64_t base = (uint64_t)p.layer * im->L.layer_size + nvn_tex_level_offset(&d, p.level);
+            if (base >= im->L.size) continue;
+            std::vector<uint8_t> blocks((size_t)row * rows * p.depth);
+            unsigned th = 0, td = 0;
+            nvn_tex_level_tiles(&d, p.level, &th, &td);
+            deswizzle(src + base, im->L.size - base, blocks.data(), row, rows, p.depth, th, td);
+            Tegra::Texture::ASTC::DecompressSerial(std::span<const uint8_t>(blocks), p.w, p.h, p.depth, (uint32_t)bw,
+                                                   (uint32_t)bh, std::span<uint8_t>(out, (size_t)p.w * p.h * p.depth * 4));
         } else {
             const uint32_t row = (p.w + bw - 1) / bw * bpb, rows = (p.h + bh - 1) / bh;
             if (nvn_tex_is_linear(&d)) {
@@ -363,6 +406,17 @@ void image_dirty(Image* im) {   // (the CPU wrote its memory: filled again at it
     im->written = false, im->filled = false, im->checked_frame = ~0ull;
 }
 
+/// the images whose storage overlaps [gpu, gpu + size) the GPU has not written: filled again at their next use
+int images_dirty(uint64_t gpu, uint64_t size) {
+    int n = 0;
+    for (auto& [key, im] : images)
+        if (im->img && !im->written && im->gpu < gpu + size && gpu < im->gpu + im->L.size) {
+            im->filled = false, im->checked_frame = ~0ull;
+            n++;
+        }
+    return n;
+}
+
 Image* image_of(VkCommandBuffer cb, const nvn_tex* t) {
     if (!t || !t->gpu) return nullptr;
     const uint64_t key = image_key(t);
@@ -382,11 +436,22 @@ Image* image_of(VkCommandBuffer cb, const nvn_tex* t) {
         if (im->img) to_general(cb, im);
     }
     if (!im->img) return nullptr;
+    // Filled from guest memory again when the CPU changed it: a fingerprint every frame (cheap, a reused memory's new
+    // texture), and every few frames, within a budget of bytes a frame, a hash of all of it. The game writes some
+    // textures in place, a little at a time (its font's glyph cache: a glyph when text first needs it), with nothing
+    // that says so (no nvnMemoryPoolFlushMappedRange: see rx_nvn_flushed).
     if (!im->written && im->checked_frame != frame) {
         im->checked_frame = frame;
         const uint64_t fp = fingerprint(im);
-        if (!im->filled || fp != im->fingerprint) {
+        bool changed = !im->filled || fp != im->fingerprint;
+        if (!changed && frame - im->content_frame >= kHashEvery && hash_budget >= im->L.size) {
+            hash_budget -= im->L.size;
+            im->content_frame = frame;
+            changed = content_hash(im) != im->content;
+        }
+        if (changed) {
             im->fingerprint = fp;
+            im->content = content_hash(im), im->content_frame = frame;
             if (before_transfer) before_transfer();
             fill(cb, im);
         }
@@ -633,8 +698,29 @@ void dump_written_images(const char* dir) {
     }
 }
 
+/// HOS_VK_TEXDUMP=<gpu hex>,<path> (debugging, with HOS_SCREENSHOT): the texture at that storage address as it is,
+/// <path>.now.bmp, and again filled from guest memory, <path>.mem.bmp
+void texdump(VkCommandBuffer cb_unused) {
+    (void)cb_unused;
+    const char* e = getenv("HOS_VK_TEXDUMP");
+    if (!e || !strchr(e, ',')) return;
+    const uint64_t gpu = strtoull(e, nullptr, 16);
+    const std::string path = strchr(e, ',') + 1;
+    for (auto& [key, im] : images) {
+        if (!im->img || gpu < im->gpu || gpu >= im->gpu + im->L.size) continue;
+        hos_log("vk: texdump %#llx %ux%u format %#x target %d written %d", (unsigned long long)im->gpu, im->w, im->h, im->d.format, im->d.target, (int)im->written);
+        save_image_bmp(im->img, im->fi.format, im->w, im->h, (path + ".now.bmp").c_str());
+        VkCommandBuffer cb = begin_commands();
+        fill(cb, im);
+        end_and_wait(cb);
+        staging_release();
+        save_image_bmp(im->img, im->fi.format, im->w, im->h, (path + ".mem.bmp").c_str());
+    }
+}
+
 void textures_frame_end() {
     frame++;
+    hash_budget = kHashBudget;
 }
 
 void staging_release() {   // (after a command buffer that used them has finished)

@@ -169,17 +169,19 @@ pools imported (`VK_EXT_external_memory_host`), shader objects with all state dy
 
 Left over from it:
 
-- [ ] Capital letters are missing from the UI text ("he first step...", "es, it is!"): find where those glyphs come
-      from (another font page, an ASTC texture, a CPU-written glyph cache)
-- [ ] ASTC: decode on the CPU (desktop GPUs have none); a grey placeholder now (the choice cursor, UI icons)
+- [x] Capital letters were missing from the UI text: the font's glyph cache (a 2048x4096 R8 texture) gets each glyph
+      written in place when text first needs it, with no flush call; the 64-span fingerprint missed them. Every
+      texture's whole storage is now hashed every few frames within 32 MB a frame (`vk_texture.cpp`), and
+      `nvnMemoryPoolFlushMappedRange` / `nvnBufferFlushMappedRange` mark ranges stale (`rx_nvn_flushed`)
+- [x] ASTC: decoded on the CPU with suyu's decoder (`third_party/eden/video_core/textures`); the choice cursor shows
+- [ ] The whole-storage check costs up to 32 MB of hashing a frame on the game's submitting thread: measure, and move
+      it (or the ASTC decodes) off that thread if it shows
 - [ ] Not replayed yet: compute dispatches, indirect draws, texel buffers, storage images, alpha test, line widths,
       multisample resolves, depth-stencil fills from memory. None seen in the prologue so far (logged once if they are)
 - [ ] Performance: every submit waits for the GPU, every pass ends with a full barrier, the driver banks are rebuilt
       for each draw, programs are translated on the game's thread. Profile once more of the game draws
 - [ ] Memory: images and views are never freed (the game's transient targets alias one virtual pool region; each
       size/format there is its own image)
-- [ ] Texture refills from guest memory are found by a fingerprint of 64 spans, once a frame: a change elsewhere is
-      missed
 - [ ] Frames are paced by `nvn_native.c`'s clock; mailbox/immediate presents. Pace by the display (`HOS_VSYNC=1` is
       FIFO today)
 - [ ] Run once with the Khronos validation layer (`HOS_VK_VALIDATE=1`; not installed on this machine)
@@ -187,8 +189,8 @@ Left over from it:
 
 ## 1. The renderer's gaps
 
-The leftovers under "Done: a renderer" above, first the missing capital letters and ASTC (what is wrong on screen
-now), then compute dispatches when the game first uses them, then performance.
+The leftovers under "Done: a renderer" above: compute dispatches and the other unreplayed commands when the game first
+uses them (logged once), then performance and memory.
 
 ## 2. Clean-ups and checks
 

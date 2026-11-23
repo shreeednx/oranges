@@ -10,6 +10,9 @@ them, 2026-11). Do not edit it here: `host/vk/vk_shader.cpp` drives it, and sets
   `(amd-fix)`, `(Lichii ...)`, `(from Fritchii)` and so on, per file). The `frontend/ampere/` lowering (Switch 2
   programs to Maxwell) is part of it and unused here: the game's programs are Maxwell already.
 - `sirit/`: the SPIR-V emitter (sirit, by ReinUsesLisp; `sirit/LICENSE*`).
+- `video_core/textures/astc.{cpp,h}`, `workers.h`: suyu's (yuzu's) CPU ASTC decoder (GPL-3.0-or-later / GPL-2.0-or-later,
+  with the University of North Carolina's Apache-2.0 parts), from the same toolchain's `gpu/third_party/suyu`: desktop
+  GPUs sample no ASTC, so `host/vk/vk_texture.cpp` decodes it to RGBA8.
 - `compat/`: Longshot's stand-ins for the parts of boost, {fmt}, ankerl and yuzu's `common/` the recompiler includes
   (on the C++20 standard library), and `longshot_env.h` (its switches' one rule).
 
