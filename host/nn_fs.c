@@ -4,7 +4,8 @@
      MountAddOnContent         no add-on content: "target not found"
    A path is "<mount>:/<path>". FileHandle and DirectoryHandle (one pointer each, passed in a register) are indexes
    into the tables here, plus one. Reads and writes are positional (pread/pwrite), so threads may share a file. Results
-   are nn::fs's (module 2). Writes go straight to the host files, so Commit has nothing left to do. */
+   are nn::fs's (module 2). Writes go straight to the host files, so Commit has nothing left to do.
+   HOS_FS_LOG=1 logs every path the game asks for. */
 #include "hos.h"
 
 #include <dirent.h>
@@ -81,6 +82,9 @@ static uint32_t add_mount(const char *name, const char *host, int writable) {
 
 /* "<mount>:/<path>" -> host path: 0, or a result. writable: whether the mount takes writes */
 static uint32_t host_path(const char *guest, char *out, int *writable) {
+    static int log = -1;
+    if (log < 0) log = getenv("HOS_FS_LOG") != NULL;
+    if (log) hos_log("fs: %s (lr %#llx)", guest, hos_current ? (unsigned long long)hos_current->x[30] : 0ULL);
     const char *colon = strchr(guest, ':');
     if (!colon || colon == guest || colon - guest >= 32) return R_INVALID_MOUNT_NAME;
     char name[32];

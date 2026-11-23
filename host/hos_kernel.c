@@ -53,6 +53,7 @@ typedef struct KThread {
     uint64_t wait_addr, wait_key;   /* the mutex word; the condition variable's key */
     int woken, cancel;              /* handed the mutex / signalled; CancelSynchronization pending */
     uint64_t seq;                   /* when it began waiting (FIFO among equals) */
+    volatile uint32_t svc;          /* the SVC it is in, plus 1 (0: in guest code), for hos_kernel_dump */
 } KThread;
 
 enum { H_FREE = HOS_H_FREE, H_THREAD = HOS_H_THREAD, H_EVENT = HOS_H_EVENT };
@@ -127,7 +128,7 @@ static KThread *best_waiter(int kind, uint64_t addr) {   /* highest priority (lo
     KThread *best = NULL;
     for (int i = 0; i < nthreads; i++) {
         KThread *t = threads[i];
-        if (t->wait != kind || t->woken || (kind == W_CONDVAR ? t->wait_key : t->wait_addr) != addr) continue;
+        if ((int)t->wait != kind || t->woken || (kind == W_CONDVAR ? t->wait_key : t->wait_addr) != addr) continue;
         if (!best || t->priority < best->priority || (t->priority == best->priority && t->seq < best->seq)) best = t;
     }
     return best;
@@ -241,6 +242,97 @@ void hos_kernel_event_signal(uint32_t handle) {
         pthread_cond_broadcast(&kwake);
     }
     pthread_mutex_unlock(&klock);
+}
+
+/* ---- what every thread does, for a person debugging a stall (HOS_SAMPLE, the watchdog) */
+
+void hos_kernel_svc_mark(Ctx *c, uint32_t imm_plus_1) {
+    KThread *t = c->thread;
+    if (t) t->svc = imm_plus_1;
+}
+
+/* the name nn::os gave a thread: ThreadType's name pointer points into its own name buffer (TLS + 0x1f8 holds the
+   ThreadType *), so look for a word that points a little before itself */
+static const char *thread_name(KThread *t, char *buf, size_t n) {
+    snprintf(buf, n, "?");
+    const uint64_t tt = G64(t->tlr + 0x1f8);
+    if (!tt || tt >= HOS_WINDOW - 0x200) return buf;
+    for (uint64_t k = 8; k < 0x200; k += 8) {
+        const uint64_t p = G64(tt + k);
+        if (p < tt || p >= tt + k || p + 32 > tt + k) continue;
+        const char *s = GP(p);
+        size_t i = 0;
+        while (i < 31 && s[i] >= 0x20 && s[i] < 0x7f) i++;
+        if (i && !s[i]) { snprintf(buf, n, "%s", s); break; }
+    }
+    return buf;
+}
+
+/* a thread's guest call chain: lr, then the return addresses of its frame records. The chain of a thread that runs on
+   is read while it changes, so only frames inside its stack are followed. */
+static int thread_chain(KThread *t, uint64_t *out, int max) {
+    uint64_t lo = 0, size = 0;
+    int state = 0, perm = 0;
+    hos_query(t->ctx.x[31], &lo, &size, &state, &perm);
+    const uint64_t hi = state ? lo + size : 0;
+    int n = 0;
+    out[n++] = t->ctx.x[30];
+    for (uint64_t fp = t->ctx.x[29]; n < max && fp >= lo && fp + 16 <= hi && !(fp & 7);) {
+        const uint64_t lr = G64(fp + 8), next = G64(fp);
+        if (!lr) break;
+        out[n++] = lr;
+        if (next <= fp) break;
+        fp = next;
+    }
+    return n;
+}
+
+static void frame_line(const char *label, uint64_t pc, const char *extra) {
+    uint64_t off = 0;
+    const char *name = hos_symbol(pc, &off);
+    if (name && off < 0x1000) hos_log("    %-4s %#llx  %s+%#llx%s", label, (unsigned long long)pc, name,
+                                      (unsigned long long)off, extra);
+    else hos_log("    %-4s %#llx%s", label, (unsigned long long)pc, extra);
+}
+
+static void thread_backtrace(KThread *t) {
+    uint64_t chain[24];
+    const int n = thread_chain(t, chain, 24);
+    for (int i = 0; i < n; i++) {
+        char label[8];
+        snprintf(label, sizeof label, i ? "#%d" : "lr", i);
+        frame_line(label, chain[i], "");
+    }
+}
+
+void hos_kernel_dump(const char *why) {
+    KThread *list[MAX_THREADS];
+    pthread_mutex_lock(&klock);
+    const int n = nthreads;
+    memcpy(list, threads, n * sizeof *list);
+    pthread_mutex_unlock(&klock);
+    hos_log("threads (%s), %.1f s:", why, hos_now_ns() / 1e9);
+    for (int i = 0; i < n; i++) {
+        KThread *t = list[i];
+        if (!t->started || t->exited) continue;
+        char name[40], what[160];
+        const uint32_t svc = t->svc;
+        if (t->wait == W_MUTEX) snprintf(what, sizeof what, "waits for the mutex at %#llx (owner %#x)",
+                                         (unsigned long long)t->wait_addr, G32(t->wait_addr) & ~MUTEX_WAITERS);
+        else if (t->wait == W_ARBITER) snprintf(what, sizeof what, "waits for the address %#llx (now %#x)",
+                                                (unsigned long long)t->wait_addr, G32(t->wait_addr));
+        else if (t->wait) {   /* (and the words around the mutex: a semaphore's count is 8 bytes before it) */
+            const uint32_t *m = GP(t->wait_addr - 0x10);
+            snprintf(what, sizeof what, "waits for a condition variable at %#llx (mutex %#llx: %x %x %x %x [%x] %x)",
+                     (unsigned long long)t->wait_key, (unsigned long long)t->wait_addr, m[0], m[1], m[2], m[3], m[4], m[5]);
+        }
+        else if (svc) snprintf(what, sizeof what, "in svc %#x (x0 %#llx x1 %#llx)", svc - 1,
+                               (unsigned long long)t->ctx.x[0], (unsigned long long)t->ctx.x[1]);
+        else snprintf(what, sizeof what, "runs");
+        hos_log("  thread %#x \"%s\" priority %d core %d: %s", t->handle, thread_name(t, name, sizeof name), t->priority,
+                t->core, what);
+        thread_backtrace(t);
+    }
 }
 
 /* ---- the SVCs: 1 when handled */
@@ -434,22 +526,21 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         struct timespec ts;
         const int timed = deadline_of((int64_t)c->x[3], &ts);
         pthread_mutex_lock(&klock);
+        /* the has-waiter flag before the mutex goes, as the kernel orders them: the SDK's Signal skips the SVC while
+           the flag is 0, so a thread that took the mutex in between and signalled would be lost (a semaphore's
+           waiter slept on with a count of 1: the frame stall) */
+        __atomic_store_n((uint32_t *)GP(key), 1, __ATOMIC_SEQ_CST);
         mutex_release(mutex);
-        __atomic_store_n((uint32_t *)GP(key), 1, __ATOMIC_RELEASE);
         self->wait = W_CONDVAR, self->wait_key = key, self->wait_addr = mutex, self->woken = 0, self->seq = ++wait_seq;
+        /* woken: signalled and handed the mutex (at once, or after a wait in its queue). A timeout in either wait
+           leaves both queues and returns without the mutex, as the kernel's KConditionVariable::Wait: the SDK's
+           TimedWait takes the critical section itself on TimedOut (taking it here deadlocked that thread on itself) */
         uint32_t r = 0;
-        while (!self->woken && self->wait == W_CONDVAR) {
+        while (!self->woken)
             if ((int64_t)c->x[3] == 0 || kwait(timed, &ts) == ETIMEDOUT) {
-                if (!self->woken && self->wait == W_CONDVAR) {   /* timed out: take the mutex back (or queue for it) */
-                    self->wait = W_NONE;
-                    r = KERN_TIMED_OUT;
-                    if (!mutex_take_or_queue(self, mutex))
-                        while (!self->woken) kwait(0, NULL);
-                }
+                if (!self->woken) r = KERN_TIMED_OUT;
                 break;
             }
-        }
-        while (self->wait == W_MUTEX && !self->woken) kwait(0, NULL);   /* (signalled, then queued for the mutex) */
         self->wait = W_NONE;
         pthread_mutex_unlock(&klock);
         c->x[0] = r;
@@ -490,10 +581,15 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         struct timespec ts;
         const int timed = deadline_of((int64_t)c->x[3], &ts);
         pthread_mutex_lock(&klock);
-        const int32_t cur = __atomic_load_n(word, __ATOMIC_ACQUIRE);
-        const int waits = type == 2 ? cur == value : cur < value;
-        if (!waits) { pthread_mutex_unlock(&klock); c->x[0] = KERN_INVALID_STATE; return 1; }
-        if (type == 1) __atomic_store_n(word, cur - 1, __ATOMIC_RELEASE);
+        /* the check and the decrement are one atomic step, as the kernel's (guest threads change the word with their
+           own atomics, outside klock) */
+        int32_t cur = __atomic_load_n(word, __ATOMIC_ACQUIRE);
+        for (;;) {
+            const int waits = type == 2 ? cur == value : cur < value;
+            if (!waits) { pthread_mutex_unlock(&klock); c->x[0] = KERN_INVALID_STATE; return 1; }
+            if (type != 1 || __atomic_compare_exchange_n(word, &cur, cur - 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+                break;
+        }
         if ((int64_t)c->x[3] == 0) { pthread_mutex_unlock(&klock); c->x[0] = KERN_TIMED_OUT; return 1; }
         self->wait = W_ARBITER, self->wait_addr = addr, self->woken = 0, self->seq = ++wait_seq;
         uint32_t r = 0;
@@ -515,18 +611,22 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         int32_t *word = GP(addr);
         pthread_mutex_lock(&klock);
         if (type) {
-            const int32_t cur = __atomic_load_n(word, __ATOMIC_ACQUIRE);
-            if (cur != value) { pthread_mutex_unlock(&klock); c->x[0] = KERN_INVALID_STATE; return 1; }
-            if (type == 1) {
-                __atomic_store_n(word, value + 1, __ATOMIC_RELEASE);
-            } else {   /* by how many wait (the kernel's rule as Atmosphère's KAddressArbiter has it; to check against
-                          its source): none wait -> value + 1; count <= 0 (all) -> value - 2; all of them woken ->
-                          value - 1; some left waiting -> value */
+            int32_t next = value + 1;
+            if (type == 2) {   /* by how many wait (the kernel's rule as Atmosphère's KAddressArbiter has it; to check
+                                  against its source): none wait -> value + 1; count <= 0 (all) -> value - 2; all of
+                                  them woken -> value - 1; some left waiting -> value */
                 int waiting = 0;
                 for (int i = 0; i < nthreads; i++)
                     waiting += threads[i]->wait == W_ARBITER && !threads[i]->woken && threads[i]->wait_addr == addr;
-                const int32_t next = !waiting ? value + 1 : count <= 0 ? value - 2 : waiting <= count ? value - 1 : value;
-                __atomic_store_n(word, next, __ATOMIC_RELEASE);
+                next = !waiting ? value + 1 : count <= 0 ? value - 2 : waiting <= count ? value - 1 : value;
+            }
+            /* compare and update in one atomic step (the kernel's UpdateIfEqual): a load and a store would lose a guest
+               thread's atomic change of the word made between them */
+            int32_t cur = value;
+            if (!__atomic_compare_exchange_n(word, &cur, next, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                pthread_mutex_unlock(&klock);
+                c->x[0] = KERN_INVALID_STATE;
+                return 1;
             }
         }
         while (count != 0) {
@@ -543,4 +643,107 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
     default:
         return 0;
     }
+}
+
+/* ---- the sampler, the profiler and the frame watchdog (a host thread of their own) */
+
+/* HOS_PROFILE=<s>[,thread name]: sample one thread's guest call chain every millisecond for s seconds (from the first
+   frame on), then log each return address by how many samples had it in their chain (the call tree, inclusive) */
+#define PROF_SLOTS 8192
+static struct { uint64_t addr, hits, leaf; } prof[PROF_SLOTS];
+
+static void prof_add(uint64_t a, int leaf) {
+    for (uint32_t h = (uint32_t)(a * 0x9E3779B97F4A7C15ULL >> 51), k = 0; k < PROF_SLOTS; k++, h = (h + 1) % PROF_SLOTS)
+        if (prof[h].addr == a || !prof[h].addr) {
+            prof[h].addr = a, prof[h].hits++, prof[h].leaf += leaf;
+            return;
+        }
+}
+
+static int prof_cmp(const void *x, const void *y) {
+    const uint64_t a = ((const typeof(prof[0]) *)x)->hits, b = ((const typeof(prof[0]) *)y)->hits;
+    return a < b ? 1 : a > b ? -1 : 0;
+}
+
+static KThread *thread_named(const char *want) {
+    pthread_mutex_lock(&klock);
+    const int n = nthreads;
+    KThread *list[MAX_THREADS];
+    memcpy(list, threads, n * sizeof *list);
+    pthread_mutex_unlock(&klock);
+    for (int i = 0; i < n; i++) {
+        char name[40];
+        if (list[i]->started && !list[i]->exited && !strcmp(thread_name(list[i], name, sizeof name), want)) return list[i];
+    }
+    return NULL;
+}
+
+static void profile(double seconds, const char *want) {
+    KThread *t = thread_named(want);
+    if (!t) { hos_log("profile: no thread \"%s\"", want); return; }
+    hos_log("profile: thread %#x \"%s\" for %.0f s", t->handle, want, seconds);
+    const int64_t end = hos_now_ns() + (int64_t)(seconds * 1e9);
+    uint64_t samples = 0, in_svc[0x80] = {0};
+    while (hos_now_ns() < end) {
+        uint64_t chain[48];
+        const int n = thread_chain(t, chain, 48);
+        for (int i = 0; i < n; i++) {
+            int dup = 0;   /* (recursion: count an address once per sample) */
+            for (int j = 0; j < i; j++) dup |= chain[j] == chain[i];
+            if (!dup) prof_add(chain[i], i == 0);
+        }
+        const uint32_t svc = t->svc;
+        if (svc && svc - 1 < 0x80) in_svc[svc - 1]++;
+        samples++;
+        struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+    }
+    qsort(prof, PROF_SLOTS, sizeof prof[0], prof_cmp);
+    hos_log("profile: %llu samples; return addresses by samples (inclusive, leaf):", (unsigned long long)samples);
+    for (int i = 0; i < 150 && prof[i].addr; i++) {
+        char extra[48];
+        snprintf(extra, sizeof extra, "  %5.1f%%  %5.1f%%", 100.0 * prof[i].hits / samples, 100.0 * prof[i].leaf / samples);
+        frame_line("", prof[i].addr, extra);
+    }
+    for (int i = 0; i < 0x80; i++)
+        if (in_svc[i]) hos_log("profile: in svc %#x %.1f%%", i, 100.0 * in_svc[i] / samples);
+}
+
+static void *sampler_main(void *p) {
+    (void)p;
+    extern uint64_t hos_present_count;   /* (nvn_native.c) */
+    const char *s = getenv("HOS_SAMPLE"), *w = getenv("HOS_WATCHDOG"), *pr = getenv("HOS_PROFILE");
+    const double every = s ? atof(s) : 0, watch = w ? atof(w) : 5;
+    int64_t next = every > 0 ? (int64_t)(every * 1e9) : INT64_MAX, last_frame = 0;
+    uint64_t frames = 0;
+    int fired = 0;
+    for (;;) {
+        struct timespec ts = {0, 100000000};
+        nanosleep(&ts, NULL);
+        const int64_t now = hos_now_ns();
+        const uint64_t f = __atomic_load_n(&hos_present_count, __ATOMIC_RELAXED);
+        if (f != frames) frames = f, last_frame = now, fired = 0;
+        if (pr && frames > 30) {
+            const char *comma = strchr(pr, ',');
+            profile(atof(pr), comma ? comma + 1 : "MainThread");
+            pr = NULL;
+        }
+        if (watch > 0 && !fired && now - last_frame > (int64_t)(watch * 1e9)) {   /* (the first frame, too) */
+            fired = 1;
+            char why[64];
+            snprintf(why, sizeof why, "watchdog: no frame for %.0f s after %llu", watch, (unsigned long long)frames);
+            hos_kernel_dump(why);
+        }
+        if (now >= next) {
+            hos_kernel_dump("HOS_SAMPLE");
+            next += (int64_t)(every * 1e9);
+        }
+    }
+    return NULL;
+}
+
+void hos_sampler_start(void) {
+    pthread_t t;
+    pthread_create(&t, NULL, sampler_main, NULL);
+    pthread_detach(t);
 }

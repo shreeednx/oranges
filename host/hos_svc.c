@@ -87,7 +87,15 @@ static void not_implemented(Ctx *c, uint32_t imm) {
     c->x[0] = KERN_NOT_IMPLEMENTED;
 }
 
+static void svc(Ctx *A64_NOESC c, uint32_t imm);
+
 void a64_svc(Ctx *A64_NOESC c, uint32_t imm) {
+    hos_kernel_svc_mark(c, imm + 1);
+    svc(c, imm);
+    hos_kernel_svc_mark(c, 0);
+}
+
+static void svc(Ctx *A64_NOESC c, uint32_t imm) {
     if (hos_trace) log_svc(c, imm);
     uint64_t v = 0;
     switch (imm) {

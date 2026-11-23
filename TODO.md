@@ -14,8 +14,10 @@ Initialize, GetSaveDataBackupSetting = off). With it the game runs its frame loo
 
 Left over from it:
 
-- [ ] `olsc:u` is the only service the game opens through `sm:` in the first 90 s. Watch the `ipc:` lines for more
-      once input gets it further (a request nobody emulates is logged once per service and command, with its caller).
+- [ ] Watch the `ipc:` lines for services the game opens through `sm:` (a request nobody emulates is logged once per
+      service and command, with its caller). The second one: `prepo:u` command 10105 from `nn::prepo::PlayReport::Save(
+      Uid)` (lifted: its PlayReporter thread, during the name entry), answered empty. HLE `PlayReport::Save` (both
+      overloads) as a dropped report, which needs a lift.
 - [ ] A command that returns an interface but is answered empty gives the client no handle / object id (it reads 0;
       requests to object 0 are answered empty too). Emulate such commands when one turns up.
 - [ ] Session objects (`Session` in `hos_ipc.c`) are never freed when their handle is closed.
@@ -68,23 +70,42 @@ Left over from it:
 - [ ] Why the game stalls when the bcat mount fails is not understood (a real console may fail it too, without a
       network). Look again if another service's failure stalls it the same way.
 
-## 1. The game never reads the pad (next wall)
+## Done: the game reads the pad (it waited for the player)
 
-It initializes hid (InitializeNpad, the style set, hold type, mouse, keyboard, touch screen) and presents frames at
-30 fps, but in 100 s it never calls GetNpadStates or any other state read (counted with gdb breakpoints on the
-`imp__ZN2nn3hid*` HLEs). So it is still in a stage before its title screen, which reads no input: input can't move it.
+The game reads the Npads, motion, mouse, keyboard and touch screen from 0.8 s on (`nn_hid.c` now logs each kind's
+first read; the earlier gdb count was wrong). With no save (`deviceSave:/main.dat` missing) it plays the new-game
+prologue: the airport counter (`Tutorials_Prologue1_Airport`, ~18 s), whose dialogue waits for A. With A every 1.5 s
+(`HOS_INPUT_SCRIPT`) it reaches the game's own keyboard for the player's name (~58 s), and after a few letters and +,
+the birthday (`DateInput`). Tools from finding it: `HOS_SAMPLE`, `HOS_PROFILE`, `HOS_FS_LOG` (CLAUDE.md).
 
-- [ ] Find what that stage waits for (sample the main thread's guest backtrace over several frames; look for a loader
-      thread, a GPU result rx_null.c does not give, or a service answer)
+Left over from it:
 
-## 2. An intermittent frame stall
+- [ ] Going further blind is guesswork: it needs the renderer (or a screenshot of the window textures) to script
+      input against
 
-About 1 run in 7 stops presenting frames within the first 20 s (seen with the last commit's host code too, and not
-under gdb in 6 tries). The bcat mount failure made it happen every time. In those samples the main thread waited in
-ArbitrateLock (a guest mutex) or WaitForAddress.
+## Done: the intermittent frame stall
 
-- [ ] Catch one: a watchdog that dumps every thread's guest backtrace (`hos_backtrace`) when no frame was presented
-      for 5 s would find it without gdb's timing changes
+About 1 run in 7 stopped presenting frames around 15-25 s: main waited for a SupportWorker's light event while that
+worker slept on its semaphore with a count of 1. WaitProcessWideKeyAtomic released the mutex before it set the
+condition variable's has-waiter word, and the SDK's Signal skips the SVC while that word is 0, so a release in between
+was lost. The kernel now sets the word first (0 stalls in 40 runs after, against 2-4 in 32 before). The watchdog
+(`HOS_WATCHDOG`, on by default at 5 s) dumps every thread when frames stop, the first frame included. Two more kernel
+fixes from reading it against Atmosphère's: a condition variable wait that times out returns without the mutex (the
+SDK's TimedWait takes it itself on TimedOut, so the old way deadlocked the thread on itself), and SignalToAddress /
+WaitForAddress update the word with one compare-and-swap (guest atomics changed it between our load and store).
+
+## 1. A startup crash in "Resource Memory" (a race)
+
+About 1 run in 10 with 4 processes at once (rarer alone) crashes before the first frame: thread 0x100d ("Resource
+Memory"), guest address 8, in its message handler `0x86d6514` (vtable +0x88, message 1) at `0x86d65a4`. It reads the
+singleton at `0xda05378` (`ldr x8, [singleton]; ldr x8, [x8, #8]; ldr x0, [x8, #8]`) while +8 is still 0. The Prepare
+thread creates the singleton (`f_0bdfc054`, called at `0x86bf828` in `f_086ba6b0`) and its init (vtable +0x10,
+`f_0bdfc2b8`) stores +8 only after creating a 32 MB heap (`f_0bdfc704`), which probably posts that message. On the
+console the creator (priority 44) is not preempted in that window; here host threads run freely and are under load.
+
+- [ ] Confirm who sends message 1 (a breakpoint on the queue send) and that it is the heap creation
+- [ ] Close the window: priority-aware wakeups, or hold a lower-priority thread's wakeup while a higher-priority thread
+      on its core runs (the scheduler item in Clean-ups), rather than a patch of the game
 
 ## Done: a window and input
 
@@ -103,13 +124,13 @@ Left over from it:
 - [ ] Key remapping (a config file), more than one gamepad (Npad No.2-8), motion from a gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
-## 3. Sound
+## 2. Sound
 
 - [ ] A sound device for `host/nn_audio.c`. The renderer already mixes and `HOS_AUDIO_DUMP=<file.wav>` writes what
       would play. Swap `output_open` / `output_frame` for a real sink.
 - [ ] Process the effects that only pass through today (delay, reverb, biquad filter effects), if the game needs them
 
-## 4. The renderer
+## 3. The renderer (the next wall: the prologue can't be played blind)
 
 - [ ] A Vulkan back end in place of `host/rx_null.c`, replaying the recorded NVN commands (Longshot's `gpu/vk`, made
       for NVN2: adapt it to NVN1)
@@ -117,14 +138,13 @@ Left over from it:
 - [ ] Textures: deswizzle the block-linear layouts (`host/nvn_layout.c` already computes them) and ASTC/BCn formats
 - [ ] Present the window textures to the real window
 
-## 5. Clean-ups and checks
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
-- [ ] Fix the sign-compare warning in `host/hos_kernel.c` (`best_waiter`)
 - [ ] Build the host code with warnings on (it uses `-Wno-everything` along with the lifted C today)
 - [ ] A scheduler that honours priorities (core numbers are reported now, but every guest thread still runs freely on
-      its own host thread), if a wall turns out to depend on it
+      its own host thread): the Resource Memory crash (1.) probably depends on it
 - [ ] Tests for the host side where they can run without the game (NVN object layouts, the audio mixer's buffer
       release, the `nn::time` calendar conversions)
 - [ ] Windows build (POSIX-only today: pthreads, `mmap`, signals)

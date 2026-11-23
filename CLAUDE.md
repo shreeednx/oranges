@@ -29,6 +29,9 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges build                           # compile work/gen + rt + host/, link work/build/oranges
 ./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
 HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
+HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
+HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
+HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
 .venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
 .venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
 ```
@@ -83,7 +86,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   control commands, and the emulated services (`services[]`, each a `HosIface`; `olsc:u` is in `nn_system.c`).
   Requests to services nobody emulates get a success with zeroed outputs. `hos_log.c` has logging, traps and stub notes.
   `hos_setjmp.c` holds stubs. `hos_kernel.c` has threads (each on a host pthread), handles, mutexes, condition
-  variables, address arbiters, events and WaitSynchronization, under one kernel lock. `hos_hostcall.c` provides guest
+  variables, address arbiters, events and WaitSynchronization, under one kernel lock, and a debugging thread:
+  `hos_kernel_dump` (each thread's nn::os name, what it waits for, its guest backtrace) for `HOS_SAMPLE` and the frame
+  watchdog (`HOS_WATCHDOG`, default 5 s: dumps once when frames stop), and the `HOS_PROFILE` sampler. `hos_hostcall.c` provides guest
   addresses that are host functions (through `a64_lookup_host`), for function pointers handed to the game.
   `nn_fs.c` is `nn::fs` (RomFS read-only from `work/romfs`, device save data in `work/user/save/device`). `nvn.c` has
   the nv:: driver setup HLE. `nvn_native.c` is NVN itself, ported from Longshot's NVN1-descended layer: objects live in
@@ -154,8 +159,11 @@ and attribution notices, and note the source file in a comment.
   NVN, audio (`nn_audio.c`: renderer, first voice and wave buffers), fonts (a host TTF for the system's shared fonts:
   `HOS_SHARED_FONT`), input (`nn_hid.c`: a connected pad at rest), presents its first frame, runs its frame loop's
   job scheduler, mounts the device save, opens `olsc:u` through `sm:` (its own client, linked into main: served by
-  `hos_ipc.c`), and runs its frame loop at 30 fps (90 s tested, nothing drawn, no input). To sample every thread: `(sleep 60; pkill -INT -x oranges) & gdb
-  -batch -ex run -ex "thread apply all bt 25" ./work/build/oranges` (attaching is blocked by ptrace_scope).
+  `hos_ipc.c`), and runs its frame loop at 30 fps (nothing drawn). It reads the pad from 0.8 s on. With no save
+  (`deviceSave:/main.dat` missing) it starts the new-game prologue: the airport counter (`Tutorials_Prologue1_Airport`,
+  ~18 s), whose dialogue A advances, then the game's own keyboard for the name (~58 s with A every 1.5 s), then the
+  birthday (`DateInput`). To see every thread: `HOS_SAMPLE`; with host frames, `(sleep 60; pkill -INT -x oranges) &
+  gdb -batch -ex run -ex "thread apply all bt 25" ./work/build/oranges` (attaching is blocked by ptrace_scope).
 - Two things the frame loop's job scheduler needs (the stall after the first frame): the kernel reports each thread's
   core (`GetCurrentProcessorNumber` from its SetThreadCoreMask ideal core / affinity), because a thread pinned to one
   core takes `core + 1` as its TLS index (`f_0b7e2374`) and the scheduler's per-thread slots are indexed by it
@@ -165,10 +173,16 @@ and attribution notices, and note the source file in a comment.
   real server sends.
 - 6 OS-facing imports are still stubs (no caller in main). A service's answer can change the game's path: a failed
   bcat mount stopped the frame loop, so check that frames still flow (`nvn: N frames presented`) after changing one.
-- The game initializes hid but reads no input in its first 100 s (a stage before the title screen), and about 1 run in
-  7 its frames stop within 20 s (a race, not seen under gdb). Count frames over several runs before trusting a change.
-- Next: what the game waits for before it reads input, the frame stall, a sound device for `nn_audio.c`, and the
-  Vulkan back end in place of `rx_null.c`.
+- Kernel semantics the SDK depends on (each was a hang): WaitProcessWideKeyAtomic sets the condition variable's
+  has-waiter word before it releases the mutex (the SDK's Signal skips the SVC while it is 0), and on a timeout returns
+  without the mutex (the SDK's TimedWait takes it itself); SignalToAddress / WaitForAddress update the word with a
+  compare-and-swap (guest threads change it with their own atomics).
+- About 1 run in 10, with several processes running at once, the "Resource Memory" thread (0x100d) crashes before the
+  first frame (guest address 8, at `0x86d65a4`): it reads the singleton at `0xda05378` between its creation and the
+  store of its +8 field (`f_0bdfc2b8`), a window the console's priorities probably keep closed. Run many times (4 at a
+  time, 30 s each) and count frames before trusting a change.
+- Next: the Vulkan back end in place of `rx_null.c` (the prologue can't be played blind), the Resource Memory race, a
+  sound device for `nn_audio.c`.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

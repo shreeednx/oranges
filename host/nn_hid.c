@@ -29,12 +29,20 @@ static int64_t next_sampling(void) {
     static int64_t s;
     return __atomic_add_fetch(&s, 1, __ATOMIC_RELAXED);
 }
+/* the first read of each kind of state, to the log: when the game starts to look at its input */
+static void first_read(Ctx *c, int *seen, const char *what) {
+    if (__atomic_exchange_n(seen, 1, __ATOMIC_RELAXED)) return;
+    hos_log("hid: the game reads %s (first at %.1f s, lr %#llx)", what, hos_now_ns() / 1e9, (unsigned long long)c->x[30]);
+}
+#define FIRST_READ(what) do { static int seen_; first_read(c, &seen_, what); } while (0)
+
 static int clamp_count(int64_t n, int max) { return n < 0 ? 0 : n > max ? max : (int)n; }
 
 /* ---- Npads ------------------------------------------------------------------------------------------------------ */
 static uint32_t supported_styles = STYLE_FULLKEY;
 /* GetNpadStates(State* out, int count, unsigned int const& npadId) -> how many written, the latest first */
 static void npad_states(Ctx *c) {
+    FIRST_READ("the Npads");
     const int count = clamp_count((int32_t)ARG(1), 16);
     if (!hos_guest_range(ARG(0), (uint64_t)count * STATE_SIZE) || !hos_guest_range(ARG(2), 4)) { RET(0); return; }
     const int connected = G32(ARG(2)) == NPAD_NO1;
@@ -98,11 +106,13 @@ static void touch_state(uint64_t e, int capacity, int64_t sampling, const HosInp
 }
 HLE(_ZN2nn3hid21InitializeTouchScreenEv) { (void)c; }
 HLE(_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE) {
+    FIRST_READ("the touch screen");
     HosInput in;
     hos_input(&in);
     touch_state(ARG(0), 1, next_sampling(), &in);
 }
 HLE(_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi) {
+    FIRST_READ("the touch screen");
     const uint64_t size = 16 + 16 * 0x28;
     const int count = clamp_count((int32_t)ARG(1), 16);
     if (!hos_guest_range(ARG(0), size * (uint64_t)count)) { RET(0); return; }
@@ -115,6 +125,7 @@ HLE(_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi) {
 HLE(_ZN2nn3hid15InitializeMouseEv) { (void)c; }
 /* GetMouseStates(MouseState* out, int count): the latest first; the deltas since the read before */
 HLE(_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi) {
+    FIRST_READ("the mouse");
     static int32_t last_x, last_y, last_wheel;
     const int count = clamp_count((int32_t)ARG(1), 16);
     if (!hos_guest_range(ARG(0), 0x28ull * (uint64_t)count)) { RET(0); return; }
@@ -136,6 +147,7 @@ HLE(_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi) {
 }
 HLE(_ZN2nn3hid18InitializeKeyboardEv) { (void)c; }
 HLE(_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE) {
+    FIRST_READ("the keyboard");
     HosInput in;
     hos_input(&in);
     memset(GP(ARG(0)), 0, 0x30);
@@ -165,6 +177,7 @@ HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util1
 }
 HLE(_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE) { (void)c; }
 HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE) {
+    FIRST_READ("the motion sensors");
     const int count = clamp_count((int32_t)ARG(1), 16);
     if (!hos_guest_range(ARG(0), 0x60ull * (uint64_t)count)) { RET(0); return; }
     const int64_t s = next_sampling();

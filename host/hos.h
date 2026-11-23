@@ -101,6 +101,14 @@ uint32_t hos_handle_new(int kind, void *obj, uint64_t a, uint64_t b, uint64_t c)
 void *hos_handle_object(uint32_t handle, int kind);   /* the object of a handle of that kind, or NULL */
 Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority);
 uint64_t hos_main_thread_handle(void);
+/* every running thread to the log: its name, what it waits for (or the SVC it is in) and its guest backtrace */
+void hos_kernel_dump(const char *why);
+void hos_kernel_svc_mark(Ctx *c, uint32_t imm_plus_1);   /* (hos_svc.c) the SVC c's thread is in, plus 1; 0 after */
+/* a host thread for debugging (hos_kernel.c): HOS_SAMPLE=<s> hos_kernel_dump every s seconds; HOS_WATCHDOG=<s>
+   (default 5, 0 off) hos_kernel_dump once when no frame was presented for s seconds (the first one included);
+   HOS_PROFILE=<s>[,thread name] samples a thread's guest call chain each millisecond for s seconds once frames run
+   (default thread: MainThread) and logs its return addresses by how often they were on the chain */
+void hos_sampler_start(void);
 
 /* ---- host calls (hos_hostcall.c): a guest address that calls fn(c, user), for function pointers handed to the game */
 #define HOS_HOSTCALL_BASE 0x06F00000ULL   /* (to HOS_SYSTEM_END: 4096 slots of 16 bytes, no memory behind them) */

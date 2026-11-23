@@ -127,6 +127,7 @@ int main(int argc, char **argv) {
     }
     hos_crash_init();
     hos_kernel_init();
+    hos_sampler_start();
     hos_mem_init();
     load_image(path);
     hos_window_run(boot);
