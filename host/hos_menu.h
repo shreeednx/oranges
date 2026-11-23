@@ -53,9 +53,17 @@ int hos_control_pad(int ctl);
 const char *hos_key_name(int scancode, char *buf, size_t size);   /* "Space", "Left Shift"; "" for none */
 const char *hos_pad_name(int input);                              /* "Right (east)", "LT", ...; "" for none */
 
-/* ---- the menu's own settings (hos_menu.c) ----------------------------------------------------------------------- */
-enum { HOS_SET_DEAD_ZONE, HOS_SET_VIBRATION, HOS_SET_MOUSE_TOUCH, HOS_SET_N };
-int hos_setting(int id);   /* (the stick dead zone in %, the vibration in %, the mouse as touch 0/1) */
+/* ---- the menu's own settings (hos_menu.c) -----------------------------------------------------------------------
+   Graphics: the console mode (HOS_MODE_*: what nn::oe reports, so the resolution the game renders at; HOS_HANDHELD=0/1
+   overrides it), full screen 0/1, V-Sync 0/1 (HOS_VSYNC), the filter scaling the picture to the window
+   (HOS_FILTER_*). Controls: the stick dead zone in %, the vibration in %, the mouse as touch 0/1. Read them where
+   they apply (each read is cheap): a change in the menu takes effect at the next read. */
+enum { HOS_SET_CONSOLE_MODE, HOS_SET_FULLSCREEN, HOS_SET_VSYNC, HOS_SET_FILTER,
+       HOS_SET_DEAD_ZONE, HOS_SET_VIBRATION, HOS_SET_MOUSE_TOUCH, HOS_SET_N };
+enum { HOS_MODE_DOCKED, HOS_MODE_HANDHELD };
+enum { HOS_FILTER_LINEAR, HOS_FILTER_NEAREST, HOS_FILTER_INTEGER };
+int hos_setting(int id);
+void hos_setting_set(int id, int value);   /* (saved; e.g. F11 for full screen) */
 
 /* ---- the menu's model ----------------------------------------------------------------------------------------------- */
 enum { HOS_MENU_TOGGLE, HOS_MENU_UP, HOS_MENU_DOWN, HOS_MENU_LEFT, HOS_MENU_RIGHT, HOS_MENU_OK, HOS_MENU_BACK,

@@ -12,7 +12,8 @@
    GPL-3.0-or-later) and the SDK:
      Npad states (NpadCommonState): {s64 sampling; u64 buttons; s32 lx, ly, rx, ry; u32 attributes; pad}: 0x28 bytes
      TouchScreenState<N>: {s64 sampling; s32 count; s32 reserved; TouchState[N] (0x28 each)}
-     TouchState: {s64 delta time; u32 attributes; s32 finger id, x, y, diameter x, diameter y, rotation; pad}
+     TouchState: {s64 delta time; u32 attributes (Start 1, End 2); s32 finger id, x, y, diameter x, diameter y,
+       rotation; pad}
      MouseState: {s64 sampling; s32 x, y, dx, dy, wheel dx, wheel dy; u32 buttons, attributes}: 0x28 bytes
      KeyboardState: {s64 sampling; u32 modifiers, attributes; u8 keys[32]}: 0x30 bytes
      SixAxisSensorState: {s64 delta time; s64 sampling; f32 acceleration[3], angular velocity[3], angle[3],
@@ -123,32 +124,70 @@ HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_2
     RET(0);
 }
 
-/* ---- touch screen, mouse, keyboard -------------------------------------------------------------------------------- */
-static void touch_state(uint64_t e, int capacity, int64_t sampling, const HosInput *in) {
+/* ---- touch screen, mouse, keyboard --------------------------------------------------------------------------------
+   The touch screen's states are a history too, sampled every 4 ms: one finger (id 0) while the input touches, with
+   TouchAttribute Start (bit 0) on its first sample and, the sample after it lifts, one more state at its last place
+   with End (bit 1), as the console reports a finger. (Before, every state of a read held the touch of the moment with
+   no attributes: the game's keyboard switched to touch on a tap, but typed nothing.) */
+#define TOUCH_PERIOD_NS 4000000
+#define TOUCH_HISTORY 32
+static pthread_mutex_t touch_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { int down; int32_t x, y; } touch_history[TOUCH_HISTORY];   /* (by sampling number) */
+static int64_t touch_sampling, touch_sampled_ns;
+
+static void touch_sample(void) {   /* (under touch_lock) */
+    const int64_t now = hos_now_ns();
+    int64_t n = touch_sampling ? (now - touch_sampled_ns) / TOUCH_PERIOD_NS : 1;
+    if (n <= 0) return;
+    touch_sampled_ns = n > TOUCH_HISTORY ? now : touch_sampled_ns + n * TOUCH_PERIOD_NS;
+    if (n > TOUCH_HISTORY) n = TOUCH_HISTORY;
+    HosInput in;
+    hos_input(&in);
+    for (; n > 0; n--) {
+        const int64_t s = ++touch_sampling;
+        touch_history[s & (TOUCH_HISTORY - 1)].down = in.touch != 0;
+        touch_history[s & (TOUCH_HISTORY - 1)].x = in.touch_x;
+        touch_history[s & (TOUCH_HISTORY - 1)].y = in.touch_y;
+    }
+}
+/* TouchScreenState<capacity> number s, at e (under touch_lock) */
+static void touch_state(uint64_t e, int capacity, int64_t s) {
     memset(GP(e), 0, 16 + 0x28ull * (uint64_t)capacity);
-    G64(e) = (uint64_t)sampling;
-    if (!in->touch || capacity < 1) return;
+    G64(e) = (uint64_t)s;
+    const int down = touch_history[s & (TOUCH_HISTORY - 1)].down;
+    const int before = s > 1 && touch_history[(s - 1) & (TOUCH_HISTORY - 1)].down;
+    if ((!down && !before) || capacity < 1) return;
+    const int64_t at = down ? s : s - 1;   /* (lifted: where it was last) */
     G32(e + 8) = 1;
     const uint64_t t = e + 16;
-    G32(t + 12) = (uint32_t)in->touch_x, G32(t + 16) = (uint32_t)in->touch_y;   /* finger 0, delta time 0 */
-    G32(t + 20) = 15, G32(t + 24) = 15;   /* (a fingertip's size) */
+    G64(t) = down && before ? TOUCH_PERIOD_NS : 0;               /* delta time */
+    G32(t + 8) = (down && !before ? 1u : 0) | (down ? 0 : 2u);   /* Start, End */
+    G32(t + 12) = 0;                                             /* finger id */
+    G32(t + 16) = (uint32_t)touch_history[at & (TOUCH_HISTORY - 1)].x;
+    G32(t + 20) = (uint32_t)touch_history[at & (TOUCH_HISTORY - 1)].y;
+    G32(t + 24) = 15, G32(t + 28) = 15;                          /* (a fingertip's size) */
 }
 HLE(_ZN2nn3hid21InitializeTouchScreenEv) { (void)c; }
 HLE(_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE) {
     FIRST_READ("the touch screen");
-    HosInput in;
-    hos_input(&in);
-    touch_state(ARG(0), 1, next_sampling(), &in);
+    if (!hos_guest_range(ARG(0), 16 + 0x28)) return;
+    pthread_mutex_lock(&touch_lock);
+    touch_sample();
+    touch_state(ARG(0), 1, touch_sampling);
+    pthread_mutex_unlock(&touch_lock);
 }
+/* GetTouchScreenStates(TouchScreenState<16>* out, int count) -> how many written, the latest first */
 HLE(_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi) {
     FIRST_READ("the touch screen");
     const uint64_t size = 16 + 16 * 0x28;
-    const int count = clamp_count((int32_t)ARG(1), 16);
+    int count = clamp_count((int32_t)ARG(1), 16);
     if (!hos_guest_range(ARG(0), size * (uint64_t)count)) { RET(0); return; }
-    HosInput in;
-    hos_input(&in);
-    const int64_t s = next_sampling();
-    for (int i = 0; i < count; i++) touch_state(ARG(0) + size * (uint64_t)i, 16, s - i, &in);
+    pthread_mutex_lock(&touch_lock);
+    touch_sample();
+    const int64_t s = touch_sampling;
+    if (count > s) count = (int)s;
+    for (int i = 0; i < count; i++) touch_state(ARG(0) + size * (uint64_t)i, 16, s - i);
+    pthread_mutex_unlock(&touch_lock);
     RET(count);
 }
 HLE(_ZN2nn3hid15InitializeMouseEv) { (void)c; }

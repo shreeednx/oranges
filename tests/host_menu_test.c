@@ -27,8 +27,10 @@ static int row_of(const HosMenuView *v, const char *label) {
         if (!strcmp(v->rows[i].label, label)) return i;
     return -1;
 }
-static void select_row(const char *label) {   /* (from the top, with Down) */
+static void select_row(const char *label) {   /* (its tab, then from the top, with Down) */
     HosMenuView v;
+    hos_menu_view(&v);
+    for (int t = 0; t < v.ntabs && row_of(&v, label) < 0; t++) hos_menu_action(HOS_MENU_TAB_NEXT), hos_menu_view(&v);
     for (int i = 0; i < HOS_MENU_ROWS; i++) hos_menu_action(HOS_MENU_UP);
     hos_menu_view(&v);
     const int want = row_of(&v, label);
@@ -61,13 +63,35 @@ static int first(void) {
     int ctl, slot;
     CHECK(hos_binding_owner(0, K_Q, -1, &ctl, &slot) && ctl == HOS_CTL_L && slot == 0);
 
-    /* the menu: Q for B's first key, which L has: asked, then moved */
+    /* the menu opens on the Graphics tab: Console mode, docked by default, handheld one step right (saved) */
     hos_menu_load();
     hos_menu_action(HOS_MENU_TOGGLE);
     CHECK(hos_menu_is_open());
-    select_row("B");
     HosMenuView v;
     hos_menu_view(&v);
+    CHECK(v.ntabs == 2 && v.tab == 0 && !strcmp(v.tabs[0], "Graphics") && !strcmp(v.tabs[1], "Controls"));
+    CHECK(row_of(&v, "B") < 0 && v.sel == row_of(&v, "Console mode"));
+    CHECK(!strcmp(v.rows[v.sel].value, "Docked (1920x1080)") && !v.rows[v.sel].changed);
+    CHECK(hos_setting(HOS_SET_CONSOLE_MODE) == HOS_MODE_DOCKED);
+    hos_menu_action(HOS_MENU_RIGHT);
+    hos_menu_view(&v);
+    CHECK(!strcmp(v.rows[v.sel].value, "Handheld (1280x720)") && v.rows[v.sel].changed);
+    CHECK(hos_setting(HOS_SET_CONSOLE_MODE) == HOS_MODE_HANDHELD);
+    select_row("Scaling");
+    hos_menu_action(HOS_MENU_OK), hos_menu_action(HOS_MENU_OK), hos_menu_action(HOS_MENU_OK);   /* (round to the first) */
+    CHECK(hos_setting(HOS_SET_FILTER) == HOS_FILTER_LINEAR);
+    hos_menu_action(HOS_MENU_LEFT);   /* (no lower) */
+    hos_menu_view(&v);
+    CHECK(!strcmp(v.rows[v.sel].value, "Smooth"));
+    hos_setting_set(HOS_SET_FULLSCREEN, 1);   /* (F11) */
+    select_row("Full screen");
+    hos_menu_view(&v);
+    CHECK(!strcmp(v.rows[v.sel].value, "On"));
+
+    /* the Controls tab: Q for B's first key, which L has: asked, then moved */
+    select_row("B");
+    hos_menu_view(&v);
+    CHECK(v.tab == 1);
     CHECK(v.rows[v.sel].kind == HOS_ROW_BINDING && !strcmp(v.rows[v.sel].cell[1], "#42"));   /* Backspace (no SDL names) */
     hos_menu_key(K_RETURN, 0, 0);
     hos_menu_view(&v);
@@ -162,6 +186,9 @@ static int again(void) {
     CHECK(hos_binding(HOS_CTL_L).key[0] == 0);
     CHECK(hos_setting(HOS_SET_DEAD_ZONE) == 15);
     CHECK(hos_option_int("future_setting", 0) == 7);
+    CHECK(hos_option_int("fullscreen", 0) == 1 && hos_option_int("console_mode", 0) == 1);
+    /* the environment's HOS_HANDHELD=0 for this run: docked, the file's handheld kept */
+    CHECK(hos_setting(HOS_SET_CONSOLE_MODE) == HOS_MODE_DOCKED && hos_setting(HOS_SET_FULLSCREEN) == 1);
     /* Reset all: every key_ / pad_ line gone, the rest kept */
     hos_bindings_reset_all();
     char v[64];
@@ -174,6 +201,8 @@ static int again(void) {
 int main(int argc, char **argv) {
     if (argc < 3) return 2;
     setenv("HOS_OPTIONS_FILE", argv[1], 1);
+    if (!strcmp(argv[2], "again")) setenv("HOS_HANDHELD", "0", 1);
+    else unsetenv("HOS_HANDHELD");
     const int r = !strcmp(argv[2], "first") ? first() : again();
     if (!r) printf("ok\n");
     return r;

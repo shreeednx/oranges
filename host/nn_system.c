@@ -10,6 +10,7 @@
      UserHandle {u64 [3]} (ours: the uid, then a magic); Nickname char[33]; LanguageCode char[8], returned in x0.
    HOS_TIME_OFFSET=<seconds>: added to the clock (the game's time travel, without changing the PC's clock). */
 #include "hos.h"
+#include "hos_menu.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -185,10 +186,43 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
     RET(v);
 }
 HLE(_ZN2nn2oe13GetRegionCodeEv) { RET(1); }          /* RegionCode_Usa */
-HLE(_ZN2nn2oe16GetOperationModeEv) { RET(1); }       /* OperationMode_Console: docked, 1080p */
-HLE(_ZN2nn2oe18GetPerformanceModeEv) { RET(1); }     /* PerformanceMode_Boost (docked) */
+/* The operation mode is the settings menu's Console mode (HOS_HANDHELD=0/1 for a run): docked is OperationMode_Console
+   (1) with PerformanceMode_Boost (1), the game rendering at 1920x1080; handheld is OperationMode_Handheld (0) with
+   PerformanceMode_Normal (0), at 1280x720 (its window texture stays 1920x1080, the crop 1280x720). A change while the
+   game runs is told as the console tells it, when the game has asked for it (it has): the messages
+   OperationModeChanged (30) and PerformanceModeChanged (31), which the game's handler (0xbb10b20, polled every frame) answers
+   by reading the modes again. The modes read change at once, as on the console. */
+#define MESSAGE_OPERATION_MODE_CHANGED 30u
+#define MESSAGE_PERFORMANCE_MODE_CHANGED 31u
+static pthread_mutex_t oe_lock = PTHREAD_MUTEX_INITIALIZER;
+static int notify_operation, notify_performance, told_mode = -1;
+static uint32_t messages[8];
+static int nmessages;
+static int handheld(void) { return hos_setting(HOS_SET_CONSOLE_MODE) == HOS_MODE_HANDHELD; }
+HLE(_ZN2nn2oe16GetOperationModeEv) { RET(handheld() ? 0 : 1); }     /* OperationMode_Handheld, _Console */
+HLE(_ZN2nn2oe18GetPerformanceModeEv) { RET(handheld() ? 0 : 1); }   /* PerformanceMode_Normal, _Boost */
 HLE(_ZN2nn2oe20GetCurrentFocusStateEv) { RET(1); }   /* FocusState_InFocus */
-HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { RET(0); }
+/* TryPopNotificationMessage(Message* out) -> whether there was one */
+HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) {
+    pthread_mutex_lock(&oe_lock);
+    const int mode = handheld();
+    if (told_mode < 0) told_mode = mode;
+    if (mode != told_mode) {
+        const int op = __atomic_load_n(&notify_operation, __ATOMIC_RELAXED);
+        const int perf = __atomic_load_n(&notify_performance, __ATOMIC_RELAXED);
+        told_mode = mode;
+        hos_log("oe: the console is %s now%s", mode ? "handheld" : "docked", op ? "" : " (the game has not asked to be told)");
+        if (op && nmessages < 8) messages[nmessages++] = MESSAGE_OPERATION_MODE_CHANGED;
+        if (perf && nmessages < 8) messages[nmessages++] = MESSAGE_PERFORMANCE_MODE_CHANGED;
+    }
+    const int any = nmessages > 0;
+    if (any) {
+        G32(ARG(0)) = messages[0];
+        memmove(messages, messages + 1, (size_t)--nmessages * sizeof *messages);
+    }
+    pthread_mutex_unlock(&oe_lock);
+    RET(any);
+}
 HLE(_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_) {
     const float one = 1.0f;
     if (ARG(0)) memcpy(GP(ARG(0)), &one, 4);
@@ -396,14 +430,19 @@ static uint32_t olsc_dispatch(HosIpc *r) {
 }
 const HosIface hos_olsc_iface = {"IOlscServiceForApplication", olsc_dispatch};
 
-/* ---- nn::oe: the setters (focus handling, notifications, performance, CPU boost) change nothing on a PC -------- */
+/* ---- nn::oe: the setters (focus handling, notifications, performance, CPU boost): nothing on a PC, but which
+   notifications the game wants ------------------------------------------------------------------------------------ */
 HLE(_ZN2nn2oe17FinishStartupLogoEv) { hos_log("oe: startup logo finished"); }
 HLE(_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb) { (void)c; }
 HLE(_ZN2nn2oe24SetExpectedVolumeBalanceEff) { (void)c; }
 HLE(_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE) { (void)c; }
 HLE(_ZN2nn2oe28SetResumeNotificationEnabledEb) { (void)c; }
-HLE(_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb) { (void)c; }
-HLE(_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb) { (void)c; }
+HLE(_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb) {
+    __atomic_store_n(&notify_operation, (int)(ARG(0) & 1), __ATOMIC_RELAXED);
+}
+HLE(_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb) {
+    __atomic_store_n(&notify_performance, (int)(ARG(0) & 1), __ATOMIC_RELAXED);
+}
 HLE(_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE) { (void)c; }
 HLE(_ZN2nn2oe31EnterExitRequestHandlingSectionEv) { (void)c; }
 HLE(_ZN2nn2oe31LeaveExitRequestHandlingSectionEv) { (void)c; }

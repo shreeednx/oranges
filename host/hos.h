@@ -176,6 +176,8 @@ void hos_rumble(int motor, float amplitude);   /* a gamepad's motor (0 low, 1 hi
    it is saved */
 int hos_control_shot(char *path, size_t size);
 void hos_control_shot_done(void);
+/* where the present put the picture: x, y, w, h in the swapchain's pixels of sw x sh (the mouse maps through it) */
+void hos_window_picture(int x, int y, int w, int h, int sw, int sh);
 /* run the game (guest_main): beside a window when there is one, else on this thread */
 void hos_window_run(void (*guest_main)(void));
 /* the Vulkan back end (host/vk/vk_device.cpp), started on the main thread: window an SDL_Window (null: headless);

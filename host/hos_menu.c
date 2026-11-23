@@ -1,5 +1,5 @@
 /* The settings menu's model: its tabs and rows, what is selected, and what each input does (F1 opens it, a gamepad's
-   Home or Select + Start too). Modelled on Longshot's Insert menu (gpu/vk/vk_menu.cpp there), much smaller: one tab so far, Controls.
+   Home or Select + Start too). Modelled on Longshot's Insert menu (gpu/vk/vk_menu.cpp there), much smaller: two tabs, Graphics and Controls.
    hos_window.c hands it the keys, gamepad buttons and mouse while it is open (and the game gets no input); the Vulkan
    back end draws it at each present from a snapshot (hos_menu_view; host/vk/vk_menu.cpp) and hands back where things
    are (hos_menu_hits) for the mouse. HOS_CONTROL's MENU lines drive it too (a headless run's checks).
@@ -31,22 +31,45 @@ enum { P_SOUTH, P_EAST, P_WEST, P_NORTH, P_GUIDE = 5, P_LSHOULDER = 9, P_RSHOULD
 #define MESSAGE_NS 4000000000LL
 
 /* ---- the settings ------------------------------------------------------------------------------------------------- */
+enum { TAB_GRAPHICS, TAB_CONTROLS, NTABS };
+static const char *const tab_names[NTABS] = {"Graphics", "Controls"};
+static const char *const mode_names[] = {"Docked (1920x1080)", "Handheld (1280x720)"};
+static const char *const filter_names[] = {"Smooth", "Sharp", "Sharp, whole steps"};
 static const struct {
+    int tab;
     const char *key, *label, *help;
     int lo, hi, step, def;
-    const char *off;   /* (the text for lo, when it is "Off") */
-    const char *unit;  /* ("%", or NULL: Off / On) */
+    const char *off;            /* (the text for lo, when it is "Off") */
+    const char *unit;           /* ("%", or NULL: Off / On) */
+    const char *const *names;   /* (else a name for each value from lo) */
+    const char *env;            /* (an environment variable that sets it for the run, unsaved) */
 } settings_def[HOS_SET_N] = {
-    [HOS_SET_DEAD_ZONE] = {"stick_dead_zone", "Stick dead zone",
+    [HOS_SET_CONSOLE_MODE] = {TAB_GRAPHICS, "console_mode", "Console mode",
+                              "What the game is told the Switch is: docked, where it renders at 1920x1080, or handheld, "
+                              "at 1280x720 (lighter on the GPU). The game is told at once, as when the console leaves "
+                              "or enters its dock.", 0, 1, 1, 0, NULL, NULL, mode_names, "HOS_HANDHELD"},
+    [HOS_SET_FULLSCREEN] = {TAB_GRAPHICS, "fullscreen", "Full screen",
+                            "The window fills the screen (F11 too).", 0, 1, 1, 0, NULL, NULL, NULL, NULL},
+    [HOS_SET_VSYNC] = {TAB_GRAPHICS, "vsync", "V-Sync",
+                       "On: each picture waits for the display's refresh (no tearing, a frame more of latency). Off: "
+                       "it is shown as soon as it is ready. The game paces itself at 30 fps either way.", 0, 1, 1, 0,
+                       NULL, NULL, NULL, "HOS_VSYNC"},
+    [HOS_SET_FILTER] = {TAB_GRAPHICS, "scaling_filter", "Scaling",
+                        "How the picture is scaled to the window. Smooth: filtered. Sharp: the nearest pixel. Sharp, "
+                        "whole steps: the nearest pixel, at the largest whole multiple that fits (a border around it).",
+                        0, 2, 1, 0, NULL, NULL, filter_names, NULL},
+    [HOS_SET_DEAD_ZONE] = {TAB_CONTROLS, "stick_dead_zone", "Stick dead zone",
                            "How far a gamepad's stick moves before the game sees it. Raise it if the player walks by "
-                           "itself; lower it for finer steps.", 0, 30, 5, 10, NULL, "%"},
-    [HOS_SET_VIBRATION] = {"vibration", "Vibration",
+                           "itself; lower it for finer steps.", 0, 30, 5, 10, NULL, "%", NULL, NULL},
+    [HOS_SET_VIBRATION] = {TAB_CONTROLS, "vibration", "Vibration",
                            "How strongly the gamepad rumbles when the game asks it to. Off: never.", 0, 100, 25, 100,
-                           "Off", "%"},
-    [HOS_SET_MOUSE_TOUCH] = {"mouse_touch", "Mouse as touch screen",
+                           "Off", "%", NULL, NULL},
+    [HOS_SET_MOUSE_TOUCH] = {TAB_CONTROLS, "mouse_touch", "Mouse as touch screen",
                              "On: the mouse's left button is a finger on the touch screen, where the game reads touch. "
-                             "The mouse is also the console's USB mouse, either way.", 0, 1, 1, 1, NULL, NULL},
+                             "The mouse is also the console's USB mouse, either way.", 0, 1, 1, 1, NULL, NULL, NULL,
+                             NULL},
 };
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int settings[HOS_SET_N];
 static int settings_loaded;
 
@@ -55,6 +78,8 @@ static void settings_load(void) {
     settings_loaded = 1;
     for (int i = 0; i < HOS_SET_N; i++) {
         int v = hos_option_int(settings_def[i].key, settings_def[i].def);
+        const char *e = settings_def[i].env ? getenv(settings_def[i].env) : NULL;
+        if (e && *e) v = atoi(e);
         if (v < settings_def[i].lo) v = settings_def[i].lo;
         if (v > settings_def[i].hi) v = settings_def[i].hi;
         __atomic_store_n(&settings[i], v, __ATOMIC_RELAXED);
@@ -77,9 +102,17 @@ static void setting_put(int id, int v) {
         hos_option_set(settings_def[id].key, s);
     }
 }
+void hos_setting_set(int id, int v) {
+    if (id < 0 || id >= HOS_SET_N) return;
+    if (!__atomic_load_n(&settings_loaded, __ATOMIC_ACQUIRE)) hos_menu_load();
+    pthread_mutex_lock(&lock);
+    setting_put(id, v);
+    pthread_mutex_unlock(&lock);
+}
 static void setting_text(int id, char *out, size_t size) {
     const int v = settings[id];
-    if (settings_def[id].off && v == settings_def[id].lo) snprintf(out, size, "%s", settings_def[id].off);
+    if (settings_def[id].names) snprintf(out, size, "%s", settings_def[id].names[v - settings_def[id].lo]);
+    else if (settings_def[id].off && v == settings_def[id].lo) snprintf(out, size, "%s", settings_def[id].off);
     else if (!settings_def[id].unit) snprintf(out, size, "%s", v ? "On" : "Off");
     else snprintf(out, size, "%d%s", v, settings_def[id].unit);
 }
@@ -93,20 +126,22 @@ static int npads, pad_in_use = -1;
 static struct { char name[64], key[40]; } pads[HOS_MENU_PADS];
 static char controller_key[40], controller_name[64];
 static int controller_gen;
-static void build_rows(void) {
+static int tab;
+static void build_rows(void) {   /* (the tab's) */
     nrows = 0;
-    if (npads) rows[nrows++] = (Row){HOS_ROW_CONTROLLER, 0};
-    for (int i = 0; i < HOS_SET_N; i++) rows[nrows++] = (Row){HOS_ROW_SETTING, i};
+    if (npads && tab == TAB_CONTROLS) rows[nrows++] = (Row){HOS_ROW_CONTROLLER, 0};
+    for (int i = 0; i < HOS_SET_N; i++)
+        if (settings_def[i].tab == tab) rows[nrows++] = (Row){HOS_ROW_SETTING, i};
+    if (tab != TAB_CONTROLS) return;
     rows[nrows++] = (Row){HOS_ROW_ACTION, ACT_RESET_ALL};
     rows[nrows++] = (Row){HOS_ROW_HEADING, 0};
     for (int c = 0; c < HOS_CTL_N; c++) rows[nrows++] = (Row){HOS_ROW_BINDING, c};
 }
 
 /* ---- the state (under lock) ------------------------------------------------------------------------------------------ */
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int open_;   /* (read without the lock: hos_menu_is_open) */
 static int opened;  /* (ever: until then the selection is the first row, whatever rows come) */
-static int tab, sel, col, pad_last;
+static int sel, col, pad_last;
 static int mode = HOS_MENU_NORMAL;
 static int64_t capture_end;
 enum { Q_CONFLICT, Q_RESET_ALL };
@@ -116,9 +151,6 @@ static int64_t message_end;
 static HosMenuHit hits[256];
 static int nhits;
 static float mouse_x = -1, mouse_y = -1;
-
-static const char *const tab_names[] = {"Controls"};
-#define NTABS 1
 
 void hos_menu_load(void) {
     pthread_mutex_lock(&lock);
@@ -161,7 +193,7 @@ void hos_menu_pads(int n, const char names[][64], const char keys[][40], int in_
         snprintf(pads[i].key, sizeof pads[i].key, "%s", keys[i]);
     }
     pad_in_use = in_use;
-    if (!had != !npads) {   /* (the Controller row comes or goes: the same row stays selected) */
+    if (!had != !npads && tab == TAB_CONTROLS) {   /* (the Controller row comes or goes: the same row stays selected) */
         build_rows();
         sel = 0;
         for (int i = 0; i < nrows && opened; i++)
@@ -242,6 +274,13 @@ static void set_open(int o) {
     hos_log("menu: %s", o ? "open" : "closed");
 }
 
+static void set_tab(int t) {
+    if (t == tab || t < 0 || t >= NTABS) return;
+    tab = t, sel = col = 0;
+    build_rows();
+    if (!selectable(sel)) move_sel(1);
+}
+
 static void action_locked(int a) {
     if (a == HOS_MENU_TOGGLE) {
         set_open(!open_);
@@ -263,8 +302,8 @@ static void action_locked(int a) {
     case HOS_MENU_BACK: set_open(0); break;
     case HOS_MENU_UP: move_sel(-1); break;
     case HOS_MENU_DOWN: move_sel(1); break;
-    case HOS_MENU_TAB_NEXT: tab = (tab + 1) % NTABS; break;
-    case HOS_MENU_TAB_PREV: tab = (tab + NTABS - 1) % NTABS; break;
+    case HOS_MENU_TAB_NEXT: set_tab((tab + 1) % NTABS); break;
+    case HOS_MENU_TAB_PREV: set_tab((tab + NTABS - 1) % NTABS); break;
     case HOS_MENU_LEFT:
     case HOS_MENU_RIGHT: {
         const int d = a == HOS_MENU_RIGHT ? 1 : -1;
@@ -400,7 +439,7 @@ void hos_menu_mouse(float x, float y, int left, int right, float wheel) {
             sel = h->row;
             if (rows[sel].kind == HOS_ROW_BINDING && h->col >= 0) col = h->col;
         }
-        if (left && h && h->row == -1) tab = h->col;
+        if (left && h && h->row == -1) set_tab(h->col);
         if (left && h && h->row >= 0 && selectable(h->row)) {
             const Row *r = &rows[sel];
             if ((r->kind == HOS_ROW_SETTING || r->kind == HOS_ROW_CONTROLLER) && h->col >= 0)   /* (the value's left half lowers it, its right half raises it) */

@@ -4,7 +4,9 @@
 //   HOS_VK=0            the null back end (nothing drawn), as before
 //   HOS_VK_DEVICE=<n>   that physical device (vulkaninfo's order); default: the first discrete GPU
 //   HOS_VK_VALIDATE=1   the Khronos validation layer
-//   HOS_VSYNC=1         FIFO presents (default: mailbox, else immediate: the game paces itself)
+// The settings menu's Graphics tab: V-Sync (FIFO presents; off: mailbox, else immediate, the game pacing itself;
+// HOS_VSYNC=1 for a run) and Scaling (the filter of the blit into the window; whole steps: the largest integer scale
+// that fits, nearest, else as Sharp), both read at each present.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
@@ -14,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "../hos_menu.h"
 #include "vk.h"
 
 namespace ovk {
@@ -51,7 +54,7 @@ struct Swapchain {
     std::vector<VkImage> images;
     VkSemaphore acquired = VK_NULL_HANDLE;
     std::vector<VkSemaphore> done;   // (one per image: a present waits on it)
-    bool srgb = false, stale = true;
+    bool srgb = false, stale = true, vsync = false;
 } sw;
 
 void destroy_swapchain() {
@@ -84,7 +87,8 @@ bool make_swapchain(bool srgb) {
     std::vector<VkPresentModeKHR> modes(n);
     vkGetPhysicalDeviceSurfacePresentModesKHR(g.phys, g.surface, &n, modes.data());
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    if (!env_on("HOS_VSYNC"))
+    const bool vsync = hos_setting(HOS_SET_VSYNC) != 0;
+    if (!vsync)
         for (const VkPresentModeKHR want : {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR}) {
             bool found = false;
             for (auto m : modes) found |= m == want;
@@ -124,9 +128,9 @@ bool make_swapchain(bool srgb) {
     if (!sw.acquired) vkCreateSemaphore(g.dev, &si, nullptr, &sw.acquired);
     sw.done.resize(n);
     for (auto& s : sw.done) vkCreateSemaphore(g.dev, &si, nullptr, &s);
-    sw.format = pick.format, sw.extent = extent, sw.srgb = srgb, sw.stale = false;
+    sw.format = pick.format, sw.extent = extent, sw.srgb = srgb, sw.stale = false, sw.vsync = vsync;
     static int logged;
-    if (logged++ < 4)
+    if (logged++ < 8)
         hos_log("vk: swapchain %ux%u, format %d, %u images, %s", extent.width, extent.height, (int)pick.format, n,
                 mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
     return true;
@@ -167,7 +171,8 @@ void write_bmp(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
     hos_log("vk: screenshot %s (%ux%u)", path, w, h);
 }
 
-void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h);
+// (w x h from sx, sy: the crop)
+void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, int32_t sx = 0, int32_t sy = 0);
 }  // namespace
 void dump_written_images(const char* dir);   // (vk_texture.cpp)
 void texdump(VkCommandBuffer cb);
@@ -179,7 +184,7 @@ void save_image_bmp(VkImage image, VkFormat format, uint32_t w, uint32_t h, cons
     shot.path = keep;
 }
 namespace {
-void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
+void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, int32_t sx, int32_t sy) {
     // (blitted to RGBA8 of the same encoding first: the window texture may be RGB10A2 or RGBA16F)
     const VkFormat out = srgb_format(format) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -212,7 +217,9 @@ void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
                          nullptr, 1, &b);
     VkImageBlit bl{};
     bl.srcSubresource = bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    bl.srcOffsets[1] = bl.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
+    bl.srcOffsets[0] = {sx, sy, 0};
+    bl.srcOffsets[1] = {sx + (int32_t)w, sy + (int32_t)h, 1};
+    bl.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
     vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, tmp, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
     full_barrier(cb);
     VkBufferImageCopy c{};
@@ -227,9 +234,9 @@ void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
     vkFreeMemory(g.dev, mem, nullptr);
 }
 
-void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h);
+void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]);
 /// HOS_VK_SHOTS=<dir>,<seconds> (debugging): the presented picture every that many seconds, <dir>/shot_<seconds>.bmp
-void periodic_shots(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
+void periodic_shots(VkImage image, VkFormat format, uint32_t w, uint32_t h, int32_t sx, int32_t sy) {
     static std::string dir;
     static double every = -1;
     static int64_t next = 0;
@@ -249,15 +256,20 @@ void periodic_shots(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
     next += (int64_t)(every * 1e9);
     const std::string keep = shot.path;
     shot.path = path;
-    take_screenshot(image, format, w, h);
+    take_screenshot(image, format, w, h, sx, sy);
     shot.path = keep;
 }
-void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
-    periodic_shots(image, format, w, h);
+// the picture as shown: the crop of the window texture (handheld: 1280x720 of its 1920x1080)
+void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]) {
+    int32_t sx = 0, sy = 0;
+    if (crop && crop[2] > 0 && crop[3] > 0 && crop[0] >= 0 && crop[1] >= 0 && (uint32_t)(crop[0] + crop[2]) <= w &&
+        (uint32_t)(crop[1] + crop[3]) <= h)
+        sx = crop[0], sy = crop[1], w = (uint32_t)crop[2], h = (uint32_t)crop[3];
+    periodic_shots(image, format, w, h, sx, sy);
     if (char path[512]; hos_control_shot(path, sizeof path)) {   // (HOS_CONTROL's SHOT)
         const std::string keep = shot.path;
         shot.path = path;
-        take_screenshot(image, format, w, h);
+        take_screenshot(image, format, w, h, sx, sy);
         shot.path = keep;
         hos_control_shot_done();
     }
@@ -274,7 +286,7 @@ void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h) {
     }
     if (shot.at < 0 || hos_now_ns() < shot.at) return;
     shot.at = -2;
-    take_screenshot(image, format, w, h);
+    take_screenshot(image, format, w, h, sx, sy);
     if (const char* dir = getenv("HOS_VK_DUMP")) dump_written_images(dir);   // (debugging: every image the GPU wrote)
     texdump(VK_NULL_HANDLE);
 }
@@ -356,10 +368,10 @@ void full_barrier(VkCommandBuffer cb) {
 
 void present_image(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]) {
     menu_compose(&image, &format, &w, &h, &crop);   // (the settings menu, while it is open: the picture with it over)
-    maybe_screenshot(image, format, w, h);
+    maybe_screenshot(image, format, w, h, crop);
     if (!g.surface) return;
     const bool srgb = srgb_format(format);
-    if (!sw.sc || sw.stale || sw.srgb != srgb)
+    if (!sw.sc || sw.stale || sw.srgb != srgb || sw.vsync != (hos_setting(HOS_SET_VSYNC) != 0))
         if (!make_swapchain(srgb)) return;
     uint32_t index = 0;
     VkResult r = vkAcquireNextImageKHR(g.dev, sw.sc, 1'000'000'000ull, sw.acquired, VK_NULL_HANDLE, &index);
@@ -385,15 +397,18 @@ void present_image(VkImage image, VkFormat format, uint32_t w, uint32_t h, const
     // the crop (x, y, w, h; w 0: the whole texture), scaled into the window keeping its shape
     int32_t sx = crop ? crop[0] : 0, sy = crop ? crop[1] : 0, cw = crop && crop[2] > 0 ? crop[2] : (int32_t)w,
             ch = crop && crop[3] > 0 ? crop[3] : (int32_t)h;
-    const double scale = std::min((double)sw.extent.width / cw, (double)sw.extent.height / ch);
+    const int filter = hos_setting(HOS_SET_FILTER);
+    double scale = std::min((double)sw.extent.width / cw, (double)sw.extent.height / ch);
+    if (filter == HOS_FILTER_INTEGER && scale >= 1) scale = (double)(int)scale;
     const int32_t dw = (int32_t)(cw * scale), dh = (int32_t)(ch * scale);
     const int32_t dx = ((int32_t)sw.extent.width - dw) / 2, dy = ((int32_t)sw.extent.height - dh) / 2;
     VkImageBlit bl{};
     bl.srcSubresource = bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     bl.srcOffsets[0] = {sx, sy, 0}, bl.srcOffsets[1] = {sx + cw, sy + ch, 1};
     bl.dstOffsets[0] = {dx, dy, 0}, bl.dstOffsets[1] = {dx + dw, dy + dh, 1};
+    hos_window_picture(dx, dy, dw, dh, (int)sw.extent.width, (int)sw.extent.height);
     vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, sw.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl,
-                   VK_FILTER_LINEAR);
+                   filter == HOS_FILTER_LINEAR ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, b.dstAccessMask = 0;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,

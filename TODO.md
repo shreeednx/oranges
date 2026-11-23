@@ -184,8 +184,8 @@ Left over from it:
       for each draw, programs are translated on the game's thread. Profile once more of the game draws
 - [ ] Memory: images and views are never freed (the game's transient targets alias one virtual pool region; each
       size/format there is its own image)
-- [ ] Frames are paced by `nvn_native.c`'s clock; mailbox/immediate presents. Pace by the display (`HOS_VSYNC=1` is
-      FIFO today)
+- [ ] Frames are paced by `nvn_native.c`'s clock; mailbox/immediate presents. Pace by the display (the menu's V-Sync
+      is FIFO presents, still paced by that clock)
 - [ ] Run once with the Khronos validation layer (`HOS_VK_VALIDATE=1`; not installed on this machine)
 - [ ] Occlusion queries and other counters write 0 (only timestamps seen so far)
 
@@ -295,7 +295,7 @@ Left over from it:
 
 - [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
       each piece ran on the game. Run it once on the game.
-- [ ] Touch: a tap on the island-name keyboard types nothing (see task 1, with Handheld mode).
+- [x] Touch: a tap on the island-name keyboard typed nothing (the touch state's layout: "Done: the Graphics tab")
 - [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
       `HOS_TIME` offset would let runs see daytime.
 
@@ -348,7 +348,8 @@ Left over from it:
 - [x] Which gamepad is Npad No.1 (the Controller row); more than one player (Npad No.2-8): the Steam Controller's
       leftovers
 - [ ] The menu is drawn only at the game's presents (30 fps): it freezes while the game does not present (a long load)
-- [ ] Nothing needs a restart yet; the row flag (`restart`, "(after a restart)") is there for the Graphics tab
+- [ ] Nothing needs a restart yet (the Graphics tab's settings all apply at once); the row flag (`restart`, "(after a
+      restart)") stays for one that will
 
 ## Done: the Steam Controller through Steam Input
 
@@ -378,34 +379,42 @@ Left over from it (low priority: the user has one controller to test with for no
 - [ ] From Longshot (`host/steam_pads.h`, `host/pad_sdl.c` there): Valve's real pad read beside Steam's stand-in for
       its motion sensors (gyro aiming in the game's camera, the Switch's motion controls)
 
-## 1. Graphics settings (the settings menu's Graphics tab)
+## Done: the Graphics tab (Docked or Handheld, live)
 
-The resolutions the game supports itself, chosen in the menu (F1: a Graphics tab). Longshot's Graphics tab (its user
-guide's "Every setting") is the model for how they look. The game renders for the mode the console reports:
-`nn_system.c` answers `nn::oe::GetOperationMode` with Console (docked, the 1920x1080 picture every screenshot has) and
-the performance mode with Boost.
+The settings menu (F1) opens on a Graphics tab now, beside Controls: Console mode, Full screen, V-Sync, Scaling.
+What the game does with each mode, found by reporting Handheld (`GetOperationMode` 0, `GetPerformanceMode` Normal) on
+the day-1 save and tracing its targets (`HOS_VK_LOG`): docked it renders 1920x1080 (with 960x540 and 480x272 chains, a
+2048 shadow map), handheld 1280x720 (640x360, 320x180, a 1536 shadow map), into the same 1920x1080 window texture with
+the crop at 1280x720. The viewports always cover the whole target: no dynamic resolution. Both draw right.
 
-- [ ] Check what the game does with each mode. Report Handheld (`GetOperationMode` 0, the normal performance mode)
-      and look at its render targets' sizes (`HOS_VK_LOG`): 1280x720 presumably. Also check whether it scales its
-      3D resolution by itself (a dynamic resolution: the targets' sizes changing with the load).
-- [ ] A Resolution setting: Docked (1920x1080) or Handheld (1280x720), whichever the game really supports. Changing
-      it while the game runs takes the console's notice: the game turns on `SetOperationModeChangedNotificationEnabled`
-      and waits for the applet's OperationModeChanged message. Without that, apply it after a restart.
-- [ ] Touch input, with Handheld: the touch screen is the handheld console's, and we report docked (Console), which
-      is probably why a tap does nothing. On the island-name keyboard a `TOUCH=` tap (0.15 or 0.5 s) switches it
-      to touch mode (the cursor highlight goes) but types nothing. Once Handheld can be reported (an option to
-      simulate handheld mode), check tapping the keyboard again, with `TOUCH=x,y` (`HOS_CONTROL`, 1280x720) and
-      the mouse in the window. If it still doesn't type, look at `nn_hid.c` `touch_state` (the delta time, the
-      attributes for a finger going down and up, the finger id). It matters to the settings menu's "mouse as touch".
-- [ ] The window's side of it: fullscreen (F11 today), V-Sync (`HOS_VSYNC=1` today), the filter used to scale the
-      picture to the window.
-- [ ] Only after those: whether to go above 1080p. The game has no such mode, so it would mean the renderer enlarging
-      the game's render targets (Longshot's "Output resolution"), with whatever that breaks (the UI's layout, the
-      post effects' texel offsets, the game's reads of its own targets). Decide once the native modes work.
+- Console mode: Docked (1920x1080) / Handheld (1280x720), `nn_system.c` reports it. A change while the game runs goes
+  out as the console's: the game turns on both notifications and polls `TryPopNotificationMessage` every frame (its
+  handler, `0xbb10b20`: message 30 reads `GetOperationMode` again into a docked flag, 31 the performance mode), so
+  oranges queues OperationModeChanged (30) and PerformanceModeChanged (31). The game re-renders at the new size within a
+  second and back again (the same targets as a boot in that mode). `HOS_HANDHELD=0/1` sets it for a run.
+- Full screen (F11 too, kept in step with it and with the desktop's own changes), V-Sync (FIFO; `HOS_VSYNC` for a run),
+  Scaling: Smooth (linear), Sharp (nearest), Sharp, whole steps (nearest at the largest integer scale that fits). The
+  mouse maps through the rectangle the present really used (`hos_window_picture`), so whole steps keep it right.
+- Screenshots (`SHOT`, `HOS_SCREENSHOT`, `HOS_VK_SHOTS`) take the crop, as the window shows it: 1280x720 handheld.
+- Touch types now, docked and handheld (the name keyboard: q, w, then e after switching to docked). The mode was not
+  the cause: `nn_hid.c` wrote the touch's x and y one field early (x in the finger id, y in x) and gave no
+  TouchAttribute. The touch screen is a history now as the Npads are (4 ms samples), with Start on a finger's first
+  sample and a last state with End after it lifts.
 
-Why here: the menu is there now (F1), and the game draws right at 1080p already; this is choice, not a fix.
+Left over from it:
 
-## 2. The renderer's gaps
+- [ ] Try by hand in the window: Full screen from the menu and F11, V-Sync on and off, the three Scaling choices (the
+      mouse on the menu and as touch with whole steps). Only built and checked headless so far.
+- [ ] Which of the two touch fixes mattered (the offsets, the attributes) was not isolated: both are the SDK's layout.
+- [ ] Handheld still reports the Pro Controller as Npad No.1; a handheld console has its Joy-Cons attached as the
+      Handheld Npad (style Handheld, id 0x20). The game plays either way; a game that checks the style would not.
+- [ ] Each mode switch leaves the old size's targets allocated (the renderer never frees images: its memory leftover).
+- [ ] Above 1080p: the game has no such mode, so it would mean the renderer enlarging the game's render targets
+      (Longshot's "Output resolution"), with whatever that breaks (the UI's layout, the post effects' texel offsets,
+      the game's reads of its own targets). Decide now that the native modes work (see Future ideas: FSR 1 is the
+      cheaper way to a sharper big screen).
+
+## 1. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -413,7 +422,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 3. Clean-ups and checks
+## 2. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.

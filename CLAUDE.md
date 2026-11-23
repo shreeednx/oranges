@@ -111,7 +111,12 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   Switch button and stick direction; the defaults are the old fixed map), which `hos_window.c` reads input through;
   `host/hos_options.c` is `oranges_options.ini` (`HOS_OPTIONS_FILE`, else the XDG config folder). The game gets no input
   while it is open. `HOS_CONTROL`'s `MENU <action>|KEY <name>|PAD <name>` drive it; `tests/test_host_menu.py` builds
-  the three C files alone (no SDL, no game). A new tab or setting: a row in `hos_menu.c` (`settings_def`, `build_rows`).
+  the three C files alone (no SDL, no game). A new tab or setting: a row in `hos_menu.c` (`settings_def` with its tab,
+  `build_rows`); read it with `hos_setting` where it applies. Tabs: Graphics (Console mode, Full screen, V-Sync,
+  Scaling) and Controls. Console mode is what `nn::oe` reports: docked renders 1920x1080, handheld 1280x720 (its
+  window texture stays 1920x1080, cropped); a change goes to the running game as the console's OperationModeChanged /
+  PerformanceModeChanged messages (`TryPopNotificationMessage`), and the game re-renders at the new size at once.
+  `HOS_HANDHELD=0/1` and `HOS_VSYNC=0/1` set those two for a run (unsaved).
   The gamepad's sticks go through the bindings too (by direction, analog). Started by Steam (`SteamGameId`), the window
   is X11 (XWayland): Steam Input keeps its Desktop layout (keyboard and mouse) for a native Wayland window;
   `HOS_WAYLAND=1` keeps Wayland.

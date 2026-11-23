@@ -477,15 +477,32 @@ static uint32_t modifiers(SDL_Keymod m) {
 }
 
 /* the mouse in the console's 1280x720 screen (the picture letterboxed into the window), and its buttons */
+/* where the Vulkan present last put the picture (hos_window_picture): x, y, w, h of sw x sh pixels */
+static pthread_mutex_t picture_lock = PTHREAD_MUTEX_INITIALIZER;
+static int picture[6];
+void hos_window_picture(int x, int y, int w, int h, int sw, int sh) {
+    pthread_mutex_lock(&picture_lock);
+    picture[0] = x, picture[1] = y, picture[2] = w, picture[3] = h, picture[4] = sw, picture[5] = sh;
+    pthread_mutex_unlock(&picture_lock);
+}
+
 static SDL_MouseButtonFlags mouse_console(float *x, float *y) {
     float wx, wy;
     const SDL_MouseButtonFlags mb = SDL_GetMouseState(&wx, &wy);
     *x = *y = 0;
     if (renderer) {
         SDL_RenderCoordinatesFromWindow(renderer, wx, wy, x, y);
-    } else {   /* (the Vulkan present letterboxes the picture into the window the same way) */
-        int ww = 1280, wh = 720;
-        SDL_GetWindowSize(window, &ww, &wh);
+        return mb;
+    }
+    int ww = 1280, wh = 720, p[6];
+    SDL_GetWindowSize(window, &ww, &wh);
+    pthread_mutex_lock(&picture_lock);
+    memcpy(p, picture, sizeof p);
+    pthread_mutex_unlock(&picture_lock);
+    if (p[2] > 0 && p[3] > 0 && ww > 0 && wh > 0) {   /* (the window's points to the swapchain's pixels, to the picture) */
+        *x = ((wx * (float)p[4] / (float)ww) - (float)p[0]) * 1280.0f / (float)p[2];
+        *y = ((wy * (float)p[5] / (float)wh) - (float)p[1]) * 720.0f / (float)p[3];
+    } else {   /* (nothing presented yet: letterboxed, as the present does by default) */
         const float scale = SDL_min((float)ww / 1280, (float)wh / 720);
         if (scale > 0) *x = (wx - (ww - 1280 * scale) / 2) / scale, *y = (wy - (wh - 720 * scale) / 2) / scale;
     }
@@ -706,7 +723,7 @@ static void menu_stick_capture(void) {
 
 static void window_loop(void) {
     float wheel = 0;
-    int was_open = 0;
+    int was_open = 0, fullscreen = 0;   /* (what was last asked of the window) */
     const int menu = !renderer;   /* (the menu is drawn by the Vulkan back end: not on the status page) */
     for (;;) {
         SDL_Event e;
@@ -749,7 +766,7 @@ static void window_loop(void) {
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.scancode == SDL_SCANCODE_F11 && !e.key.repeat)
-                    SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+                    hos_setting_set(HOS_SET_FULLSCREEN, !hos_setting(HOS_SET_FULLSCREEN));
                 else if (e.key.scancode == SDL_SCANCODE_F1 && !e.key.repeat && menu)
                     hos_menu_device(0), hos_menu_action(HOS_MENU_TOGGLE);
                 else if (open)
@@ -776,9 +793,19 @@ static void window_loop(void) {
                 last[t] = e.gaxis.value;
                 break;
             }
+            case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+            case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: {   /* (the desktop's doing, when it is not what we asked: kept) */
+                const int on = e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN;
+                if (on != fullscreen) fullscreen = on, hos_setting_set(HOS_SET_FULLSCREEN, on);
+                break;
+            }
             default:
                 break;
             }
+        }
+        if (hos_setting(HOS_SET_FULLSCREEN) != fullscreen) {   /* (the menu's Full screen, or F11) */
+            fullscreen = hos_setting(HOS_SET_FULLSCREEN);
+            SDL_SetWindowFullscreen(window, fullscreen != 0);
         }
         if (hos_menu_controller(NULL, 0) != pad_gen) pads_choose();   /* (the Controller row changed) */
         if (hos_menu_is_open()) {   /* (the mouse, in the console's screen: the menu is drawn over the picture) */
