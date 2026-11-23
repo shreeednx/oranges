@@ -94,18 +94,21 @@ fixes from reading it against Atmosphère's: a condition variable wait that time
 SDK's TimedWait takes it itself on TimedOut, so the old way deadlocked the thread on itself), and SignalToAddress /
 WaitForAddress update the word with one compare-and-swap (guest atomics changed it between our load and store).
 
-## 1. A startup crash in "Resource Memory" (a race)
+## Done: the startup crash in "Resource Memory" (a race in the game)
 
-About 1 run in 10 with 4 processes at once (rarer alone) crashes before the first frame: thread 0x100d ("Resource
-Memory"), guest address 8, in its message handler `0x86d6514` (vtable +0x88, message 1) at `0x86d65a4`. It reads the
-singleton at `0xda05378` (`ldr x8, [singleton]; ldr x8, [x8, #8]; ldr x0, [x8, #8]`) while +8 is still 0. The Prepare
-thread creates the singleton (`f_0bdfc054`, called at `0x86bf828` in `f_086ba6b0`) and its init (vtable +0x10,
-`f_0bdfc2b8`) stores +8 only after creating a 32 MB heap (`f_0bdfc704`), which probably posts that message. On the
-console the creator (priority 44) is not preempted in that window; here host threads run freely and are under load.
+About 1 run in 10 with 4 processes at once crashed before the first frame (thread 0x100d, guest address 8). The
+resource threads share a message handler (main+0x6d6514) that reads a singleton (main+0x5a05378) and its +8 field.
+The Prepare thread publishes the singleton (f_0bdfc054) about 10 ms of guest work (a 32 MB heap, f_0bdfc704) before
+its init stores +8 (f_0bdfc2b8), and the loaders send the handler message 1 several times a millisecond (the host's
+file reads are instant), so one often landed in between. The threads are on different cores, so priority scheduling
+would not have closed it. `oranges/patches.py` (new: game fixes written into the image before the lift) gives the
+handler the null check the game's other reader of the singleton has: 0 crashes in 80 runs, and the prologue still
+plays.
 
-- [ ] Confirm who sends message 1 (a breakpoint on the queue send) and that it is the heap creation
-- [ ] Close the window: priority-aware wakeups, or hold a lower-priority thread's wakeup while a higher-priority thread
-      on its core runs (the scheduler item in Clean-ups), rather than a patch of the game
+Left over from it:
+
+- [ ] The loaders' message rate is a host artefact (instant reads). If other races of this kind turn up, consider
+      giving `nn_fs.c` reads a console-like cost rather than patching each one
 
 ## Done: a window and input
 
@@ -124,13 +127,13 @@ Left over from it:
 - [ ] Key remapping (a config file), more than one gamepad (Npad No.2-8), motion from a gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
-## 2. Sound
+## 1. Sound
 
 - [ ] A sound device for `host/nn_audio.c`. The renderer already mixes and `HOS_AUDIO_DUMP=<file.wav>` writes what
       would play. Swap `output_open` / `output_frame` for a real sink.
 - [ ] Process the effects that only pass through today (delay, reverb, biquad filter effects), if the game needs them
 
-## 3. The renderer (the next wall: the prologue can't be played blind)
+## 2. The renderer (the next wall: the prologue can't be played blind)
 
 - [ ] A Vulkan back end in place of `host/rx_null.c`, replaying the recorded NVN commands (Longshot's `gpu/vk`, made
       for NVN2: adapt it to NVN1)
@@ -138,13 +141,13 @@ Left over from it:
 - [ ] Textures: deswizzle the block-linear layouts (`host/nvn_layout.c` already computes them) and ASTC/BCn formats
 - [ ] Present the window textures to the real window
 
-## 4. Clean-ups and checks
+## 3. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
 - [ ] Build the host code with warnings on (it uses `-Wno-everything` along with the lifted C today)
 - [ ] A scheduler that honours priorities (core numbers are reported now, but every guest thread still runs freely on
-      its own host thread): the Resource Memory crash (1.) probably depends on it
+      its own host thread), if a wall turns out to depend on it (the Resource Memory crash did not: other cores)
 - [ ] Tests for the host side where they can run without the game (NVN object layouts, the audio mixer's buffer
       release, the `nn::time` calendar conversions)
 - [ ] Windows build (POSIX-only today: pthreads, `mmap`, signals)

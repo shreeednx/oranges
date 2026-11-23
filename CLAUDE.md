@@ -62,6 +62,10 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
 - `oranges/spin.py`: (oranges) a compiler barrier after each loop-invariant load of a small loop (`Lifter.after`), so
   clang can't hoist a plain LDR out of a spin loop (it made the game's spinlock wait `jmp .`). `install()` wraps
   `Lifter.emit_function`; `report.json` `emit.spin_barriers` counts them (~159k).
+- `oranges/patches.py`: (oranges) fixes to the game's own code, written into the image before the lift
+  (`build_image`; `report.json` `patches`). Only for a game race the console's timing hides and no faithful OS
+  behaviour can (the docstring has the case). Each names the supported build's original words; a mismatch is an error.
+  A new one needs a lift again.
 - `oranges/insn.py`: Longshot's `nx2/insn.py` (forms suyu lacks: LSE, LDAPR, SQSHL #imm, SDIV overflow, ...), plus
   oranges' PMULL/PMULL2 and LDNP/STNP Q, marked `(oranges)`. `install()` wraps `a64_lift.classify` and
   `a64emit.translate`. A new form goes in `emit()` and gets encodings in `tests/test_insn.py`, checked against Unicorn.
@@ -177,12 +181,13 @@ and attribution notices, and note the source file in a comment.
   has-waiter word before it releases the mutex (the SDK's Signal skips the SVC while it is 0), and on a timeout returns
   without the mutex (the SDK's TimedWait takes it itself); SignalToAddress / WaitForAddress update the word with a
   compare-and-swap (guest threads change it with their own atomics).
-- About 1 run in 10, with several processes running at once, the "Resource Memory" thread (0x100d) crashes before the
-  first frame (guest address 8, at `0x86d65a4`): it reads the singleton at `0xda05378` between its creation and the
-  store of its +8 field (`f_0bdfc2b8`), a window the console's priorities probably keep closed. Run many times (4 at a
-  time, 30 s each) and count frames before trusting a change.
-- Next: the Vulkan back end in place of `rx_null.c` (the prologue can't be played blind), the Resource Memory race, a
-  sound device for `nn_audio.c`.
+- The resource threads' shared message handler (`0x86d6514`) read a singleton between its creation and its init on
+  another thread (~10 ms of guest work; the host's instant file reads send it messages several times a millisecond):
+  a crash at guest address 8 before the first frame, about 1 run in 10 with 4 processes at once. `oranges/patches.py`
+  makes it wait for the init (0 crashes in 80 runs). Races like it show up under load: run many times (4 at a time,
+  30 s each) and count frames before trusting a change.
+- Next: the Vulkan back end in place of `rx_null.c` (the prologue can't be played blind), a sound device for
+  `nn_audio.c`.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

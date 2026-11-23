@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import kit  # noqa: F401  (sys.path)
 from . import hle as hle_mod
-from . import insn, lift_fixes, spin
+from . import insn, lift_fixes, patches, spin
 
 import a64_lift  # noqa: E402  (the kit's)
 import a64_rtgen  # noqa: E402
@@ -38,7 +38,8 @@ import nx_image  # noqa: E402
 
 def build_image(exefs: str | os.PathLike, skip: tuple[str, ...] = (), hle: bool = False) -> nx_image.NxImage:
     """The guest image. hle: hook the host's HLE functions and stub the OS-facing imports (oranges.hle), as the native
-    build needs; the counts are on the image as .hle_info"""
+    build needs; the counts are on the image as .hle_info. The game fixes (oranges.patches) are applied, their names
+    on the image as .patches"""
     info = None
     names: set[str] = set()
     if hle:
@@ -49,6 +50,7 @@ def build_image(exefs: str | os.PathLike, skip: tuple[str, ...] = (), hle: bool 
         info = {"hle": len(hooked), "stubbed": len(stubbed), "host_unused": unused}
     img = nx_image.NxImage(os.fspath(exefs), list(skip), sorted(names))
     img.hle_info = info
+    img.patches = patches.apply(img)
     return img
 
 
@@ -155,6 +157,8 @@ def run(exefs: str | os.PathLike, work: str | os.PathLike, skip: tuple[str, ...]
     say("image: %s, %d entries, %d hooks, %d unresolved non-weak imports (%.1f s)" % (
         ", ".join("%s@%#x" % (m["name"], m["base"]) for m in meta["modules"]), len(img.entries), len(img.hooks),
         len(img.unresolved), t1 - t0))
+    for name in img.patches:
+        say("patch: %s" % name)
     lifter = discover(img)
     t2 = time.monotonic()
     say("discover: %d functions (%.1f s)" % (len(lifter.funcs), t2 - t1))
@@ -171,6 +175,7 @@ def run(exefs: str | os.PathLike, work: str | os.PathLike, skip: tuple[str, ...]
         "plt_stubs": len(lifter.plt),
         "setjmp_owners": len(getattr(lifter, "setjmp_owner", {})),
         "unresolved_imports": dict(sorted(img.unresolved.items())),
+        "patches": img.patches,
         "stats": dict(sorted(lifter.stats.items())),
         "largest_functions": [{"entry": "%#x" % e, "insns": len(b), "module": module_of(img, e)}
                               for e, (b, _) in sorted(lifter.funcs.items(), key=lambda kv: -len(kv[1][0]))[:15]],
