@@ -124,7 +124,8 @@ Left over from it:
 
 - [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window (the
       Vulkan back end presents in mailbox mode): see the renderer's leftovers
-- [ ] Key remapping (a config file), more than one gamepad (Npad No.2-8), motion from a gamepad's gyro
+- [ ] Key remapping (a config file: task 4, the settings menu), more than one gamepad (Npad No.2-8), motion from a
+      gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
 ## Done: sound
@@ -298,3 +299,23 @@ uses them (logged once), then performance and memory.
 - [ ] Tests for the host side where they can run without the game (NVN object layouts, the audio mixer's buffer
       release, the `nn::time` calendar conversions)
 - [ ] Windows build (POSIX-only today: pthreads, `mmap`, signals)
+
+## 4. An oranges settings menu (controls first)
+
+An in-game settings menu like Longshot's "Insert menu" (its `gpu/vk/vk_menu.cpp`, the look in `vk_ui.h`, the file in
+`host/options_path.c`; its user guide is `docs/user/graphics-and-controls.md`). That menu is drawn with Dear ImGui over
+the window's image at the end of a present, so it costs nothing while closed and never touches the game's picture.
+F1 opens it (a gamepad's Home too), and the game gets no input while it is open. It has tabs (Graphics, Audio,
+Gameplay, Controls, ...), its choices are saved as they change in an options file, and rows that need a restart are
+marked. Only the Controls tab matters for now; the tabs can come later as there are settings for them.
+
+- [ ] The menu itself: Dear ImGui on the Vulkan back end (`host/vk`), drawn over the presented image (not with
+      `HOS_VK=0`). Keyboard, gamepad and mouse to move around it. While it is open, `hos_input()` gives the game
+      nothing.
+- [ ] An options file (`oranges_options.ini`, in the user's config folder), read at start and written on each change.
+- [ ] Controls tab: rebind each Switch button (and the left stick's and the camera's directions on the keyboard) to a
+      key and a gamepad input. This replaces the fixed key map in `hos_window.c`'s header. Also: reset a row or all of
+      them, and warn when an input is already bound. Then, as needed: stick dead zone, vibration on/off and strength,
+      which gamepad is Npad No.1, the mouse as touch.
+- [ ] Keep `HOS_INPUT_SCRIPT` and `HOS_CONTROL` independent of the bindings: they speak Switch buttons.
+
