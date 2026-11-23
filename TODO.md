@@ -452,9 +452,31 @@ time and halving the step, as Longshot did for its game (`host/oot_high_fps.h` t
       the stick), so compare by screenshots or fix `find` first.
 
 Why second: the bigger win of the two (smoothness, all the time), but a research task with a real chance of a no; the
-renderer needs headroom for it too (task 3). Frame generation is no way around it here (see "Looked at and ruled out").
+renderer needs headroom for it too (task 4). Frame generation is no way around it here (see "Looked at and ruled out").
 
-## 3. The renderer's gaps
+## 3. Faster loading
+
+The boot to the title screen and the title screen to the island (~30 s here) are long, and every scene change (a
+building, the airport) waits too. Only what oranges adds can be cut without changing the game, so first find where the
+time goes.
+
+- [ ] Measure: time the boot, the title to the island, and a door (into the tent and out) on the day-1 save, from the
+      log (`HOS_FS_LOG` shows what loads when). Several runs each: the numbers move with the disk cache.
+- [ ] Profile the loading threads while it loads (`HOS_PROFILE <s> <thread>`, `HOS_SAMPLE`): file reads and
+      decompression (`nn_fs.c`, the game's own zstd / zlib), shader translation (eden, on the game's submitting
+      thread, `vk_shader.cpp`), texture deswizzling and ASTC decoding (`vk_texture.cpp`), the whole-storage texture
+      hashing, our GPU waits at each submit.
+- [ ] Cut what is ours: a shader cache on disk (translated SPIR-V by program hash, so a second run translates
+      nothing), translation and ASTC decoding off the game's thread (or ahead of the draw that needs them), texture
+      uploads batched rather than one submit each.
+- [ ] The game's own pacing (fixed waits, frame-counted fades, loads it spreads over frames at 30 fps) stays as it is;
+      write down how much of the time it is, so it is clear what is left. (If task 2 finds the time step, frame-counted
+      waits would shorten at 60 fps only with the step halved: leave those alone.)
+
+Why third: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
+game's thread are also renderer performance (task 4), which task 2 needs.
+
+## 4. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -463,7 +485,7 @@ Why here: nothing unreplayed has turned up yet (each is logged once when it does
 as soon as one of those logs or a wrong picture shows. Its performance part comes first if task 2 goes ahead: at a
 forced 60 fps the game held 55-60 fps headless here, with no headroom.
 
-## 4. Clean-ups and checks
+## 5. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -480,10 +502,7 @@ Why last: none of these blocks the game; take them on when one starts to matter 
 
 Not planned yet. Each needs a look at what the game allows first.
 
-- **Shorter loading times, if possible.** Find where the time goes while a scene loads (the title screen to the
-  island is ~30 s here; `HOS_PROFILE` on the loading threads, `HOS_FS_LOG`): our decompression, shader
-  translation and texture uploads on the game's threads, or the game's own pacing (waits and frame-counted fades).
-  Only what we add can be cut without changing the game.
+Nothing here at the moment.
 
 ## Looked at and ruled out
 
