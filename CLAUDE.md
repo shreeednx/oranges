@@ -93,8 +93,11 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
   Tegra block-linear texture layout (deko3d-derived). `nn_audio.c` is the audio renderer at the API level (Longshot's,
   no sound device yet: `HOS_AUDIO_DUMP=<wav>`), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
-  `nn_hid.c` input (neutral until there is a window). Device limits are the game's own driver's (API 55.15), read by
-  running the sdk's `nvnDeviceGetInteger` under Unicorn.
+  `nn_hid.c` input (neutral until there is a window), `nn_online.c` the online and wireless services as an offline
+  console (nifm, bcat, friends, pctl, prepo, aoc, album, ec, err, ldn, nn::socket), `nn_nfp.c` amiibo (a reader that
+  never sees a tag), `nn_codec.c` the hardware Opus decoder (libopus, linked when pkg-config finds it: build.py's
+  `OPTIONAL_LIBRARIES` defines `HOS_HAVE_OPUS`), `nn_diag.c` nn::diag / nn::ro. Device limits are the game's own
+  driver's (API 55.15), read by running the sdk's `nvnDeviceGetInteger` under Unicorn.
   IPC requests to services nobody emulates are answered empty (success, zeroed outputs) and logged once per service
   and command with a backtrace. Native
   crashes are logged with the guest registers and backtrace (`hos_crash_init`). The kit's `rt/a64_rt.c` weak hooks
@@ -155,9 +158,9 @@ and attribution notices, and note the source file in a comment.
 - `sm:` speaks TIPC on this SDK (request type 16 + command id, the result as the reply's first data word), and the
   SDK's clients read replies at fixed offsets without checking the header: a reply must have exactly the layout a
   real server sends.
-- Next: the remaining stubs (`nn::aoc`,
-  `nn::nifm`, `nn::friends`, `nn::bcat`, `nn::nfp`), a window with real input, a sound device for `nn_audio.c`, and the
-  Vulkan back end in place of `rx_null.c`.
+- 6 OS-facing imports are still stubs (no caller in main). A service's answer can change the game's path: a failed
+  bcat mount stopped the frame loop, so check that frames still flow (`nvn: N frames presented`) after changing one.
+- Next: a window with real input, a sound device for `nn_audio.c`, and the Vulkan back end in place of `rx_null.c`.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

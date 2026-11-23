@@ -395,3 +395,16 @@ static uint32_t olsc_dispatch(HosIpc *r) {
     }
 }
 const HosIface hos_olsc_iface = {"IOlscServiceForApplication", olsc_dispatch};
+
+/* ---- nn::oe: the setters (focus handling, notifications, performance, CPU boost) change nothing on a PC -------- */
+HLE(_ZN2nn2oe17FinishStartupLogoEv) { hos_log("oe: startup logo finished"); }
+HLE(_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb) { (void)c; }
+HLE(_ZN2nn2oe24SetExpectedVolumeBalanceEff) { (void)c; }
+HLE(_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE) { (void)c; }
+HLE(_ZN2nn2oe28SetResumeNotificationEnabledEb) { (void)c; }
+HLE(_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb) { (void)c; }
+HLE(_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb) { (void)c; }
+HLE(_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE) { (void)c; }
+HLE(_ZN2nn2oe31EnterExitRequestHandlingSectionEv) { (void)c; }
+HLE(_ZN2nn2oe31LeaveExitRequestHandlingSectionEv) { (void)c; }
+HLE(_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi) { (void)c; }

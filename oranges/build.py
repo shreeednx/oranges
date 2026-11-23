@@ -33,6 +33,29 @@ def cc() -> str:
     return path
 
 
+def optional_library(name: str) -> tuple[list[str], list[str]]:
+    """(compile flags, link flags) of a system library pkg-config knows, or ([], []): the host builds without it"""
+    try:
+        cflags = subprocess.run(["pkg-config", "--cflags", name], capture_output=True, text=True, check=True).stdout
+        libs = subprocess.run(["pkg-config", "--libs", name], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return [], []
+    return cflags.split(), libs.split()
+
+
+OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS"}   # (pkg-config name: the macro host/ tests)
+
+
+def host_libraries() -> tuple[list[str], list[str]]:
+    cflags, libs = [], []
+    for name, macro in OPTIONAL_LIBRARIES.items():
+        c, ln = optional_library(name)
+        if ln:
+            cflags += ["-D" + macro] + c
+            libs += ln
+    return cflags, libs
+
+
 def common_flags(gen: Path) -> list[str]:
     return ["-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-ffp-contract=off", "-fno-strict-aliasing",
             "-mcx16", "-g0", "-Wno-everything", "-I" + str(gen), "-I" + str(RT)]
@@ -54,7 +77,8 @@ def sources(gen: Path) -> list[tuple[Path, list[str]]]:
     out += [(gen / n, support) for n in ("a64_table.c", "a64_hooks.c", "a64_suyu.c", "a64_stubs.c", "hos_image.c",
                                          "hos_symbols.c")
             if (gen / n).exists()]
-    host = ["-I" + str(HOST)] + support + ["-g"]   # (debug info for the OS layer: cheap, and gdb can read its state)
+    host = (["-I" + str(HOST)] + support + ["-g"]   # (debug info for the OS layer: cheap, and gdb can read its state)
+            + host_libraries()[0])
     out += [(RT / "a64_rt.c", support)] + [(c, host) for c in sorted(HOST.glob("*.c"))]
     return out
 
@@ -128,7 +152,8 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print) -> Path:
     exe = work / "build" / "oranges"
     say("link: %s" % exe)
     t1 = time.monotonic()
-    r = subprocess.run([compiler, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + ["-lm", "-lpthread"],
+    libs = host_libraries()[1] + ["-lm", "-lpthread"]
+    r = subprocess.run([compiler, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + libs,
                        capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError("link failed:\n%s" % r.stderr[-6000:])

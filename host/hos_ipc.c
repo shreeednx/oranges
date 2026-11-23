@@ -190,7 +190,8 @@ void hos_ipc_request(Ctx *c, uint8_t *msg, uint32_t msg_size, uint32_t handle) {
         p += 4;
         if (sh & 1) r->pid_sent = 1, memcpy(&r->pid, msg + p, 8), p += 8;
         const int ncopy = (sh >> 1) & 0xF, nmove = (sh >> 5) & 0xF;
-        for (int i = 0; i < ncopy + nmove && i < 16; i++) r->in_handle[r->n_in_handles++] = *(uint32_t *)(msg + p + 4 * i);
+        for (int i = 0; i < ncopy + nmove && i < 16; i++)
+            r->in_handle[r->n_in_handles++] = *(uint32_t *)(msg + p + 4 * i);
         p += 4 * (ncopy + nmove);
     }
     const int nx = (w0 >> 16) & 0xF, na = (w0 >> 20) & 0xF, nb = (w0 >> 24) & 0xF, nw = (w0 >> 28) & 0xF;
@@ -203,14 +204,14 @@ void hos_ipc_request(Ctx *c, uint8_t *msg, uint32_t msg_size, uint32_t handle) {
     const int counts[3] = {na, nb, nw};
     for (int k = 0; k < 3; k++)
         for (int i = 0; i < counts[k]; i++, p += 12) {
-            const uint32_t d0 = *(uint32_t *)(msg + p), d1 = *(uint32_t *)(msg + p + 4), d2 = *(uint32_t *)(msg + p + 8);
+            const uint32_t *d = (const uint32_t *)(msg + p), d0 = d[0], d1 = d[1], d2 = d[2];
             lists[k][i].addr = buf_addr(d1, d2);
             lists[k][i].size = (uint64_t)d0 | (uint64_t)((d2 >> 24) & 0xF) << 32;
         }
     r->nx = nx, r->na = na, r->nb = nb, r->nw = nw;
     const uint32_t data = p, ndata = w1 & 0x3FF;
     const uint32_t data_end = data + 4 * ndata;
-    const uint32_t cmode = (w1 >> 10) & 0xF;   /* C (receive list) descriptors: after the raw data, or at their offset */
+    const uint32_t cmode = (w1 >> 10) & 0xF;   /* C (receive list) descriptors: after the data, or at their offset */
     if (cmode >= 2) {
         uint32_t q = (w1 >> 20) & 0x7FF ? 4 * ((w1 >> 20) & 0x7FF) : data_end;
         const int nc = cmode == 2 ? 1 : (int)cmode - 2;

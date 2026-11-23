@@ -42,31 +42,46 @@ Left over from it:
 - [ ] Measure what the spin barriers cost once frames run (they should cost nothing: the guest re-reads those words
       anyway). If they cost something, leave out loops with calls (a call already stops the hoisting).
 
-## 1. Remaining stubbed services
+## Done: the stubbed services
 
-`oranges lift` reports 147 stubbed OS-facing imports. Each one returns 0 without writing its outputs.
+`oranges lift` stubbed 148 OS-facing imports (each returned 0 without writing its outputs). 142 are HLE now, answered
+as an offline console, with the results the game checks at its call sites (switchbrew's error codes where it lists
+them):
 
-- [ ] `nn::aoc` (add-on content: none, with the outputs written)
-- [ ] `nn::nifm` (network: not connected, reported properly)
-- [ ] `nn::friends`, `nn::bcat`, `nn::nfp` (amiibo), `nn::prepo`, `nn::err` (Longshot's `host/nn_applet.c` has most
-      of these)
-- [ ] The `nn::oe` notification setters and the performance-configuration calls (harmless today; check them)
-- [ ] Go through the stub list for any call whose result the game uses as a size, pointer or state
+- `host/nn_online.c`: nifm (not connected, 2110-1100), bcat (an empty delivery cache: the storage mounts, nothing
+  opens), friends (no friends, nothing online), pctl (no parental controls), prepo, aoc (none), album (screenshots not
+  kept), ec / err (logged), ldn (local wireless off), nn::socket (no network: ENETDOWN / EBADF / EAI_AGAIN, the
+  address helpers for real).
+- `host/nn_nfp.c`: an amiibo reader that never sees a tag. `host/nn_codec.c`: the hardware Opus decoder on libopus
+  (Longshot's; `oranges build` links it when pkg-config finds it). `host/nn_diag.c`: diag (backtrace, symbol names)
+  and ro. `nn_system.c`: the nn::oe setters (no-ops).
+- A failed `MountDeliveryCacheStorage` stopped the frame loop (main waits on an address nobody signals), so bcat
+  mounts and reports every directory as not found.
 
-## 2. A window and input
+Left over from it:
+
+- [ ] 6 stubs remain, with no caller in main: the polyphase resampler (4), `nn::audio::GetAudioOutPlayedSampleCount`,
+      `nn::err::ReportMultimediaError` (subsdk0's movie player, probably). Implement them if a movie plays.
+- [ ] The ldn Initialize result (2203-0022) is yuzu's ResultDisabled, not on switchbrew's list. Check it.
+- [ ] Amiibo: port Longshot's tag library (`host/nn_nfp.c` there: the player's own dumps) once there is input.
+- [ ] Screenshots (`nn::album::SaveScreenshot`): write them to a folder as PNG.
+- [ ] Why the game stalls when the bcat mount fails is not understood (a real console may fail it too, without a
+      network). Look again if another service's failure stalls it the same way.
+
+## 1. A window and input
 
 - [ ] Open a window (SDL or similar) and drive the frame from it
 - [ ] Map keyboard and gamepad input into `host/nn_hid.c` (`hos_input()` is where they come in)
 - [ ] Mouse and touch from the window
 - [ ] Optional: scripted input for test runs (Longshot's `HOS_INPUT_SCRIPT`)
 
-## 3. Sound
+## 2. Sound
 
 - [ ] A sound device for `host/nn_audio.c`. The renderer already mixes and `HOS_AUDIO_DUMP=<file.wav>` writes what
       would play. Swap `output_open` / `output_frame` for a real sink.
 - [ ] Process the effects that only pass through today (delay, reverb, biquad filter effects), if the game needs them
 
-## 4. The renderer
+## 3. The renderer
 
 - [ ] A Vulkan back end in place of `host/rx_null.c`, replaying the recorded NVN commands (Longshot's `gpu/vk`, made
       for NVN2: adapt it to NVN1)
@@ -74,7 +89,7 @@ Left over from it:
 - [ ] Textures: deswizzle the block-linear layouts (`host/nvn_layout.c` already computes them) and ASTC/BCn formats
 - [ ] Present the window textures to the real window
 
-## 5. Clean-ups and checks
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
