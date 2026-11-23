@@ -116,6 +116,13 @@ static void au_unlock(void) { pthread_mutex_unlock(&lock); }
 static void put_handle(uint64_t obj, int kind, int index) {
     if (obj) G64(obj) = (uint64_t)AU_MAGIC << 32 | (uint64_t)kind << 24 | (uint32_t)index;
 }
+/* A released or removed object's first word goes back to 0, as the SDK's Release* / Remove* clear their pointer
+   (sinks aside: those free their SinkInfo only). Games tell an acquired object by it: the game's sound system releases
+   its sub mixes on a scene change and then acquires them again only once that word is 0; left holding our handle,
+   they were never acquired again, and every effect added to them later was refused (the stall after the movie). */
+static void drop_handle(uint64_t obj) {
+    if (obj) G64(obj) = 0;
+}
 static int au_trace = -1;   /* HOS_AUDIO_TRACE=1: the graph setup calls */
 #define AUT(...) do { if (au_trace < 0) au_trace = env_on("HOS_AUDIO_TRACE"); if (au_trace) hos_log(__VA_ARGS__); } while (0)
 static int get_handle(uint64_t obj, int kind) {
@@ -1085,7 +1092,7 @@ HLE(_ZN2nn5audio17AcquireMemoryPoolEPNS0_19AudioRendererConfigEPNS0_14MemoryPool
 HLE(_ZN2nn5audio17ReleaseMemoryPoolEPNS0_19AudioRendererConfigEPNS0_14MemoryPoolTypeE) {
     const int i = pool_index(ARG(1));
     if (i >= 0) au_pools[i].used = 0;
-    G64(ARG(1)) = 0;
+    drop_handle(ARG(1));
 }
 HLE(_ZN2nn5audio23RequestAttachMemoryPoolEPNS0_14MemoryPoolTypeE) { RET(1); }
 HLE(_ZN2nn5audio23RequestDetachMemoryPoolEPNS0_14MemoryPoolTypeE) { RET(1); }
@@ -1122,11 +1129,13 @@ HLE(_ZN2nn5audio13AcquireSubMixEPNS0_19AudioRendererConfigEPNS0_10SubMixTypeEii)
 static void release_mix(uint64_t obj) {
     au_lock();
     Mix *m = mix_of(obj);
+    AUT("audio: mix %d released", m ? (int)(m - mixes) : -1);
     if (m) {
         m->released = 1;
         const Cmd k = {.op = OP_MIX_RELEASE, .idx = (int)(m - mixes)};
         submit(&k);
     }
+    drop_handle(obj);
     au_unlock();
 }
 HLE(_ZN2nn5audio15ReleaseFinalMixEPNS0_19AudioRendererConfigEPNS0_12FinalMixTypeE) { release_mix(ARG(1)); }
@@ -1197,6 +1206,7 @@ HLE(_ZN2nn5audio15ReleaseSplitterEPNS0_19AudioRendererConfigEPNS0_12SplitterType
         const Cmd k = {.op = OP_SPLIT_RELEASE, .idx = (int)(s - splitters)};
         submit(&k);
     }
+    drop_handle(ARG(1));
     au_unlock();
 }
 /* SetSplitterDestination(config, SplitterType*, int destinationIndex, mix) */
@@ -1305,6 +1315,7 @@ HLE(_ZN2nn5audio16ReleaseVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeE) 
         const Cmd k = {.op = OP_VOICE_RELEASE, .idx = (int)(v - voices)};
         submit(&k);
     }
+    drop_handle(ARG(1));
     au_unlock();
 }
 HLE(_ZN2nn5audio12IsVoiceValidEPKNS0_9VoiceTypeE) {
@@ -1485,6 +1496,7 @@ static void add_aux(Ctx *c) {
     if (e == MAX_EFFECTS || m < 0 || !ARG(1) || !ARG(3) || !ARG(4) ||
         bytes < 128 + FRAME * sizeof(int32_t) || bytes > INT32_MAX ||
         (ARG(3) < ARG(4) ? ARG(4) - ARG(3) : ARG(3) - ARG(4)) < bytes) {
+        AUT("audio: aux refused (slot %d, mix %d, %llu bytes)", e, m, (unsigned long long)bytes);
         au_unlock();
         RET(0x1A9 << 9 | 153);
         return;
@@ -1511,11 +1523,13 @@ HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_12FinalMix
 static void remove_aux(Ctx *c) {
     au_lock();
     Aux *a = aux_of(ARG(1));
+    AUT("audio: aux %d removed", a ? (int)(a - auxes) : -1);
     if (a) {
         a->released = 1;
         const Cmd k = {.op = OP_AUX_RELEASE, .idx = (int)(a - auxes)};
         submit(&k);
     }
+    drop_handle(ARG(1));
     au_unlock();
 }
 HLE(_ZN2nn5audio9RemoveAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_10SubMixTypeE) { remove_aux(c); }
@@ -1750,6 +1764,7 @@ HLE(_ZN2nn5audio17RemoveI3dl2ReverbEPNS0_19AudioRendererConfigEPNS0_15I3dl2Rever
     au_lock();
     Reverb *rv = reverb_of(ARG(1));
     if (rv) rv->used = 0;
+    drop_handle(ARG(1));
     au_unlock();
 }
 HLE(_ZN2nn5audio17RemoveI3dl2ReverbEPNS0_19AudioRendererConfigEPNS0_15I3dl2ReverbTypeEPNS0_12FinalMixTypeE) {
@@ -1776,6 +1791,7 @@ static int other_of(uint64_t obj) {
 static void other_remove(uint64_t obj) {
     const int i = other_of(obj);
     if (i >= 0) others[i].used = 0;
+    drop_handle(obj);
 }
 static void other_enable(uint64_t obj, int on) {
     const int i = other_of(obj);

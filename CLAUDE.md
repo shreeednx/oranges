@@ -217,8 +217,14 @@ and attribution notices, and note the source file in a comment.
   workgroup and shared memory in the control section, `vk_shader.cpp`). Not replayed yet: indirect draws (none seen).
 - With A and + every 1.6 s the game goes through the name, birthday, character creator and island questions, and at
   ~195 s plays the opening movie (`Movie/OpeningMovie.webm`, subsdk0's `movie::` library: `nn_movie.c`; + skips it,
-  so press only A from 190 s to watch it). About 15 s after it, loading the landing scene, frames stop (TODO.md).
-- Next: the stall after the movie (TODO.md).
+  so press only A from 190 s to watch it). After it the landing scene loads (`Tutorials_Prologue_DemoLanding`: the
+  plane, the island from above, then a shopkeeper at the dock, ~245 s).
+- `nn_audio.c` keeps its state in tables and puts a handle in the first word of the game's audio objects; the SDK's
+  Release* / Remove* zero that word, and games read it: the game's sound system re-acquires on a scene change only the
+  sub mixes whose word is 0. Left holding our handle they were never re-acquired, every Aux added to them later was
+  refused, and a job waiting for those effects to detach (IsAuxRemovable) stalled the frame loop after the movie.
+  An HLE object's fields the SDK writes are part of its API.
+- Next: the renderer's gaps (TODO.md).
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with
@@ -226,7 +232,8 @@ and attribution notices, and note the source file in a comment.
   `SystemEventType` to a kernel event the host signals with `hos_kernel_event_signal` (audio renderer, vsync, account
   async contexts).
 - For each wall, `hos_backtrace` (or gdb: lifted frames are `f_<guest address>`, `$rdi` is the guest `Ctx *`) shows the
-  `nn::` entry point. Hardware watchpoints on `0x100000000000 + <guest address>` find who writes guest memory.
+  `nn::` entry point. Hardware watchpoints on `0x100000000000 + <guest address>` find who writes guest memory (one set
+  before `run` on a page mapped later never fired, though the word was written: set it once the page exists).
   host/ builds with `-g`, so gdb reads the kernel's state: `p *hos_current` (a thread's guest registers; `x29` walks
   the guest frame chain), `p 'hos_kernel.c'::threads[0]->wait` (what a thread waits for). A thread at 100% CPU in a
   lifted function: disassemble it for a `jmp` to itself (a hoisted load).

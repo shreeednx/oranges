@@ -229,16 +229,34 @@ Left over from it:
 - [ ] Video output formats other than NV12 (2: ARGB; mode 2 / format 3: into an NVN texture): the game uses NV12 only
 - [ ] The movie's pictures and sound are in sync by the game's player; not measured here
 
-## 1. The stall after the movie (island landing)
+## Done: the stall after the movie (sub mixes never acquired again)
 
-About 15 s after the movie ends (or is skipped), while the landing scene loads (`Tutorials_Prologue_DemoLanding`; the
-loading screen with the plane), frames stop: the main thread waits in its frame end (`0x86ba430`) for a light event
-(the word at `0xcd167f44`, the same in every run): one of two slots (`[x19+0x30]`, 64 bytes each: a flag, a pointer,
-the event at +0x30; `x19` is `[[0xcbd1a78]+8]`), waited on when one of the object's items (`[x19+0x70]`, byte +0x104 bit
-3) is not ready. Nothing writes that word in the first 100 s of play. Every other thread is idle (message queues,
-light events), so whatever should finish the item and signal it never ran or failed quietly. It stalls the same way
-on the null back end (`HOS_VK=0`): not the renderer. Find who signals it (a watchpoint from the movie on), and what
-that waits for.
+About 15 s after the opening movie, while the landing scene loaded, the main thread waited forever in its frame end
+(`0x86ba430`) on a job manager's slot event (manager `[[0xcbd1a78]+8]`: workers at `+0x70`, 64-byte slots at `+0x30`
+with the light event at +0x30, signalled by `0xbe42690` once no worker runs a job of that slot's group). The job left
+running on a SupportWorker was the sound system's effect teardown (`0xba80e20`): it polls each effect's attached flag
+every 5 ms, and the audio thread clears it in the detach (`0xba59b90`) only once the effect's `nn::audio::Is*Removable`
+says yes. `IsAuxRemovable` said no forever: our `aux_of` did not know those Auxes, because `AddAux` had refused them
+(mix -1), because their sub mixes were unknown. On the first scene change (~3 s) the game releases its 10 sub mixes and
+acquires again only those it does not see as acquired, by the SubMixType's first word (the SDK's Release* / Remove* zero
+the object's first word, see `MixManager::Release`); ours kept our handle, so they were never acquired again.
+`nn_audio.c` now zeroes the word on every release and remove (voices, mixes, splitters, Auxes, effects, memory pools;
+sinks keep it, as in the SDK): the game acquires sub mixes 1-10 again and its Auxes and reverbs land on them, and the
+landing plays (the plane, the island from above, a shopkeeper at the dock) with frames flowing through 300 s. The first
+minute's sound has the same level as before, 5 s window by window (why the voices were heard with their sub mixes gone
+was not looked into). `HOS_AUDIO_TRACE` also logs refused Auxes, removed Auxes and released mixes.
+
+Left over from it:
+
+- [ ] Other fields the SDK writes into the game's audio objects that a game might read (only the first word is
+      modelled). Check an `nn::audio` object's SDK accessor when a game reads one directly.
+- [ ] A gdb hardware watchpoint set before `run` on the event word (a page mapped later) never fired, though the word
+      was written (signalled at init, a waiter's 1). Not understood; set watchpoints once the page exists.
+
+## 1. Further into the prologue
+
+The landing reaches a shopkeeper's dialogue at the dock (~245 s with A and + every 1.5 s; the script used stops at 250
+s). Script A further and see where the prologue goes next: the next wall, or what the renderer gets wrong.
 
 ## 2. The renderer's gaps
 
