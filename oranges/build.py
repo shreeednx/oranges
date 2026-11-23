@@ -7,8 +7,10 @@ are FP-exact (-ffp-contract=off) and LoopRotate is capped, which a64-kit measure
 
     ORANGES_MARCH  CPU level for every object (default x86-64-v3)
     ORANGES_OPT    optimization level of the lifted chunks (default O1)
+    ORANGES_VULKAN 0: without the Vulkan back end (host/vk and eden's recompiler, ~160 C++ files)
 """
 
+import functools
 import hashlib
 import os
 import shutil
@@ -33,6 +35,29 @@ def cc() -> str:
     return path
 
 
+def cxx() -> str:
+    path = shutil.which(os.environ.get("CXX", "clang++"))
+    if not path:
+        raise SystemExit("clang++ not found (set CXX)")
+    return path
+
+
+def vulkan() -> bool:
+    """whether the Vulkan back end is built (host/vk, with eden's recompiler): the system has a Vulkan loader, and
+    SDL3 for the window it presents to; ORANGES_VULKAN=0 leaves it out (the null back end draws nothing)"""
+    if os.environ.get("ORANGES_VULKAN") == "0":
+        return False
+    return bool(optional_library("vulkan")[1]) and bool(optional_library("sdl3")[1])
+
+
+def cxx_flags(gen: Path) -> list[str]:
+    return ["-std=c++20", "-O2", "-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-fno-strict-aliasing",
+            "-g0", "-w", "-I" + str(EDEN), "-I" + str(EDEN / "compat"), "-I" + str(EDEN / "sirit" / "include"),
+            "-I" + str(EDEN / "sirit" / "src"), "-I" + str(KHRONOS), "-I" + str(HOST), "-I" + str(gen),
+            "-I" + str(RT)]
+
+
+@functools.cache
 def optional_library(name: str) -> tuple[list[str], list[str]]:
     """(compile flags, link flags) of a system library pkg-config knows, or ([], []): the host builds without it"""
     try:
@@ -43,13 +68,18 @@ def optional_library(name: str) -> tuple[list[str], list[str]]:
     return cflags.split(), libs.split()
 
 
-OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS", "sdl3": "HOS_HAVE_SDL3"}   # (pkg-config name: the macro host/ tests)
+OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS", "sdl3": "HOS_HAVE_SDL3",    # (pkg-config name: the macro host/ tests)
+                      "vulkan": "HOS_HAVE_VULKAN"}
+EDEN = ROOT / "third_party" / "eden"         # eden's shader recompiler and sirit (C++, with the Vulkan back end)
+KHRONOS = ROOT / "third_party" / "khronos" / "include"
 
 
 def host_libraries() -> tuple[list[str], list[str]]:
     cflags, libs = [], []
     for name, macro in OPTIONAL_LIBRARIES.items():
         c, ln = optional_library(name)
+        if name == "vulkan" and not vulkan():
+            continue
         if ln:
             cflags += ["-D" + macro] + c
             libs += ln
@@ -80,6 +110,9 @@ def sources(gen: Path) -> list[tuple[Path, list[str]]]:
     host = (["-I" + str(HOST)] + support + ["-g"]   # (debug info for the OS layer: cheap, and gdb can read its state)
             + host_libraries()[0])
     out += [(RT / "a64_rt.c", support)] + [(c, host) for c in sorted(HOST.glob("*.c"))]
+    if vulkan():   # (C++: eden's recompiler and the back end; the back end with debug info, as the rest of host/)
+        out += [(c, cxx_flags(gen)) for c in sorted(EDEN.rglob("*.cpp"))]
+        out += [(c, cxx_flags(gen) + ["-g"] + host_libraries()[0]) for c in sorted((HOST / "vk").glob("*.cpp"))]
     return out
 
 
@@ -99,8 +132,10 @@ def _key(src: Path, flags: list[str], gen: Path) -> str:
     """What an object depends on: its flags, its source and the headers it includes"""
     h = hashlib.sha256("\0".join(flags).encode())
     deps = [src, RT / "a64.h", gen / "a64_suyu.h", gen / "a64_fpx.h"]
-    if src.parent == HOST:   # (every host header and include file: few, and cheap to hash)
+    if HOST in src.parents:   # (every host header and include file: few, and cheap to hash)
         deps += sorted(p for p in HOST.rglob("*") if p.suffix in (".h", ".inc"))
+    if EDEN in src.parents or src.parent == HOST / "vk":   # (and eden's headers)
+        deps += sorted(p for p in EDEN.rglob("*") if p.suffix in (".h", ".hpp", ".inc"))
     for dep in deps:
         if dep.exists():
             h.update(str(dep).encode() + b"\0" + _digest(dep))
@@ -108,6 +143,10 @@ def _key(src: Path, flags: list[str], gen: Path) -> str:
 
 
 def _obj(src: Path, obj_dir: Path) -> Path:
+    if EDEN in src.parents:   # (by path: eden and sirit repeat file names)
+        return obj_dir / ("eden." + "_".join(src.relative_to(EDEN).with_suffix("").parts) + ".o")
+    if src.parent == HOST / "vk":
+        return obj_dir / ("vk." + src.stem + ".o")
     return obj_dir / (src.stem + (".rt" if src.parent in (RT, HOST) else "") + ".o")
 
 
@@ -128,14 +167,15 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print) -> Path:
     # biggest first: the long compiles start early instead of finishing last
     todo.sort(key=lambda t: -t[0].stat().st_size)
     say("compile: %d of %d objects, %d at a time" % (len(todo), len(objs), jobs))
-    compiler = cc()
+    compiler, compiler_cxx = cc(), cxx()
     t0 = time.monotonic()
 
     def compile_one(item):
         src, flags, obj, stamp, key = item
         start = time.monotonic()
         tmp = obj.with_suffix(".o.tmp")
-        r = subprocess.run([compiler, "-c", str(src), "-o", str(tmp)] + flags, capture_output=True, text=True)
+        r = subprocess.run([compiler_cxx if src.suffix == ".cpp" else compiler, "-c", str(src), "-o", str(tmp)] + flags,
+                           capture_output=True, text=True)
         if r.returncode:
             raise RuntimeError("%s failed:\n%s" % (src.name, r.stderr[-4000:]))
         os.replace(tmp, obj)
@@ -153,7 +193,8 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print) -> Path:
     say("link: %s" % exe)
     t1 = time.monotonic()
     libs = host_libraries()[1] + ["-lm", "-lpthread"]
-    r = subprocess.run([compiler, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + libs,
+    linker = compiler_cxx if any(o.name.startswith(("eden.", "vk.")) for o in objs) else compiler
+    r = subprocess.run([linker, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + libs,
                        capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError("link failed:\n%s" % r.stderr[-6000:])

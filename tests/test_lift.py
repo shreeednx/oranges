@@ -69,10 +69,11 @@ def test_translator_covers_the_fake_code(exefs):
 
 @pytest.mark.skipif(not (shutil.which("clang") and shutil.which("clang++") and shutil.which("ld.lld")),
                     reason="needs clang, clang++ and lld")
-def test_write_compile_link_run(exefs, tmp_path):
+def test_write_compile_link_run(exefs, tmp_path, monkeypatch):
     import subprocess
 
     from oranges import build
+    monkeypatch.setenv("ORANGES_VULKAN", "0")   # (the null back end: eden's recompiler takes a minute to build)
     work = tmp_path / "work"
     report = lift.run(exefs, work, write=True, say=lambda *_: None)
     assert report["emit"]["files"] >= 1 and report["emit"]["unhandled_words"] == 0

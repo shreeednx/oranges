@@ -166,7 +166,7 @@ static void *guest_thread(void *p) {
 }
 
 static SDL_Window *window;
-static SDL_Renderer *renderer;
+static SDL_Renderer *renderer;   /* (the status page's: none when the Vulkan back end presents the game) */
 static SDL_Gamepad *pad;
 
 static const struct { SDL_Scancode key; uint64_t bit; } key_buttons[] = {
@@ -238,7 +238,14 @@ static void read_input(int32_t wheel) {
     /* the mouse, in the console's 1280x720 screen */
     float wx, wy, x = 0, y = 0;
     const SDL_MouseButtonFlags mb = SDL_GetMouseState(&wx, &wy);
-    SDL_RenderCoordinatesFromWindow(renderer, wx, wy, &x, &y);
+    if (renderer) {
+        SDL_RenderCoordinatesFromWindow(renderer, wx, wy, &x, &y);
+    } else {   /* (the Vulkan present letterboxes 1280x720 into the window the same way) */
+        int ww = 1280, wh = 720;
+        SDL_GetWindowSize(window, &ww, &wh);
+        const float scale = SDL_min((float)ww / 1280, (float)wh / 720);
+        if (scale > 0) x = (wx - (ww - 1280 * scale) / 2) / scale, y = (wy - (wh - 720 * scale) / 2) / scale;
+    }
     in.mouse_x = (int32_t)x, in.mouse_y = (int32_t)y, in.wheel = wheel;
     in.mouse_in = x >= 0 && y >= 0 && x < 1280 && y < 720 && (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_FOCUS);
     if (mb & SDL_BUTTON_LMASK) in.mouse_buttons |= 1u << 0;
@@ -300,6 +307,17 @@ static int window_open(void) {
         hos_log("window: none (%s): the game runs without one", SDL_GetError());
         return 0;
     }
+#ifdef HOS_HAVE_VULKAN
+    /* the game's picture: a Vulkan window the back end presents to (host/vk); the status page if it does not start */
+    if ((window = SDL_CreateWindow("oranges", 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN))) {
+        if (rx_vk_init(window)) {
+            hos_log("window: 1280x720 (%s, Vulkan)", SDL_GetCurrentVideoDriver());
+            return 1;
+        }
+        SDL_DestroyWindow(window);
+        window = NULL;
+    }
+#endif
     if (!SDL_CreateWindowAndRenderer("oranges", 1280, 720, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
         hos_log("window: none (%s): the game runs without one", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);   /* (not the sound's) */
@@ -313,6 +331,7 @@ static int window_open(void) {
 
 /* HOS_SCREENSHOT=<file.bmp>[,seconds]: the window's picture, once, that long after the start (default 10 s) */
 static void screenshot(void) {
+    if (!renderer) return;   /* (the Vulkan back end takes its own: host/vk/vk_device.cpp) */
     static const char *path;
     static int64_t at = -1;
     static char file[1024];
@@ -372,9 +391,13 @@ static void window_loop(void) {
             __atomic_load(&rumble[1], &hi, __ATOMIC_RELAXED);
             SDL_RumbleGamepad(pad, (Uint16)(SDL_min(lo, 1.0f) * 65535), (Uint16)(SDL_min(hi, 1.0f) * 65535), 100);
         }
-        draw_status();   /* (vsync paces the loop) */
-        screenshot();
-        SDL_RenderPresent(renderer);
+        if (renderer) {
+            draw_status();   /* (vsync paces the loop) */
+            screenshot();
+            SDL_RenderPresent(renderer);
+        } else {   /* (the game presents its frames itself: events and input a few times a frame) */
+            SDL_WaitEventTimeout(NULL, 4);
+        }
     }
 }
 #endif
@@ -397,6 +420,9 @@ void hos_window_run(void (*guest_main)(void)) {
     }
 #else
     hos_sound_init(0);
+#endif
+#ifdef HOS_HAVE_VULKAN
+    rx_vk_init(NULL);   /* (no window: the back end draws all the same, for HOS_SCREENSHOT) */
 #endif
     guest_main();
 }

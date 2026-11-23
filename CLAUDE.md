@@ -26,13 +26,17 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges nso     game.nup [main ...] [-v]              # segments, symbols, relocs, SVCs, cross-module link
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
 .venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
-.venv/bin/oranges build                           # compile work/gen + rt + host/, link work/build/oranges
+.venv/bin/oranges build                           # compile work/gen + rt + host/ (+ vk, eden), link work/build/oranges
 ./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
 HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
 HOS_AUDIO=1 HOS_NO_WINDOW=1 ./work/build/oranges   # sound without a window (headless runs are quiet by default)
+HOS_NO_WINDOW=1 HOS_SCREENSHOT=shot.bmp,40 ./work/build/oranges   # the presented picture at 40 s (headless draws too)
+HOS_VK_SHOTS=dir,5 ./work/build/oranges   # a screenshot every 5 s; HOS_VK=0: the null back end (nothing drawn)
+HOS_VK_PASSDUMP=dir@57 ./work/build/oranges   # every render pass's targets (and depth) for one frame from 57 s on
+HOS_VK_LOG=2000@57 ./work/build/oranges   # trace targets, clears, draws (state, bindings, programs) from 57 s on
 .venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
 .venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
 ```
@@ -82,6 +86,20 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   OS-facing `nn::<service ns>::f` the game imports (`OS_NAMESPACES`). It writes `gen/a64_stubs.c` (stubs log their
   first call and return 0) and `gen/hos_image.c` (boot constants: segments, DT_INITs, SDK boot entry points, main
   thread from `main.npdm`). `oranges lift --write` applies it. A new `HLE(...)` in host/ needs a lift again.
+- `host/vk/` (C++20): the Vulkan back end, built when pkg-config finds `vulkan` and `sdl3` (`ORANGES_VULKAN=0`
+  leaves it out). `vk.h` has the design: one queue, each submit replayed into one command buffer and run to completion
+  (fences are reached at once, CPU-visible results written after it, in order), guest memory pools imported as
+  buffers (`vk_memory.cpp`, `VK_EXT_external_memory_host`), shader objects with every state dynamic and pushed
+  descriptors (`vk_replay.cpp`), textures as images filled from guest memory by deswizzling the block-linear layout
+  (`vk_texture.cpp`), and NVN1 programs translated by eden (`vk_shader.cpp`: the NVN1 package format, c1, the driver
+  banks c0/c2 and uniform buffers from c3, in its header comment). `vk_device.cpp`: instance, device (every core feature
+  the GPU has), the swapchain on the SDL window or none, the present (letterboxed), screenshots. Rendering rules found
+  on the game (each was a black screen): NVN's upper-left origin is a y-flipped Vulkan viewport; `gl_Position` must be
+  invariant (EQUAL depth pre-pass); `SetRenderEnableConditional` must be honoured (UI layers); the first stage's
+  inputs need `previous_stage_stores` all set. Debugging: `HOS_VK_LOG`, `HOS_VK_PASSDUMP`, `HOS_VK_DUMP`,
+  `HOS_VK_SHOTS`, `HOS_VK_SPV` (each program's SPIR-V), `HOS_VK_VALIDATE=1` (the Khronos layer, when installed).
+- `third_party/eden/`: eden's Maxwell shader recompiler and sirit, vendored unchanged from the Longshot toolchain
+  (`PROVENANCE.md`); `third_party/khronos/`: the Vulkan and SPIR-V C headers (the system has none). Don't edit them.
 - `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.
   `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
   stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,
@@ -98,8 +116,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `nn_fs.c` is `nn::fs` (RomFS read-only from `work/romfs`, device save data in `work/user/save/device`). `nvn.c` has
   the nv:: driver setup HLE. `nvn_native.c` is NVN itself, ported from Longshot's NVN1-descended layer: objects live in
   the game's NVN object memory (`nvn/rx_nvn.h` layouts, checked against `nvn/nvn_api.h` sizes), GPU work is recorded
-  and handed to a render back end at submit. `rx_null.c` is the back end for now: it applies the CPU-visible effects
-  (events, counters, buffer copies/updates) and draws nothing. The proc table `nvn/nvn_procs.inc` lists every `NV()`
+  and handed to a render back end at submit (`host/vk`). `rx_null.c` is the back end where that is not built or does
+  not start: it applies the CPU-visible effects (events, counters, buffer copies/updates) and draws nothing. The proc
+  table `nvn/nvn_procs.inc` lists every `NV()`
   (`tests/test_nvn.py` keeps them in sync: regenerate it with
   `grep -oP '^NV\(\K\w+' host/nvn_native.c | sed 's/.*/    E(&),/'` under its comment line). `nvn_layout.c` is the
   Tegra block-linear texture layout (deko3d-derived). `nn_audio.c` is the audio renderer at the API level (Longshot's,
@@ -189,7 +208,9 @@ and attribution notices, and note the source file in a comment.
   a crash at guest address 8 before the first frame, about 1 run in 10 with 4 processes at once. `oranges/patches.py`
   makes it wait for the init (0 crashes in 80 runs). Races like it show up under load: run many times (4 at a time,
   30 s each) and count frames before trusting a change.
-- Next: the Vulkan back end in place of `rx_null.c` (the prologue can't be played blind).
+- Rendering (`host/vk/`): the airport prologue is drawn at 30 fps, in the window and headless. Missing: capital
+  letters in the UI text, ASTC textures (grey), compute dispatches (none seen yet). TODO.md "The renderer's gaps".
+- Next: the renderer's gaps (TODO.md).
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with

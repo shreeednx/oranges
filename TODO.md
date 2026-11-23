@@ -80,8 +80,8 @@ the birthday (`DateInput`). Tools from finding it: `HOS_SAMPLE`, `HOS_PROFILE`, 
 
 Left over from it:
 
-- [ ] Going further blind is guesswork: it needs the renderer (or a screenshot of the window textures) to script
-      input against
+- [x] Going further blind is guesswork: it needs the renderer. It has one now (`HOS_SCREENSHOT` / `HOS_VK_SHOTS` to
+      script input against)
 
 ## Done: the intermittent frame stall
 
@@ -122,8 +122,8 @@ QUIT), `HOS_SCREENSHOT` saves the window's picture, `HOS_NO_WINDOW=1` runs witho
 
 Left over from it:
 
-- [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window. Pace
-      them by the window's presents once the Vulkan back end draws into it
+- [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window (the
+      Vulkan back end presents in mailbox mode): see the renderer's leftovers
 - [ ] Key remapping (a config file), more than one gamepad (Npad No.2-8), motion from a gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
@@ -143,13 +143,52 @@ Left over from it:
 - [ ] AudioOut buffers are released on time but not played (the game doesn't use AudioOut; subsdk0's movie player may)
 - [ ] Choosing the output device (`HOS_AUDIO_DEVICE`), volume, mute when the window loses focus
 
-## 1. The renderer (the next wall: the prologue can't be played blind)
+## Done: a renderer (the prologue is drawn)
 
-- [ ] A Vulkan back end in place of `host/rx_null.c`, replaying the recorded NVN commands (Longshot's `gpu/vk`, made
-      for NVN2: adapt it to NVN1)
-- [ ] Shader translation: the game's Maxwell shaders (`nvn_prog` stages) to SPIR-V
-- [ ] Textures: deswizzle the block-linear layouts (`host/nvn_layout.c` already computes them) and ASTC/BCn formats
-- [ ] Present the window textures to the real window
+`host/vk/` replays the recorded NVN commands on Vulkan, written for NVN1 rather than ported from Longshot's NVN2 back
+end (3.7 MB of C++ with its game's features); it takes eden's shader recompiler (yuzu's Maxwell frontend and SPIR-V
+backend, vendored from the Longshot toolchain into `third_party/eden`). The airport prologue renders at 30 fps:
+the two shopkeepers at the counter, lit and textured, the dialogue boxes and choices, in the window (Wayland, mailbox)
+and headless (`HOS_SCREENSHOT`). Design in `host/vk/vk.h`: one queue, each submit run to completion, guest memory
+pools imported (`VK_EXT_external_memory_host`), shader objects with all state dynamic, pushed descriptors, images in
+`GENERAL` with full barriers. What it took to get the first picture (each was a black screen):
+
+- NVN1 shader packages: control section magic `0x98761234` version 1; the code area is a 0x30-byte header, the SPH at
+  +0x30, code from +0x80; the frontend's addresses are the code area's (scheduling words on its 32-byte boundaries),
+  start 0x30. c1 (the program's constants and branch tables, which eden folds into the translation) is the code area
+  from control +0x700 to +0x704. All 383 programs of the first minute translate and pass `spirv-val`.
+- The first stage's inputs: eden declares a vertex attribute only when the previous stage stores it, so the vertex
+  stage gets `previous_stage_stores.mask.set()` (every position was 0).
+- NVN's viewport puts clip +y at the top in its upper-left origin mode (the game's projections are GL's): a y-flipped
+  Vulkan viewport, which also keeps NVN's front faces front faces.
+- `gl_Position` invariant (eden's `position_invariant`): the colour pass tests depth EQUAL against a pre-pass.
+- Conditional rendering (`SetRenderEnableConditional`): the UI composites each layer under a condition; ignored, its
+  disabled clears wiped the picture. Evaluated after flushing the GPU work before it (a sync point).
+- 3D textures: a render target view takes the slice the NVN view names; a 3D texture a shader samples as 2D gets a 2D
+  view of its first slice (`VK_EXT_image_2d_view_of_3d`).
+
+Left over from it:
+
+- [ ] Capital letters are missing from the UI text ("he first step...", "es, it is!"): find where those glyphs come
+      from (another font page, an ASTC texture, a CPU-written glyph cache)
+- [ ] ASTC: decode on the CPU (desktop GPUs have none); a grey placeholder now (the choice cursor, UI icons)
+- [ ] Not replayed yet: compute dispatches, indirect draws, texel buffers, storage images, alpha test, line widths,
+      multisample resolves, depth-stencil fills from memory. None seen in the prologue so far (logged once if they are)
+- [ ] Performance: every submit waits for the GPU, every pass ends with a full barrier, the driver banks are rebuilt
+      for each draw, programs are translated on the game's thread. Profile once more of the game draws
+- [ ] Memory: images and views are never freed (the game's transient targets alias one virtual pool region; each
+      size/format there is its own image)
+- [ ] Texture refills from guest memory are found by a fingerprint of 64 spans, once a frame: a change elsewhere is
+      missed
+- [ ] Frames are paced by `nvn_native.c`'s clock; mailbox/immediate presents. Pace by the display (`HOS_VSYNC=1` is
+      FIFO today)
+- [ ] Run once with the Khronos validation layer (`HOS_VK_VALIDATE=1`; not installed on this machine)
+- [ ] Occlusion queries and other counters write 0 (only timestamps seen so far)
+
+## 1. The renderer's gaps
+
+The leftovers under "Done: a renderer" above, first the missing capital letters and ASTC (what is wrong on screen
+now), then compute dispatches when the game first uses them, then performance.
 
 ## 2. Clean-ups and checks
 

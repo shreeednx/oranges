@@ -172,6 +172,9 @@ void hos_input(HosInput *out);     /* the input now: the window's, and HOS_INPUT
 void hos_rumble(int motor, float amplitude);   /* a gamepad's motor (0 low, 1 high frequency): 0..1 */
 /* run the game (guest_main): beside a window when there is one, else on this thread */
 void hos_window_run(void (*guest_main)(void));
+/* the Vulkan back end (host/vk/vk_device.cpp), started on the main thread: window an SDL_Window (null: headless);
+   0 when it does not start (the null back end draws nothing) */
+int rx_vk_init(void *window);
 
 /* ---- the sound device (hos_sound.c) */
 void hos_sound_init(int window);   /* (the main thread, before the game) whether there is sound, and SDL's audio */

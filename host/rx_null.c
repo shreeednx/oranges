@@ -1,7 +1,8 @@
 /* The null render back end: what host/nvn_native.c hands the renderer (host/nvn/rx_nvn.h), with nothing drawn.
 
-   It stands where the Vulkan replay will (Longshot's gpu/vk), and does what the CPU can see of the GPU's work, so the
-   game's own logic goes on as on the console: at a submit, events are signalled, counters are reported (timestamps
+   The Vulkan back end (host/vk/) replaces it where it is built; its rx_null_* parts serve that one when it does not
+   start (HOS_VK=0, no device). It does what the CPU can see of the GPU's work, so the game's own logic goes on as on
+   the console: at a submit, events are signalled, counters are reported (timestamps
    from the system tick), buffers are copied, cleared and updated, in recording order. Draws, clears of textures and
    texture copies are skipped; ReadTexels reads zeros. Every fence is reached at once. */
 #include "hos.h"
@@ -9,7 +10,6 @@
 
 #include <string.h>
 
-static uint64_t pushed;   /* submits so far (every one carried out at once: replayed == pushed) */
 
 static void counter(const nvn_p_counter *r) {
     NVNcounterData d = {0, 0};
@@ -79,8 +79,24 @@ static void run(const uint8_t *p) {
     }
 }
 
-void rx_nvn_submit(const uint64_t *handles, int n) {
+void rx_null_submit(const uint64_t *handles, int n) {
     for (int i = 0; i < n; i++) run((const uint8_t *)(uintptr_t)handles[i]);
+}
+void rx_null_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
+                         size_t row, size_t img) {
+    (void)t, (void)level, (void)layer0;
+    int bw, bh;
+    const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+    if (!dst || bpb <= 0 || r->width <= 0 || r->height <= 0) return;
+    const size_t wb = (size_t)(r->width + bw - 1) / bw * (size_t)bpb, hb = (size_t)(r->height + bh - 1) / bh;
+    for (int z = 0; z < (r->depth > 1 ? r->depth : 1); z++)
+        for (size_t y = 0; y < hb; y++) memset(dst + z * img + y * row, 0, wb);
+}
+
+#ifndef HOS_HAVE_VULKAN
+static uint64_t pushed;   /* submits so far (every one carried out at once: replayed == pushed) */
+void rx_nvn_submit(const uint64_t *handles, int n) {
+    rx_null_submit(handles, n);
     __atomic_add_fetch(&pushed, 1, __ATOMIC_RELEASE);
 }
 void rx_nvn_submit_q(const uint64_t *handles, int n, uint64_t queue) {
@@ -110,13 +126,7 @@ void rx_nvn_program_released(const nvn_prog *p) { (void)p; }
 void rx_nvn_program_created(const nvn_prog *p) { (void)p; }
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img) {
-    (void)t, (void)level, (void)layer0;
-    int bw, bh;
-    const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    if (!dst || bpb <= 0 || r->width <= 0 || r->height <= 0) return;
-    const size_t wb = (size_t)(r->width + bw - 1) / bw * (size_t)bpb, hb = (size_t)(r->height + bh - 1) / bh;
-    for (int z = 0; z < (r->depth > 1 ? r->depth : 1); z++)
-        for (size_t y = 0; y < hb; y++) memset(dst + z * img + y * row, 0, wb);
+    rx_null_read_texels(t, level, layer0, r, dst, row, img);
 }
 void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src,
                          size_t row, size_t img) {
@@ -126,3 +136,4 @@ void rx_nvn_invalidate(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
 void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) { (void)gpu, (void)value; }
+#endif
