@@ -1,6 +1,7 @@
 # Next tasks
 
-Ordered by what blocks the boot first. `CLAUDE.md` has the background (boot status, debugging recipes).
+The finished work first ("Done:", with what was left over from each), then the open tasks by priority (1 first).
+`CLAUDE.md` has the background (boot status, debugging recipes).
 
 ## Done: services reached through `sm:` (the `olsc:u` abort)
 
@@ -124,7 +125,7 @@ Left over from it:
 
 - [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window (the
       Vulkan back end presents in mailbox mode): see the renderer's leftovers
-- [ ] Key remapping (a config file: task 4, the settings menu), more than one gamepad (Npad No.2-8), motion from a
+- [ ] Key remapping (a config file: task 3, the settings menu), more than one gamepad (Npad No.2-8), motion from a
       gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
@@ -284,23 +285,21 @@ The manager asks the player to help the two villagers find spots for their tents
 shows the player only). Then on the console: their building sites, the campfire (fruit and branches), the first
 night and the first save (`deviceSave:/main.dat`; nothing has been written so far). Drive it with `HOS_CONTROL`.
 
-## 2. The renderer's gaps
+Why first: it is what finds the next wall, and the first save lets later runs load a game instead of replaying the
+prologue's ~5 minutes each time.
 
-The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
-uses them (logged once), then performance and memory.
+## 2. Check touch input: the mouse on the game's keyboard
 
-## 3. Clean-ups and checks
+The window's left mouse button is a finger on the touch screen (`hos_window.c`: the 1280x720 picture, letterboxed;
+`TOUCH=x,y` in `HOS_INPUT_SCRIPT` and `HOS_CONTROL`), but no one has seen the game react to it. The game reads the
+touch screen from 0.8 s, and from another caller (`lr 0xb1c3bc4`) once its keyboard for the player's name is up
+(~58 s): tapping its keys should type. Check it with `HOS_CONTROL` (`TOUCH=x,y` held a moment, then `SHOT`), and with
+the mouse in the window. If it doesn't react, look at the touch state's layout and the sampling (`nn_hid.c`
+`touch_state`: the delta time, the attributes for a finger going down and up, the finger id).
 
-- [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
-      (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
-- [ ] Build the host code with warnings on (it uses `-Wno-everything` along with the lifted C today)
-- [ ] A scheduler that honours priorities (core numbers are reported now, but every guest thread still runs freely on
-      its own host thread), if a wall turns out to depend on it (the Resource Memory crash did not: other cores)
-- [ ] Tests for the host side where they can run without the game (NVN object layouts, the audio mixer's buffer
-      release, the `nn::time` calendar conversions)
-- [ ] Windows build (POSIX-only today: pthreads, `mmap`, signals)
+Why here: small and quick (one run to 60 s), and the result matters to the settings menu's "mouse as touch".
 
-## 4. An oranges settings menu (controls first)
+## 3. An oranges settings menu (controls first)
 
 An in-game settings menu like Longshot's "Insert menu" (its `gpu/vk/vk_menu.cpp`, the look in `vk_ui.h`, the file in
 `host/options_path.c`; its user guide is `docs/user/graphics-and-controls.md`). That menu is drawn with Dear ImGui over
@@ -319,3 +318,25 @@ marked. Only the Controls tab matters for now; the tabs can come later as there 
       which gamepad is Npad No.1, the mouse as touch.
 - [ ] Keep `HOS_INPUT_SCRIPT` and `HOS_CONTROL` independent of the bindings: they speak Switch buttons.
 
+Why here: what makes the game playable by a person rather than by scripts (fixed keys today).
+
+## 4. The renderer's gaps
+
+The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
+uses them (logged once), then performance and memory.
+
+Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
+as soon as one of those logs or a wrong picture shows.
+
+## 5. Clean-ups and checks
+
+- [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
+      (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
+- [ ] Build the host code with warnings on (it uses `-Wno-everything` along with the lifted C today)
+- [ ] A scheduler that honours priorities (core numbers are reported now, but every guest thread still runs freely on
+      its own host thread), if a wall turns out to depend on it (the Resource Memory crash did not: other cores)
+- [ ] Tests for the host side where they can run without the game (NVN object layouts, the audio mixer's buffer
+      release, the `nn::time` calendar conversions)
+- [ ] Windows build (POSIX-only today: pthreads, `mmap`, signals)
+
+Why last: none of these blocks the game; take them on when one starts to matter (memory on long runs first).
