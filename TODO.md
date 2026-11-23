@@ -306,7 +306,7 @@ An in-game settings menu like Longshot's "Insert menu" (its `gpu/vk/vk_menu.cpp`
 the window's image at the end of a present, so it costs nothing while closed and never touches the game's picture.
 F1 opens it (a gamepad's Home too), and the game gets no input while it is open. It has tabs (Graphics, Audio,
 Gameplay, Controls, ...), its choices are saved as they change in an options file, and rows that need a restart are
-marked. Only the Controls tab matters for now; the tabs can come later as there are settings for them.
+marked. The Controls tab comes first, then Graphics (task 4); the other tabs as there are settings for them.
 
 - [ ] The menu itself: Dear ImGui on the Vulkan back end (`host/vk`), drawn over the presented image (not with
       `HOS_VK=0`). Keyboard, gamepad and mouse to move around it. While it is open, `hos_input()` gives the game
@@ -320,7 +320,28 @@ marked. Only the Controls tab matters for now; the tabs can come later as there 
 
 Why here: what makes the game playable by a person rather than by scripts (fixed keys today).
 
-## 4. The renderer's gaps
+## 4. Graphics settings (the settings menu's Graphics tab)
+
+The resolutions the game supports itself, chosen in the menu (task 3). Longshot's Graphics tab (its user guide's
+"Every setting") is the model for how they look. The game renders for the mode the console reports: `nn_system.c`
+answers `nn::oe::GetOperationMode` with Console (docked, the 1920x1080 picture every screenshot has) and the performance
+mode with Boost.
+
+- [ ] Check what the game does with each mode. Report Handheld (`GetOperationMode` 0, the normal performance mode)
+      and look at its render targets' sizes (`HOS_VK_LOG`): 1280x720 presumably. Also check whether it scales its
+      3D resolution by itself (a dynamic resolution: the targets' sizes changing with the load).
+- [ ] A Resolution setting: Docked (1920x1080) or Handheld (1280x720), whichever the game really supports. Changing
+      it while the game runs takes the console's notice: the game turns on `SetOperationModeChangedNotificationEnabled`
+      and waits for the applet's OperationModeChanged message. Without that, apply it after a restart.
+- [ ] The window's side of it: fullscreen (F11 today), V-Sync (`HOS_VSYNC=1` today), the filter used to scale the
+      picture to the window.
+- [ ] Only after those: whether to go above 1080p. The game has no such mode, so it would mean the renderer enlarging
+      the game's render targets (Longshot's "Output resolution"), with whatever that breaks (the UI's layout, the
+      post effects' texel offsets, the game's reads of its own targets). Decide once the native modes work.
+
+Why here: it needs the menu (task 3), and the game draws right at 1080p already; this is choice, not a fix.
+
+## 5. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -328,7 +349,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 5. Clean-ups and checks
+## 6. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -340,3 +361,20 @@ as soon as one of those logs or a wrong picture shows.
 - [ ] Windows build (POSIX-only today: pthreads, `mmap`, signals)
 
 Why last: none of these blocks the game; take them on when one starts to matter (memory on long runs first).
+
+## Future ideas
+
+Not planned yet. Each needs a look at what the game allows first.
+
+- **AMD FSR (upscaling).** FSR 1 needs only the final picture: one pass at the present that upscales the game's 1080p
+  to the window (a 1440p or 4K screen), so it is the easy one. FSR 2 / 3.1 are temporal: they need the scene's depth
+  and motion vectors, so check whether the game draws motion vectors at all (for its own anti-aliasing or motion blur).
+  Longshot ships FSR 3.1 (its "Upscaler" setting) and can serve as the model.
+- **Higher frame rates.** The game runs at 30 fps (its presents ask for every second 60 Hz vblank; `nvn_native.c`
+  paces them). Two ways:
+  - The game's own rate: present every vblank and let its loop run at 60 or more. Its logic probably counts frames
+    (animations, timers, the day's clock?), so find how it steps time first. Longshot's high frame rate work
+    (`host/oot_high_fps.h` there) shows what it took for its game.
+  - Frames made by the renderer between the game's (frame interpolation, as in FSR 3.1's frame generation), which
+    leaves the game's timing alone.
+
