@@ -120,6 +120,13 @@ void hos_menu_load(void) {
     hos_controls_load();
 }
 int hos_menu_is_open(void) { return __atomic_load_n(&open_, __ATOMIC_ACQUIRE); }
+int hos_menu_capturing(void) {
+    pthread_mutex_lock(&lock);
+    if (mode == HOS_MENU_CAPTURE && hos_now_ns() > capture_end) mode = HOS_MENU_NORMAL;
+    const int c = open_ && mode == HOS_MENU_CAPTURE;
+    pthread_mutex_unlock(&lock);
+    return c;
+}
 
 static void say(const char *fmt, const char *a, const char *b, const char *c) {
     snprintf(message, sizeof message, fmt, a, b, c);
@@ -159,8 +166,9 @@ static void answer(int yes) {
         say("%s%s%s", "Every binding is back to its default.", "", "");
         return;
     }
-    char name[64];
-    const char *n = q.slot == HOS_BIND_KEYS ? hos_pad_name(q.input) : hos_key_name(q.input, name, sizeof name);
+    char name[64], n[96];
+    if (q.slot == HOS_BIND_KEYS) snprintf(n, sizeof n, "The gamepad's %s", hos_pad_name(q.input));
+    else snprintf(n, sizeof n, "%s", hos_key_name(q.input, name, sizeof name));
     hos_bind(q.other_ctl, q.other_slot, q.slot == HOS_BIND_KEYS ? -1 : 0);
     hos_bind(q.ctl, q.slot, q.input);
     say("%s is now %s's (no longer %s's).", n, hos_control_name(q.ctl), hos_control_name(q.other_ctl));
@@ -398,8 +406,9 @@ void hos_menu_view(HosMenuView *v) {
     if (mode == HOS_MENU_CONFIRM && q.what == Q_RESET_ALL) {
         snprintf(v->question, sizeof v->question, "Put every binding back to its default?");
     } else if (mode == HOS_MENU_CONFIRM) {
-        char name[64];
-        const char *n = q.slot == HOS_BIND_KEYS ? hos_pad_name(q.input) : hos_key_name(q.input, name, sizeof name);
+        char name[64], n[96];
+        if (q.slot == HOS_BIND_KEYS) snprintf(n, sizeof n, "The gamepad's %s", hos_pad_name(q.input));
+        else snprintf(n, sizeof n, "%s", hos_key_name(q.input, name, sizeof name));
         snprintf(v->question, sizeof v->question, "%s is already bound to %s. Take it from %s and bind it to %s?", n,
                  hos_control_name(q.other_ctl), hos_control_name(q.other_ctl), hos_control_name(q.ctl));
     }

@@ -7,8 +7,10 @@
        left stick W A S D        right stick I J K L       D-pad arrow keys
        A Space / Enter           B Left Shift / Backspace  X E          Y F
        L Q   R R   ZL Z   ZR C   + Escape   - Tab          stick clicks X (L), N (R)
-   A gamepad's sticks are its sticks, whatever is bound (a key or a gamepad button bound to a stick direction pushes
-   that stick all the way).
+   A gamepad's sticks are bound like the rest, by direction (the defaults: each to itself), so they can be swapped,
+   or put on buttons and buttons on them: a stick direction bound to a gamepad stick's direction takes its amount
+   (analog), bound to a key or a button it is pushed all the way; a button bound to a stick direction is pressed past
+   half way.
    Built alone by tests/test_host_options.py, without SDL (key names are then numbers). */
 #include <pthread.h>
 #include <stdio.h>
@@ -41,9 +43,11 @@ static const struct { const char *id, *name; int bit; } controls[HOS_CTL_N] = {
 enum { K_A = 4, K_C = 6, K_D = 7, K_E = 8, K_F = 9, K_I = 12, K_J = 13, K_K = 14, K_L = 15, K_N = 17, K_Q = 20,
        K_R = 21, K_S = 22, K_W = 26, K_X = 27, K_Z = 29, K_RETURN = 40, K_ESCAPE = 41, K_BACKSPACE = 42, K_TAB = 43,
        K_SPACE = 44, K_RIGHT = 79, K_LEFT = 80, K_DOWN = 81, K_UP = 82, K_LSHIFT = 225 };
-/* SDL_GamepadButton */
+/* SDL_GamepadButton, then ours */
 enum { P_SOUTH, P_EAST, P_WEST, P_NORTH, P_BACK, P_GUIDE, P_START, P_LSTICK, P_RSTICK, P_LSHOULDER, P_RSHOULDER,
        P_DUP, P_DDOWN, P_DLEFT, P_DRIGHT };
+enum { P_LS_UP = HOS_PAD_LSTICK_UP, P_LS_DOWN, P_LS_LEFT, P_LS_RIGHT, P_RS_UP, P_RS_DOWN, P_RS_LEFT, P_RS_RIGHT };
+_Static_assert(P_RS_RIGHT + 1 == HOS_PAD_N, "the gamepad inputs (hos_menu.h)");
 static const HosBinding defaults[HOS_CTL_N] = {
     [HOS_CTL_A] = {{K_SPACE, K_RETURN}, P_EAST},      [HOS_CTL_B] = {{K_LSHIFT, K_BACKSPACE}, P_SOUTH},
     [HOS_CTL_X] = {{K_E, 0}, P_NORTH},                [HOS_CTL_Y] = {{K_F, 0}, P_WEST},
@@ -53,10 +57,10 @@ static const HosBinding defaults[HOS_CTL_N] = {
     [HOS_CTL_LS] = {{K_X, 0}, P_LSTICK},              [HOS_CTL_RS] = {{K_N, 0}, P_RSTICK},
     [HOS_CTL_UP] = {{K_UP, 0}, P_DUP},                [HOS_CTL_DOWN] = {{K_DOWN, 0}, P_DDOWN},
     [HOS_CTL_LEFT] = {{K_LEFT, 0}, P_DLEFT},          [HOS_CTL_RIGHT] = {{K_RIGHT, 0}, P_DRIGHT},
-    [HOS_CTL_LSTICK_UP] = {{K_W, 0}, -1},             [HOS_CTL_LSTICK_DOWN] = {{K_S, 0}, -1},
-    [HOS_CTL_LSTICK_LEFT] = {{K_A, 0}, -1},           [HOS_CTL_LSTICK_RIGHT] = {{K_D, 0}, -1},
-    [HOS_CTL_RSTICK_UP] = {{K_I, 0}, -1},             [HOS_CTL_RSTICK_DOWN] = {{K_K, 0}, -1},
-    [HOS_CTL_RSTICK_LEFT] = {{K_J, 0}, -1},           [HOS_CTL_RSTICK_RIGHT] = {{K_L, 0}, -1},
+    [HOS_CTL_LSTICK_UP] = {{K_W, 0}, P_LS_UP},        [HOS_CTL_LSTICK_DOWN] = {{K_S, 0}, P_LS_DOWN},
+    [HOS_CTL_LSTICK_LEFT] = {{K_A, 0}, P_LS_LEFT},    [HOS_CTL_LSTICK_RIGHT] = {{K_D, 0}, P_LS_RIGHT},
+    [HOS_CTL_RSTICK_UP] = {{K_I, 0}, P_RS_UP},        [HOS_CTL_RSTICK_DOWN] = {{K_K, 0}, P_RS_DOWN},
+    [HOS_CTL_RSTICK_LEFT] = {{K_J, 0}, P_RS_LEFT},    [HOS_CTL_RSTICK_RIGHT] = {{K_L, 0}, P_RS_RIGHT},
 };
 /* the gamepad inputs' names: in the options file, and shown */
 static const struct { const char *id, *name; } pad_names[HOS_PAD_N] = {
@@ -68,6 +72,9 @@ static const struct { const char *id, *name; } pad_names[HOS_PAD_N] = {
     {"paddle3", "Right paddle 2"}, {"paddle4", "Left paddle 2"}, {"touchpad", "Touchpad"}, {"misc2", "Misc 2"},
     {"misc3", "Misc 3"}, {"misc4", "Misc 4"}, {"misc5", "Misc 5"}, {"misc6", "Misc 6"},
     {"lefttrigger", "LT / L2"}, {"righttrigger", "RT / R2"},
+    {"leftstick_up", "Left stick up"}, {"leftstick_down", "Left stick down"}, {"leftstick_left", "Left stick left"},
+    {"leftstick_right", "Left stick right"}, {"rightstick_up", "Right stick up"}, {"rightstick_down", "Right stick down"},
+    {"rightstick_left", "Right stick left"}, {"rightstick_right", "Right stick right"},
 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -213,23 +220,42 @@ int hos_binding_owner(int pad, int input, int skip_ctl, int *ctl, int *slot) {
     return found;
 }
 
-uint64_t hos_controls_eval(const bool *keys, int nkeys, uint32_t pad_held, int32_t stick[4]) {
+/* how far a gamepad input is pressed, 0..32767: a stick direction by its axis, the rest all or nothing */
+static int32_t pad_amount(int input, uint64_t held, const int32_t axes[4]) {
+    if (input < 0 || input >= HOS_PAD_N) return 0;
+    if (input >= HOS_PAD_LSTICK_UP) {
+        const int k = input - HOS_PAD_LSTICK_UP, stick = k / 4, dir = k % 4;   /* (up, down, left, right) */
+        const int32_t v = axes ? axes[stick * 2 + (dir < 2)] : 0;
+        const int32_t a = dir == 0 || dir == 3 ? v : -v;   /* (y is up positive, x right positive) */
+        return a > 0 ? (a > 32767 ? 32767 : a) : 0;
+    }
+    return held >> input & 1 ? 32767 : 0;
+}
+
+uint64_t hos_pad_stick_bits(const int32_t axes[4]) {
+    uint64_t bits = 0;
+    for (int p = HOS_PAD_LSTICK_UP; p < HOS_PAD_N; p++)
+        if (pad_amount(p, 0, axes) > 16384) bits |= 1ull << p;
+    return bits;
+}
+
+uint64_t hos_controls_eval(const bool *keys, int nkeys, uint64_t pad_held, const int32_t axes[4], int32_t stick[4]) {
     pthread_mutex_lock(&lock);
     load_locked();
     uint64_t buttons = 0;
+    int32_t amount[HOS_CTL_N];   /* (how far each Switch input is pressed, 0..32767) */
     for (int c = 0; c < HOS_CTL_N; c++) {
-        int down = table[c].pad >= 0 && (pad_held >> table[c].pad & 1);
+        int32_t a = pad_amount(table[c].pad, pad_held, axes);
         for (int s = 0; s < HOS_BIND_KEYS; s++)
-            down |= table[c].key[s] > 0 && table[c].key[s] < nkeys && keys[table[c].key[s]];
-        if (down) buttons |= 1ull << controls[c].bit;
+            if (table[c].key[s] > 0 && table[c].key[s] < nkeys && keys[table[c].key[s]]) a = 32767;
+        amount[c] = a;
+        if (a > 16384) buttons |= 1ull << controls[c].bit;
     }
     pthread_mutex_unlock(&lock);
-    const int32_t full = 32767;
-    const uint64_t b = buttons;
-    /* (the stick directions as deflections; both of a pair held: none) */
-    stick[0] = (int32_t)(!!(b & 1ull << 18) - !!(b & 1ull << 16)) * full;
-    stick[1] = (int32_t)(!!(b & 1ull << 17) - !!(b & 1ull << 19)) * full;
-    stick[2] = (int32_t)(!!(b & 1ull << 22) - !!(b & 1ull << 20)) * full;
-    stick[3] = (int32_t)(!!(b & 1ull << 21) - !!(b & 1ull << 23)) * full;
+    /* the sticks: each axis the difference of its two directions (both held all the way: none) */
+    stick[0] = amount[HOS_CTL_LSTICK_RIGHT] - amount[HOS_CTL_LSTICK_LEFT];
+    stick[1] = amount[HOS_CTL_LSTICK_UP] - amount[HOS_CTL_LSTICK_DOWN];
+    stick[2] = amount[HOS_CTL_RSTICK_RIGHT] - amount[HOS_CTL_RSTICK_LEFT];
+    stick[3] = amount[HOS_CTL_RSTICK_UP] - amount[HOS_CTL_RSTICK_DOWN];
     return buttons & 0xFFFF;   /* (the stick directions' bits come from the sticks: hos_input) */
 }

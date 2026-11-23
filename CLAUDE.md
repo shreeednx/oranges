@@ -112,6 +112,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `host/hos_options.c` is `oranges_options.ini` (`HOS_OPTIONS_FILE`, else the XDG config folder). The game gets no input
   while it is open. `HOS_CONTROL`'s `MENU <action>|KEY <name>|PAD <name>` drive it; `tests/test_host_menu.py` builds
   the three C files alone (no SDL, no game). A new tab or setting: a row in `hos_menu.c` (`settings_def`, `build_rows`).
+  The gamepad's sticks go through the bindings too (by direction, analog). Started by Steam (`SteamGameId`), the window
+  is X11 (XWayland): Steam Input keeps its Desktop layout (keyboard and mouse) for a native Wayland window;
+  `HOS_WAYLAND=1` keeps Wayland.
 - `third_party/eden/`: eden's Maxwell shader recompiler and sirit, vendored unchanged from the Longshot toolchain
   (`PROVENANCE.md`); `third_party/khronos/`: the Vulkan and SPIR-V C headers (the system has none). Don't edit them.
 - `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.

@@ -11,8 +11,9 @@ extern "C" {
 
 /* ---- the controls (hos_controls.c) ---------------------------------------------------------------------------------
    Each Switch input (a button, a direction of a stick) has two keys and one gamepad input. Keys are SDL scancodes (USB
-   HID usage ids, 0 none); gamepad inputs SDL_GamepadButton values, the triggers after them (-1 none). Saved as
-   key_<NAME>=<key>,<key> and pad_<NAME>=<input> (SDL's key names; an empty value is "none"; no line: the default). */
+   HID usage ids, 0 none); gamepad inputs SDL_GamepadButton values, then the triggers, then the sticks' directions
+   (-1 none). Saved as key_<NAME>=<key>,<key> and pad_<NAME>=<input> (SDL's key names; an empty value is "none"; no
+   line: the default). */
 enum {
     HOS_CTL_A, HOS_CTL_B, HOS_CTL_X, HOS_CTL_Y, HOS_CTL_L, HOS_CTL_R, HOS_CTL_ZL, HOS_CTL_ZR, HOS_CTL_PLUS, HOS_CTL_MINUS,
     HOS_CTL_LS, HOS_CTL_RS, HOS_CTL_UP, HOS_CTL_DOWN, HOS_CTL_LEFT, HOS_CTL_RIGHT,
@@ -24,7 +25,8 @@ enum {
 #define HOS_PAD_BUTTONS 26          /* (SDL_GAMEPAD_BUTTON_COUNT) */
 #define HOS_PAD_LT 26               /* the triggers, as buttons (pressed past a third) */
 #define HOS_PAD_RT 27
-#define HOS_PAD_N 28
+#define HOS_PAD_LSTICK_UP 28        /* the sticks' directions: up, down, left, right of the left stick, then the right's */
+#define HOS_PAD_N 36
 typedef struct { int key[HOS_BIND_KEYS]; int pad; } HosBinding;
 
 void hos_controls_load(void);                         /* (from the options file: at the start) */
@@ -39,9 +41,13 @@ void hos_binding_reset(int ctl);
 void hos_bindings_reset_all(void);
 /* which control and slot has this input (another than skip_ctl): 0 when none */
 int hos_binding_owner(int slot_kind_pad, int input, int skip_ctl, int *ctl, int *slot);
-/* the Switch input from the keyboard (keys[]: SDL's key state, by scancode, 512 of them) and the gamepad's held
-   inputs (bits by gamepad input): the buttons, and the stick deflections the keys and buttons make (-32767..32767) */
-uint64_t hos_controls_eval(const bool *keys, int nkeys, uint32_t pad_held, int32_t stick[4]);
+/* the Switch input from the keyboard (keys[]: SDL's key state, by scancode) and the gamepad: its held inputs (a bit
+   by gamepad input; a stick direction held past half way) and its sticks (axes[4]: left x, y, right x, y, -32767..32767,
+   up positive, after the dead zone). Returns the buttons; stick[4] gets the Switch's sticks: a stick direction bound
+   to a gamepad stick's direction takes its amount, to a key or a button all the way. */
+uint64_t hos_controls_eval(const bool *keys, int nkeys, uint64_t pad_held, const int32_t axes[4], int32_t stick[4]);
+/* the gamepad's held inputs as hos_controls_eval takes them, the stick directions' bits from the axes */
+uint64_t hos_pad_stick_bits(const int32_t axes[4]);
 /* the gamepad input bound to a Switch button (the menu's confirm and back are A's and B's) */
 int hos_control_pad(int ctl);
 const char *hos_key_name(int scancode, char *buf, size_t size);   /* "Space", "Left Shift"; "" for none */
@@ -55,6 +61,7 @@ int hos_setting(int id);   /* (the stick dead zone in %, the vibration in %, the
 enum { HOS_MENU_TOGGLE, HOS_MENU_UP, HOS_MENU_DOWN, HOS_MENU_LEFT, HOS_MENU_RIGHT, HOS_MENU_OK, HOS_MENU_BACK,
        HOS_MENU_TAB_NEXT, HOS_MENU_TAB_PREV, HOS_MENU_CLEAR, HOS_MENU_RESET };
 int hos_menu_is_open(void);
+int hos_menu_capturing(void);                  /* a binding waits for its input */
 void hos_menu_load(void);                      /* (the settings from the options file: at the start) */
 void hos_menu_action(int action);
 /* a key or a gamepad input pressed while the menu is open (repeat: held down, again): a binding waiting for its

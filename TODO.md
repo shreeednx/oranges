@@ -351,28 +351,29 @@ Left over from it:
 
 ## 1. The Steam Controller through Steam Input
 
-Started from Steam (a non-Steam game, Steam Input forced on) with a Steam Controller, the game doesn't get a gamepad:
-the controller still acts as Steam's keyboard and mouse (reported by the user, 2026-11-23). Nothing about it has been
-looked at yet. What to find out first, from a Steam-started run's log (launch options `%command% > <file> 2>&1`):
+Started from Steam (a non-Steam game, Steam Input forced on) with a Steam Controller, the game got no gamepad: the
+controller still acted as Steam's keyboard and mouse (reported by the user, 2026-11-23). The user's logs settled it:
+on Wayland SDL opened Steam's pad ("Steam Controller" is the Pro Controller) but Steam kept its Desktop layout; with
+`SDL_VIDEO_DRIVER=x11` Steam switched to the game's layout and every button worked and could be rebound, but not the
+stick directions (moving a stick was no input to bind).
 
-- [ ] Whether SDL sees a gamepad at all: `hos_window.c` logs `input: gamepad "<name>" is the Pro Controller` when it
-      opens one. Log more there: every gamepad SDL lists (name, vendor/product, type, `SDL_GetGamepadSteamHandle`),
-      and the variables Steam sets (`SDL_GAMECONTROLLER_IGNORE_DEVICES`,
-      `SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD`, `SteamAppId` / `SteamGameId`).
-- [ ] No gamepad, the controller still a keyboard and mouse: Steam is giving it its Desktop layout, i.e. it doesn't
-      see the game as the app in front (its per-game layout follows the focused window). Check whether that holds for
-      our native Wayland window (`SDL_SetAppMetadata("oranges", ..., "dev.oranges")` is its app id) and whether
-      `SDL_VIDEO_DRIVER=x11` (XWayland) changes it; also that nothing between Steam and `work/build/oranges` (a script,
-      a wrapper) exits early and makes Steam think the game has stopped.
-- [ ] Steam's stand-in pad present but not used: only the first gamepad SDL announces is opened today; prefer Steam
-      Input's stand-in pad (a Steam handle) over a real pad Steam also reads, and pick up a pad that comes later.
-- [ ] Then by hand with it: the game, and the settings menu (Home / Guide opens it, but Steam takes the Guide button
-      for itself: check that the menu can be reached, else another way to open it from a gamepad)
+- [x] Steam's variables and every gamepad SDL announces (vendor:product, type, Steam Input's or not) in the log.
+- [x] Started by Steam (`SteamGameId` / `SteamAppId`), the window is an X11 one (XWayland) when X11 is there: Steam
+      Input follows the window in front through X11, and a native Wayland window kept its Desktop layout.
+      `SDL_VIDEO_DRIVER` still chooses; `HOS_WAYLAND=1` keeps Wayland.
+- [x] The gamepad's stick directions are bindable inputs (`leftstick_up` ... `rightstick_right`): the stick rows'
+      defaults are the gamepad's own directions, an analog amount goes through the binding (swap sticks, a stick
+      direction on a button, a button on a stick), and a stick pushed past 60% is taken while a gamepad cell waits.
+- [ ] By hand, from Steam: the controller in the game with the X11 default, binding a stick direction, and the
+      settings menu (Home / Guide opens it, but Steam takes the Guide button for itself: check that the menu can be
+      reached, else another way to open it from a gamepad)
+- [ ] Steam's stand-in pad and a real pad together: only the first gamepad SDL announces is opened today; prefer
+      Steam Input's stand-in pad (a Steam handle) over a real pad Steam also reads, and pick up a pad that comes later.
 - [ ] Later, from Longshot (`host/steam_pads.h`, `host/pad_sdl.c` there): Valve's real pad read beside Steam's
       stand-in for its motion sensors (gyro aiming in the game's camera, the Switch's motion controls), and which pad is
       Npad No.1 when there are several (the settings menu's Controls tab).
 
-Why first: the player wants to play with this controller now, and without it the game is keyboard-only for them.
+Why first: the player wants to play with this controller now; what is left is checking it by hand.
 
 ## 2. Graphics settings (the settings menu's Graphics tab)
 

@@ -39,12 +39,25 @@ static int first(void) {
     bool keys[512] = {0};
     int32_t stick[4];
     /* the defaults */
+    const int32_t rest[4] = {0, 0, 0, 0};
     keys[K_SPACE] = keys[K_W] = 1;
-    CHECK(hos_controls_eval(keys, 512, 0, stick) == (1u << 0));   /* A */
-    CHECK(stick[0] == 0 && stick[1] == 32767);                     /* W: the left stick up */
+    CHECK(hos_controls_eval(keys, 512, 0, rest, stick) == (1u << 0));   /* A */
+    CHECK(stick[0] == 0 && stick[1] == 32767);                           /* W: the left stick up */
     keys[K_SPACE] = keys[K_W] = 0;
-    CHECK(hos_controls_eval(keys, 512, 1u << 1, stick) == (1u << 0));   /* the gamepad's right button: A */
-    CHECK(hos_controls_eval(keys, 512, 1u << HOS_PAD_LT, stick) == (1u << 8));   /* LT: ZL */
+    CHECK(hos_controls_eval(keys, 512, 1u << 1, rest, stick) == (1u << 0));   /* the gamepad's right button: A */
+    CHECK(hos_controls_eval(keys, 512, 1u << HOS_PAD_LT, rest, stick) == (1u << 8));   /* LT: ZL */
+    /* the gamepad's sticks through their bindings: analog, each to itself by default */
+    const int32_t tilted[4] = {-12000, 20000, 30000, -5000};
+    CHECK(hos_controls_eval(keys, 512, hos_pad_stick_bits(tilted), tilted, stick) == 0);
+    CHECK(stick[0] == -12000 && stick[1] == 20000 && stick[2] == 30000 && stick[3] == -5000);
+    /* swapped: the right stick's up on the left stick's up; and D-pad up on the left stick pushed up past half */
+    hos_bind(HOS_CTL_LSTICK_UP, 2, HOS_PAD_LSTICK_UP + 4);
+    hos_bind(HOS_CTL_UP, 2, HOS_PAD_LSTICK_UP);
+    const int32_t up[4] = {0, 30000, 0, 9000};
+    CHECK(hos_controls_eval(keys, 512, hos_pad_stick_bits(up), up, stick) == (1u << 13));   /* D-pad up */
+    CHECK(stick[1] == 9000 && stick[3] == 9000);
+    hos_binding_reset(HOS_CTL_LSTICK_UP);
+    hos_binding_reset(HOS_CTL_UP);
     int ctl, slot;
     CHECK(hos_binding_owner(0, K_Q, -1, &ctl, &slot) && ctl == HOS_CTL_L && slot == 0);
 
@@ -69,7 +82,7 @@ static int first(void) {
     CHECK(v.mode == HOS_MENU_NORMAL && v.rows[v.sel].changed);
     CHECK(hos_binding(HOS_CTL_B).key[0] == K_Q && hos_binding(HOS_CTL_L).key[0] == 0);
     keys[K_Q] = 1;
-    CHECK(hos_controls_eval(keys, 512, 0, stick) == (1u << 1));   /* Q: B now, no longer L */
+    CHECK(hos_controls_eval(keys, 512, 0, rest, stick) == (1u << 1));   /* Q: B now, no longer L */
     keys[K_Q] = 0;
 
     /* Esc cancels a capture */
@@ -91,6 +104,20 @@ static int first(void) {
     /* Delete clears the cell */
     hos_menu_action(HOS_MENU_CLEAR);
     CHECK(hos_binding(HOS_CTL_B).pad == -1);
+
+    /* a stick direction taken by the gamepad cell: the right stick's down for the left stick's up (the right stick's
+       own row has it: asked, yes) */
+    select_row("Left stick up");
+    hos_menu_action(HOS_MENU_OK);
+    CHECK(hos_menu_capturing());
+    hos_menu_pad(HOS_PAD_LSTICK_UP + 5, 0);
+    hos_menu_view(&v);
+    CHECK(v.mode == HOS_MENU_CONFIRM && strstr(v.question, "bound to Right stick down"));
+    hos_menu_action(HOS_MENU_LEFT), hos_menu_action(HOS_MENU_OK);
+    CHECK(hos_binding(HOS_CTL_LSTICK_UP).pad == HOS_PAD_LSTICK_UP + 5 && hos_binding(HOS_CTL_RSTICK_DOWN).pad == -1);
+    hos_menu_view(&v);
+    CHECK(!strcmp(v.rows[v.sel].cell[2], "Right stick down"));
+    hos_binding_reset(HOS_CTL_LSTICK_UP), hos_binding_reset(HOS_CTL_RSTICK_DOWN);
 
     /* a setting: the dead zone up one step, saved */
     select_row("Stick dead zone");

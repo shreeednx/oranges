@@ -395,15 +395,24 @@ static int32_t pad_axis(SDL_GamepadAxis a, int flip) {
     if (v > -dead && v < dead) return 0;
     return v < -32767 ? -32767 : v;
 }
-/* the gamepad's held inputs, a bit each (hos_menu.h: its buttons, then the triggers) */
-static uint32_t pad_held(void) {
-    uint32_t held = 0;
+/* the gamepad's sticks: left x, y, right x, y, up positive, after the dead zone (0 without a gamepad) */
+static void pad_axes(int32_t axes[4]) {
+    if (!pad) {
+        memset(axes, 0, 4 * sizeof *axes);
+        return;
+    }
+    axes[0] = pad_axis(SDL_GAMEPAD_AXIS_LEFTX, 0), axes[1] = pad_axis(SDL_GAMEPAD_AXIS_LEFTY, 1);
+    axes[2] = pad_axis(SDL_GAMEPAD_AXIS_RIGHTX, 0), axes[3] = pad_axis(SDL_GAMEPAD_AXIS_RIGHTY, 1);
+}
+/* the gamepad's held inputs, a bit each (hos_menu.h: its buttons, the triggers, the sticks' directions) */
+static uint64_t pad_held(const int32_t axes[4]) {
+    uint64_t held = 0;
     if (!pad) return 0;
     for (int b = 0; b < HOS_PAD_BUTTONS; b++)
-        if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)b)) held |= 1u << b;
-    if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 10000) held |= 1u << HOS_PAD_LT;
-    if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 10000) held |= 1u << HOS_PAD_RT;
-    return held;
+        if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)b)) held |= 1ull << b;
+    if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 10000) held |= 1ull << HOS_PAD_LT;
+    if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 10000) held |= 1ull << HOS_PAD_RT;
+    return held | hos_pad_stick_bits(axes);
 }
 static int hold_off;   /* the menu closed with something held: the game sees nothing until it is all let go */
 
@@ -441,13 +450,9 @@ static void read_input(int32_t wheel) {
     HosInput in = {0};
     int nkeys = 0;
     const bool *k = SDL_GetKeyboardState(&nkeys);
-    in.buttons = hos_controls_eval(k, nkeys, pad_held(), in.stick);
-    if (pad) {
-        const int32_t ps[4] = {pad_axis(SDL_GAMEPAD_AXIS_LEFTX, 0), pad_axis(SDL_GAMEPAD_AXIS_LEFTY, 1),
-                               pad_axis(SDL_GAMEPAD_AXIS_RIGHTX, 0), pad_axis(SDL_GAMEPAD_AXIS_RIGHTY, 1)};
-        for (int i = 0; i < 4; i++)
-            if (!in.stick[i]) in.stick[i] = ps[i];
-    }
+    int32_t axes[4];
+    pad_axes(axes);
+    in.buttons = hos_controls_eval(k, nkeys, pad_held(axes), axes, in.stick);
     /* the keyboard as a keyboard: HID usage ids are SDL's scancodes */
     for (int sc = 0; sc < 256; sc++)
         if (k[sc]) in.keys[sc / 8] |= (uint8_t)(1u << (sc % 8));
@@ -517,9 +522,29 @@ static void draw_status(void) {
     SDL_SetRenderScale(renderer, 1, 1);
 }
 
+/* Started by Steam: its variables in the log, and X11 before Wayland. Steam Input chooses a game's controller
+   layout by the window in front, which it follows through X11: with our window a native Wayland one, it kept its
+   Desktop layout (the Steam Controller a keyboard and mouse) where XWayland got the game's. SDL_VIDEO_DRIVER chooses
+   for itself; HOS_WAYLAND=1 keeps Wayland. */
+static void steam_start(void) {
+    const char *game = getenv("SteamGameId"), *app = getenv("SteamAppId");
+    if (!(game && *game) && !(app && *app)) return;
+    const char *vars[] = {"SteamGameId", "SteamAppId", "SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD",
+                          "SDL_GAMECONTROLLER_IGNORE_DEVICES", "SDL_VIDEO_DRIVER"};
+    for (size_t i = 0; i < sizeof vars / sizeof *vars; i++) {
+        const char *v = getenv(vars[i]);
+        if (v) hos_log("steam: %s=%.200s", vars[i], v);
+    }
+    const char *driver = getenv("SDL_VIDEO_DRIVER"), *wayland = getenv("HOS_WAYLAND"), *x11 = getenv("DISPLAY");
+    if ((driver && *driver) || (wayland && *wayland && strcmp(wayland, "0")) || !(x11 && *x11)) return;
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11,wayland");
+    hos_log("steam: started by Steam: an X11 window (XWayland), for Steam Input's layout (HOS_WAYLAND=1: Wayland)");
+}
+
 static int window_open(void) {
     const char *off = getenv("HOS_NO_WINDOW");
     if (off && *off && strcmp(off, "0")) return 0;
+    steam_start();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         hos_log("window: none (%s): the game runs without one", SDL_GetError());
         return 0;
@@ -585,9 +610,14 @@ static void menu_pad_repeat(void) {
     int d = -1, stick = 0;
     for (int i = 0; i < 4 && d < 0; i++)
         if (SDL_GetGamepadButton(pad, dpad[i])) d = i;
-    if (d < 0) {
-        const int x = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX), y = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
-        const int t = 20000;
+    /* (the left stick moves the selection, but not while a binding waits for its input, nor after that until it is
+       back at rest: a stick pushed to bind it would move on as well) */
+    static int stick_off;
+    const int x = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX), y = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
+    const int t = 20000;
+    if (hos_menu_capturing()) stick_off = 1;
+    else if (stick_off && abs(x) < 8000 && abs(y) < 8000) stick_off = 0;
+    if (d < 0 && !stick_off) {
         if (abs(y) >= abs(x) && (y < -t || y > t)) d = y < 0 ? 0 : 1, stick = 1;
         else if (x < -t || x > t) d = x < 0 ? 2 : 3, stick = 1;
     }
@@ -601,6 +631,30 @@ static void menu_pad_repeat(void) {
         next = now + 90000000LL;
         if (stick) hos_menu_action(actions[d]);
         else hos_menu_pad((int)dpad[d], 1);
+    }
+}
+
+/* a stick pushed while a binding waits for a gamepad input: that stick direction (past 60%, from below 30%) */
+static void menu_stick_capture(void) {
+    static uint64_t armed;   /* (the directions that were near rest since the wait began) */
+    if (!pad || !hos_menu_capturing()) {
+        armed = 0;
+        return;
+    }
+    const SDL_GamepadAxis ax[4] = {SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, SDL_GAMEPAD_AXIS_RIGHTX,
+                                   SDL_GAMEPAD_AXIS_RIGHTY};
+    int32_t v[4];
+    for (int i = 0; i < 4; i++) v[i] = SDL_GetGamepadAxis(pad, ax[i]) * (i & 1 ? -1 : 1);   /* (up positive) */
+    for (int k = 0; k < 8; k++) {
+        const int stick = k / 4, dir = k % 4;   /* (up, down, left, right) */
+        const int32_t a = (dir == 0 || dir == 3 ? 1 : -1) * v[stick * 2 + (dir < 2)];
+        if (a < 32767 * 3 / 10) armed |= 1ull << k;
+        else if (a > 32767 * 6 / 10 && (armed >> k & 1)) {
+            hos_menu_device(1);
+            hos_menu_pad(HOS_PAD_LSTICK_UP + k, 0);
+            armed = 0;
+            return;
+        }
     }
 }
 
@@ -618,10 +672,17 @@ static void window_loop(void) {
             case SDL_EVENT_QUIT:
                 hos_log("window: closed");
                 hos_exit(0);
-            case SDL_EVENT_GAMEPAD_ADDED:
-                if (!pad && (pad = SDL_OpenGamepad(e.gdevice.which)))
-                    hos_log("input: gamepad \"%s\" is the Pro Controller", SDL_GetGamepadName(pad));
+            case SDL_EVENT_GAMEPAD_ADDED: {
+                const SDL_JoystickID id = e.gdevice.which;
+                hos_log("input: gamepad \"%s\" (%04x:%04x, type %s%s", SDL_GetGamepadNameForID(id),
+                        SDL_GetGamepadVendorForID(id), SDL_GetGamepadProductForID(id),
+                        SDL_GetGamepadStringForType(SDL_GetGamepadTypeForID(id)),
+                        pad ? "): not used, the first one is" : ")");
+                if (!pad && (pad = SDL_OpenGamepad(id)))
+                    hos_log("input: gamepad \"%s\" is the Pro Controller%s", SDL_GetGamepadName(pad),
+                            SDL_GetGamepadSteamHandle(pad) ? " (Steam Input's)" : "");
                 break;
+            }
             case SDL_EVENT_GAMEPAD_REMOVED:
                 if (pad && SDL_GetGamepadID(pad) == e.gdevice.which) {
                     hos_log("input: gamepad \"%s\" removed", SDL_GetGamepadName(pad));
@@ -669,6 +730,7 @@ static void window_loop(void) {
             mouse_console(&x, &y);
             hos_menu_mouse(x, y, click, right_click, menu_wheel);
             menu_pad_repeat();
+            menu_stick_capture();
             was_open = 1;
         } else if (was_open) {
             was_open = 0, hold_off = 1;
