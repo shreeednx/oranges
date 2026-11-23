@@ -8,14 +8,13 @@
    input does. The Vulkan back end will present the game's window textures here instead.
 
    Input. hos_input() is the merged state nn_hid.c reads: the keyboard and the first gamepad as Npad No.1 (a Pro
-   Controller), the mouse as the console's USB mouse and, while its left button is down, as one finger on the touch
-   screen, and the keyboard as the console's USB keyboard too. A gamepad's buttons map by position (south is B, east
-   A, west Y, north X), as on a Nintendo pad. Keys:
-       left stick W A S D        right stick I J K L       D-pad arrow keys
-       A Space / Enter           B Left Shift / Backspace  X E          Y F
-       L Q   R R   ZL Z   ZR C   + Escape   - Tab          stick clicks X (L), N (R)
-       F11: full screen
-   The game's vibration goes to the gamepad's motors (hos_rumble). The sound device (hos_sound.c) starts here too.
+   Controller) through the bindings (hos_controls.c: the defaults, a gamepad's buttons by position as on a Nintendo
+   pad, are listed there), the mouse as the console's USB mouse and, while its left button is down, as one finger on
+   the touch screen (the menu's Mouse as touch screen), and the keyboard as the console's USB keyboard too.
+   F1 (or a gamepad's Home) opens the settings menu (hos_menu.c, drawn by host/vk): while it is open the game gets no
+   input at all, and what was held when it closes stays away from the game until it is let go. F11: full screen.
+   The game's vibration goes to the gamepad's motors (hos_rumble, times the menu's Vibration). The sound device
+   (hos_sound.c) starts here too.
    HOS_INPUT_SCRIPT=<file>: input from a script, added to the player's: one line per change, "<seconds> <what>...",
    held from that time (since boot) until the next line. What: button names (A B X Y L R ZL ZR PLUS MINUS UP DOWN LEFT
    RIGHT LS RS), LSTICK=x,y / RSTICK=x,y (-1..1, up positive), TOUCH=x,y (1280x720), QUIT (ends the program). '#'
@@ -26,11 +25,14 @@
    Lines run in order, each to its end before the next: "<seconds> [inputs...]" holds those inputs (the script's
    names) that long and releases them ("0.2 A", "3 LSTICK=0,1", "1.5": nothing), "SHOT <file.bmp>" saves the next
    presented picture (the Vulkan back end's), "DUMP" logs every thread (hos_kernel_dump), "PROFILE <s> [thread]" samples
-   one (HOS_PROFILE), "QUIT" ends the program. Added to the player's and the script's. For finding things in the
+   one (HOS_PROFILE), "QUIT" ends the program. Added to the player's and the script's. The settings menu: "MENU <what>"
+   with OPEN, CLOSE, UP, DOWN, LEFT, RIGHT, OK, BACK, CLEAR, RESET, TAB (its actions), KEY <SDL key name> or PAD <SDL
+   gamepad button name> (a press, as from the keyboard or the gamepad). For finding things in the
    guest's memory while it runs: "MEM <file>" writes every mapped writable page into a sparse file at its guest address
    (not a snapshot: the game runs on), "PEEK <hex address> <bytes> <file>" writes those bytes, "POKE <hex address>
    <hex bytes>" stores bytes (in memory order). */
 #include "hos.h"
+#include "hos_menu.h"
 
 #include <ctype.h>
 #include <pthread.h>
@@ -170,6 +172,47 @@ static void control_sleep(double seconds) {
     nanosleep(&ts, NULL);
 }
 
+/* HOS_CONTROL's MENU <what> [name] */
+static void control_menu(const char *what, const char *name) {
+    static const struct { const char *name; int action; } actions[] = {
+        {"UP", HOS_MENU_UP}, {"DOWN", HOS_MENU_DOWN}, {"LEFT", HOS_MENU_LEFT}, {"RIGHT", HOS_MENU_RIGHT},
+        {"OK", HOS_MENU_OK}, {"BACK", HOS_MENU_BACK}, {"CLEAR", HOS_MENU_CLEAR}, {"RESET", HOS_MENU_RESET},
+        {"TAB", HOS_MENU_TAB_NEXT},
+    };
+    if (!what) return;
+    while (name && (*name == ' ' || *name == '\t')) name++;
+    if (!strcasecmp(what, "OPEN") || !strcasecmp(what, "CLOSE")) {
+        if (hos_menu_is_open() != !strcasecmp(what, "OPEN")) hos_menu_action(HOS_MENU_TOGGLE);
+        return;
+    }
+    for (size_t i = 0; i < sizeof actions / sizeof *actions; i++)
+        if (!strcasecmp(what, actions[i].name)) {
+            hos_menu_action(actions[i].action);
+            return;
+        }
+#ifdef HOS_HAVE_SDL3
+    if (!strcasecmp(what, "KEY") && name) {
+        const SDL_Scancode sc = SDL_GetScancodeFromName(name);
+        if (sc != SDL_SCANCODE_UNKNOWN) {
+            hos_menu_key((int)sc, 0, 0);
+            return;
+        }
+    }
+    if (!strcasecmp(what, "PAD") && name) {
+        const SDL_GamepadButton b = SDL_GetGamepadButtonFromString(name);
+        if (b != SDL_GAMEPAD_BUTTON_INVALID) {
+            hos_menu_pad((int)b, 0);
+            return;
+        }
+        if (!strcasecmp(name, "lefttrigger") || !strcasecmp(name, "righttrigger")) {
+            hos_menu_pad(!strcasecmp(name, "lefttrigger") ? HOS_PAD_LT : HOS_PAD_RT, 0);
+            return;
+        }
+    }
+#endif
+    hos_log("control: \"MENU %s%s%s\" is not a menu input", what, name ? " " : "", name ? name : "");
+}
+
 /* one line: "SHOT <path>" (the next presented picture; the line returns once it is saved, 5 s at most), "DUMP" (every
    thread), "PROFILE <s> [thread name]" (HOS_PROFILE's samples, MainThread's by default), "QUIT", or
    "<seconds> [inputs...]": the inputs held that long, then released */
@@ -205,6 +248,10 @@ static void control_line(char *line) {
     if (!strcasecmp(tok, "QUIT")) {
         hos_log("control: QUIT");
         hos_exit(0);
+    }
+    if (!strcasecmp(tok, "MENU")) {
+        control_menu(strtok(NULL, " \t\r\n"), strtok(NULL, "\r\n"));
+        return;
     }
     if (!strcasecmp(tok, "MEM")) {
         const char *path = strtok(NULL, "\r\n");
@@ -307,6 +354,10 @@ static uint64_t stick_buttons(const int32_t s[4]) {
 }
 
 void hos_input(HosInput *out) {
+    if (hos_menu_is_open()) {   /* (the menu has the input: the game none, the scripts' included) */
+        memset(out, 0, sizeof *out);
+        return;
+    }
     pthread_mutex_lock(&input_lock);
     *out = player;
     const ScriptStep live_now = live;
@@ -336,34 +387,25 @@ static SDL_Window *window;
 static SDL_Renderer *renderer;   /* (the status page's: none when the Vulkan back end presents the game) */
 static SDL_Gamepad *pad;
 
-static const struct { SDL_Scancode key; uint64_t bit; } key_buttons[] = {
-    {SDL_SCANCODE_SPACE, HOS_BTN_A},       {SDL_SCANCODE_RETURN, HOS_BTN_A},
-    {SDL_SCANCODE_LSHIFT, HOS_BTN_B},      {SDL_SCANCODE_BACKSPACE, HOS_BTN_B},
-    {SDL_SCANCODE_E, HOS_BTN_X},           {SDL_SCANCODE_F, HOS_BTN_Y},
-    {SDL_SCANCODE_Q, HOS_BTN_L},           {SDL_SCANCODE_R, HOS_BTN_R},
-    {SDL_SCANCODE_Z, HOS_BTN_ZL},          {SDL_SCANCODE_C, HOS_BTN_ZR},
-    {SDL_SCANCODE_ESCAPE, HOS_BTN_PLUS},   {SDL_SCANCODE_TAB, HOS_BTN_MINUS},
-    {SDL_SCANCODE_X, HOS_BTN_LS},          {SDL_SCANCODE_N, HOS_BTN_RS},
-    {SDL_SCANCODE_UP, HOS_BTN_UP},         {SDL_SCANCODE_DOWN, HOS_BTN_DOWN},
-    {SDL_SCANCODE_LEFT, HOS_BTN_LEFT},     {SDL_SCANCODE_RIGHT, HOS_BTN_RIGHT},
-};
-static const struct { SDL_GamepadButton b; uint64_t bit; } pad_buttons[] = {
-    {SDL_GAMEPAD_BUTTON_SOUTH, HOS_BTN_B},          {SDL_GAMEPAD_BUTTON_EAST, HOS_BTN_A},
-    {SDL_GAMEPAD_BUTTON_WEST, HOS_BTN_Y},           {SDL_GAMEPAD_BUTTON_NORTH, HOS_BTN_X},
-    {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, HOS_BTN_L},  {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, HOS_BTN_R},
-    {SDL_GAMEPAD_BUTTON_LEFT_STICK, HOS_BTN_LS},    {SDL_GAMEPAD_BUTTON_RIGHT_STICK, HOS_BTN_RS},
-    {SDL_GAMEPAD_BUTTON_START, HOS_BTN_PLUS},       {SDL_GAMEPAD_BUTTON_BACK, HOS_BTN_MINUS},
-    {SDL_GAMEPAD_BUTTON_DPAD_UP, HOS_BTN_UP},       {SDL_GAMEPAD_BUTTON_DPAD_DOWN, HOS_BTN_DOWN},
-    {SDL_GAMEPAD_BUTTON_DPAD_LEFT, HOS_BTN_LEFT},   {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, HOS_BTN_RIGHT},
-};
-
-/* a gamepad axis to a stick value: SDL's -32768..32767 with y down, a small dead zone */
+/* a gamepad axis to a stick value: SDL's -32768..32767 with y down, the menu's dead zone (in % of full) */
 static int32_t pad_axis(SDL_GamepadAxis a, int flip) {
     int32_t v = SDL_GetGamepadAxis(pad, a);
     if (flip) v = -v;
-    if (v > -3000 && v < 3000) return 0;
+    const int32_t dead = hos_setting(HOS_SET_DEAD_ZONE) * 32767 / 100;
+    if (v > -dead && v < dead) return 0;
     return v < -32767 ? -32767 : v;
 }
+/* the gamepad's held inputs, a bit each (hos_menu.h: its buttons, then the triggers) */
+static uint32_t pad_held(void) {
+    uint32_t held = 0;
+    if (!pad) return 0;
+    for (int b = 0; b < HOS_PAD_BUTTONS; b++)
+        if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)b)) held |= 1u << b;
+    if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 10000) held |= 1u << HOS_PAD_LT;
+    if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 10000) held |= 1u << HOS_PAD_RT;
+    return held;
+}
+static int hold_off;   /* the menu closed with something held: the game sees nothing until it is all let go */
 
 /* nn::hid KeyboardModifier bits */
 static uint32_t modifiers(SDL_Keymod m) {
@@ -379,20 +421,28 @@ static uint32_t modifiers(SDL_Keymod m) {
     return r;
 }
 
+/* the mouse in the console's 1280x720 screen (the picture letterboxed into the window), and its buttons */
+static SDL_MouseButtonFlags mouse_console(float *x, float *y) {
+    float wx, wy;
+    const SDL_MouseButtonFlags mb = SDL_GetMouseState(&wx, &wy);
+    *x = *y = 0;
+    if (renderer) {
+        SDL_RenderCoordinatesFromWindow(renderer, wx, wy, x, y);
+    } else {   /* (the Vulkan present letterboxes the picture into the window the same way) */
+        int ww = 1280, wh = 720;
+        SDL_GetWindowSize(window, &ww, &wh);
+        const float scale = SDL_min((float)ww / 1280, (float)wh / 720);
+        if (scale > 0) *x = (wx - (ww - 1280 * scale) / 2) / scale, *y = (wy - (wh - 720 * scale) / 2) / scale;
+    }
+    return mb;
+}
+
 static void read_input(int32_t wheel) {
     HosInput in = {0};
-    const bool *k = SDL_GetKeyboardState(NULL);
-    for (size_t i = 0; i < sizeof key_buttons / sizeof *key_buttons; i++)
-        if (k[key_buttons[i].key]) in.buttons |= key_buttons[i].bit;
-    const int32_t full = 32767;
-    int32_t ks[4] = {(k[SDL_SCANCODE_D] - k[SDL_SCANCODE_A]) * full, (k[SDL_SCANCODE_W] - k[SDL_SCANCODE_S]) * full,
-                     (k[SDL_SCANCODE_L] - k[SDL_SCANCODE_J]) * full, (k[SDL_SCANCODE_I] - k[SDL_SCANCODE_K]) * full};
-    for (int i = 0; i < 4; i++) in.stick[i] = ks[i];
+    int nkeys = 0;
+    const bool *k = SDL_GetKeyboardState(&nkeys);
+    in.buttons = hos_controls_eval(k, nkeys, pad_held(), in.stick);
     if (pad) {
-        for (size_t i = 0; i < sizeof pad_buttons / sizeof *pad_buttons; i++)
-            if (SDL_GetGamepadButton(pad, pad_buttons[i].b)) in.buttons |= pad_buttons[i].bit;
-        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 10000) in.buttons |= HOS_BTN_ZL;
-        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 10000) in.buttons |= HOS_BTN_ZR;
         const int32_t ps[4] = {pad_axis(SDL_GAMEPAD_AXIS_LEFTX, 0), pad_axis(SDL_GAMEPAD_AXIS_LEFTY, 1),
                                pad_axis(SDL_GAMEPAD_AXIS_RIGHTX, 0), pad_axis(SDL_GAMEPAD_AXIS_RIGHTY, 1)};
         for (int i = 0; i < 4; i++)
@@ -403,16 +453,8 @@ static void read_input(int32_t wheel) {
         if (k[sc]) in.keys[sc / 8] |= (uint8_t)(1u << (sc % 8));
     in.modifiers = modifiers(SDL_GetModState());
     /* the mouse, in the console's 1280x720 screen */
-    float wx, wy, x = 0, y = 0;
-    const SDL_MouseButtonFlags mb = SDL_GetMouseState(&wx, &wy);
-    if (renderer) {
-        SDL_RenderCoordinatesFromWindow(renderer, wx, wy, &x, &y);
-    } else {   /* (the Vulkan present letterboxes 1280x720 into the window the same way) */
-        int ww = 1280, wh = 720;
-        SDL_GetWindowSize(window, &ww, &wh);
-        const float scale = SDL_min((float)ww / 1280, (float)wh / 720);
-        if (scale > 0) x = (wx - (ww - 1280 * scale) / 2) / scale, y = (wy - (wh - 720 * scale) / 2) / scale;
-    }
+    float x, y;
+    const SDL_MouseButtonFlags mb = mouse_console(&x, &y);
     in.mouse_x = (int32_t)x, in.mouse_y = (int32_t)y, in.wheel = wheel;
     in.mouse_in = x >= 0 && y >= 0 && x < 1280 && y < 720 && (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_FOCUS);
     if (mb & SDL_BUTTON_LMASK) in.mouse_buttons |= 1u << 0;
@@ -420,7 +462,15 @@ static void read_input(int32_t wheel) {
     if (mb & SDL_BUTTON_MMASK) in.mouse_buttons |= 1u << 2;
     if (mb & SDL_BUTTON_X2MASK) in.mouse_buttons |= 1u << 3;   /* Forward */
     if (mb & SDL_BUTTON_X1MASK) in.mouse_buttons |= 1u << 4;   /* Back */
-    if ((mb & SDL_BUTTON_LMASK) && in.mouse_in) in.touch = 1, in.touch_x = in.mouse_x, in.touch_y = in.mouse_y;
+    if ((mb & SDL_BUTTON_LMASK) && in.mouse_in && hos_setting(HOS_SET_MOUSE_TOUCH))
+        in.touch = 1, in.touch_x = in.mouse_x, in.touch_y = in.mouse_y;
+    if (hold_off) {   /* (after the menu: everything let go first) */
+        if (in.buttons || stick_buttons(in.stick) || in.mouse_buttons || hos_menu_is_open()) {
+            memset(&in, 0, sizeof in);
+        } else {
+            hold_off = 0;
+        }
+    }
     pthread_mutex_lock(&input_lock);
     player = in;
     pthread_mutex_unlock(&input_lock);
@@ -461,7 +511,7 @@ static void draw_status(void) {
     snprintf(line, sizeof line, "gamepad: %s", pad ? SDL_GetGamepadName(pad) : "none (the keyboard is the pad)");
     SDL_RenderDebugText(renderer, 16, 116, line);
     SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
-    SDL_RenderDebugText(renderer, 16, 140, "WASD stick  IJKL right stick  arrows D-pad");
+    SDL_RenderDebugText(renderer, 16, 140, "default keys: WASD stick  IJKL right stick  arrows D-pad");
     SDL_RenderDebugText(renderer, 16, 152, "Space/Enter A  Shift/Backspace B  E X  F Y  Q L  R R  Z ZL  C ZR");
     SDL_RenderDebugText(renderer, 16, 164, "Esc +  Tab -  X/N stick clicks  F11 full screen");
     SDL_SetRenderScale(renderer, 1, 1);
@@ -520,11 +570,50 @@ static void screenshot(void) {
     SDL_DestroySurface(shot);
 }
 
+/* the menu's navigation by the gamepad's left stick (as the D-pad) and a held D-pad: again after 0.4 s, then every
+   90 ms */
+static void menu_pad_repeat(void) {
+    static int dir = -1, from_stick;
+    static int64_t next;
+    if (!pad || !hos_menu_is_open()) {
+        dir = -1;
+        return;
+    }
+    static const SDL_GamepadButton dpad[4] = {SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+                                              SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
+    static const int actions[4] = {HOS_MENU_UP, HOS_MENU_DOWN, HOS_MENU_LEFT, HOS_MENU_RIGHT};
+    int d = -1, stick = 0;
+    for (int i = 0; i < 4 && d < 0; i++)
+        if (SDL_GetGamepadButton(pad, dpad[i])) d = i;
+    if (d < 0) {
+        const int x = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX), y = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
+        const int t = 20000;
+        if (abs(y) >= abs(x) && (y < -t || y > t)) d = y < 0 ? 0 : 1, stick = 1;
+        else if (x < -t || x > t) d = x < 0 ? 2 : 3, stick = 1;
+    }
+    const int64_t now = hos_now_ns();
+    if (d != dir || stick != from_stick) {
+        dir = d, from_stick = stick, next = now + 400000000LL;
+        if (d >= 0 && stick) hos_menu_device(1), hos_menu_action(actions[d]);   /* (a D-pad press came as an event) */
+        return;
+    }
+    if (d >= 0 && now >= next) {
+        next = now + 90000000LL;
+        if (stick) hos_menu_action(actions[d]);
+        else hos_menu_pad((int)dpad[d], 1);
+    }
+}
+
 static void window_loop(void) {
     float wheel = 0;
+    int was_open = 0;
+    const int menu = !renderer;   /* (the menu is drawn by the Vulkan back end: not on the status page) */
     for (;;) {
         SDL_Event e;
+        float menu_wheel = 0;
+        int click = 0, right_click = 0;
         while (SDL_PollEvent(&e)) {
+            const int open = hos_menu_is_open();
             switch (e.type) {
             case SDL_EVENT_QUIT:
                 hos_log("window: closed");
@@ -541,22 +630,56 @@ static void window_loop(void) {
                 }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
-                wheel += e.wheel.y;
+                if (open) menu_wheel += e.wheel.y;
+                else wheel += e.wheel.y;
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (open) click |= e.button.button == SDL_BUTTON_LEFT, right_click |= e.button.button == SDL_BUTTON_RIGHT;
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.scancode == SDL_SCANCODE_F11 && !e.key.repeat)
                     SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+                else if (e.key.scancode == SDL_SCANCODE_F1 && !e.key.repeat && menu)
+                    hos_menu_device(0), hos_menu_action(HOS_MENU_TOGGLE);
+                else if (open)
+                    hos_menu_key((int)e.key.scancode, (e.key.mod & SDL_KMOD_SHIFT) != 0, e.key.repeat);
                 break;
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                if (!pad || SDL_GetGamepadID(pad) != e.gbutton.which) break;
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE && menu)
+                    hos_menu_device(1), hos_menu_action(HOS_MENU_TOGGLE);
+                else if (open)
+                    hos_menu_pad(e.gbutton.button, 0);
+                break;
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION: {   /* (a trigger pressed: an input a binding can take) */
+                static int16_t last[2];
+                const int t = e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? 0
+                            : e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER ? 1 : -1;
+                if (t < 0 || !pad || SDL_GetGamepadID(pad) != e.gaxis.which) break;
+                if (open && last[t] <= 10000 && e.gaxis.value > 10000) hos_menu_pad(t ? HOS_PAD_RT : HOS_PAD_LT, 0);
+                last[t] = e.gaxis.value;
+                break;
+            }
             default:
                 break;
             }
+        }
+        if (hos_menu_is_open()) {   /* (the mouse, in the console's screen: the menu is drawn over the picture) */
+            float x, y;
+            mouse_console(&x, &y);
+            hos_menu_mouse(x, y, click, right_click, menu_wheel);
+            menu_pad_repeat();
+            was_open = 1;
+        } else if (was_open) {
+            was_open = 0, hold_off = 1;
         }
         read_input((int32_t)SDL_floorf(wheel));
         if (pad) {   /* (each frame, for a little longer than one: it stops by itself when the game stops) */
             float lo, hi;
             __atomic_load(&rumble[0], &lo, __ATOMIC_RELAXED);
             __atomic_load(&rumble[1], &hi, __ATOMIC_RELAXED);
-            SDL_RumbleGamepad(pad, (Uint16)(SDL_min(lo, 1.0f) * 65535), (Uint16)(SDL_min(hi, 1.0f) * 65535), 100);
+            const float k = hos_menu_is_open() ? 0.0f : (float)hos_setting(HOS_SET_VIBRATION) / 100.0f;
+            SDL_RumbleGamepad(pad, (Uint16)(SDL_min(lo * k, 1.0f) * 65535), (Uint16)(SDL_min(hi * k, 1.0f) * 65535), 100);
         }
         if (renderer) {
             draw_status();   /* (vsync paces the loop) */
@@ -570,6 +693,7 @@ static void window_loop(void) {
 #endif
 
 void hos_window_run(void (*guest_main)(void)) {
+    hos_menu_load();   /* (the settings and the controls, from the options file) */
     script_load();
     control_start();
 #ifdef HOS_HAVE_SDL3

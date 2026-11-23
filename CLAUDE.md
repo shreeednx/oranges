@@ -31,6 +31,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
 HOS_CONTROL=ctl.fifo HOS_NO_WINDOW=1 ./work/build/oranges &   # drive it live: one line, or several, at a time:
 printf '2 LSTICK=0,1\n0.2 A\n1.5\nSHOT a.bmp\n' > ctl.fifo  # hold 2 s, press, wait; the picture (also DUMP, PROFILE, QUIT)
+printf 'MENU OPEN\nMENU DOWN\nSHOT m.bmp\n' > ctl.fifo   # the F1 settings menu, driven (SHOT shows it, headless too)
+HOS_OPTIONS_FILE=opts.ini ./work/build/oranges   # the menu's settings file (default ~/.config/oranges/oranges_options.ini)
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
@@ -102,6 +104,14 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `HOS_VK_SHOTS`, `HOS_VK_SPV` (each program's SPIR-V, `<key>_<stage>.spv`), `HOS_VK_TEXDUMP=<gpu>,<path>` (a texture as drawn and as in
   guest memory), `HOS_VK_VALIDATE=1` (the Khronos layer, when installed). Textures the CPU changes are found by a
   whole-storage hash every few frames (the font's glyph cache is written in place); ASTC is decoded on the CPU.
+- The settings menu (F1, a gamepad's Home): `host/hos_menu.c` is its model and input (tabs, rows, a binding waiting
+  for its input, questions; `hos_menu.h` for all of it), `host/vk/vk_menu.cpp` draws it with Dear ImGui's draw lists
+  (`third_party/imgui`, unchanged, from Longshot's tree) into a canvas of the picture's size that the present and the
+  screenshots then use (only while it is open). `host/hos_controls.c` is the bindings (two keys and a gamepad input per
+  Switch button and stick direction; the defaults are the old fixed map), which `hos_window.c` reads input through;
+  `host/hos_options.c` is `oranges_options.ini` (`HOS_OPTIONS_FILE`, else the XDG config folder). The game gets no input
+  while it is open. `HOS_CONTROL`'s `MENU <action>|KEY <name>|PAD <name>` drive it; `tests/test_host_menu.py` builds
+  the three C files alone (no SDL, no game). A new tab or setting: a row in `hos_menu.c` (`settings_def`, `build_rows`).
 - `third_party/eden/`: eden's Maxwell shader recompiler and sirit, vendored unchanged from the Longshot toolchain
   (`PROVENANCE.md`); `third_party/khronos/`: the Vulkan and SPIR-V C headers (the system has none). Don't edit them.
 - `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.
@@ -138,7 +148,7 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   the input (SDL3, `HOS_HAVE_SDL3`): the window runs on the process's main thread and the guest's main thread on its
   own; `hos_input()` merges keyboard, gamepad, mouse (touch: its left button), `HOS_INPUT_SCRIPT` (a line's inputs
   are held until the next line: end a script with an empty one) and `HOS_CONTROL` (a FIFO read while the game runs:
-  input, `SHOT` pictures, `DUMP`, `PROFILE`). Key map in its header comment. `HOS_NO_WINDOW=1`: no window; `HOS_SCREENSHOT=<bmp>[,s]`: the window's picture; end the program with
+  input, `SHOT` pictures, `DUMP`, `PROFILE`, `MENU`). Default keys in `hos_controls.c`'s header comment. `HOS_NO_WINDOW=1`: no window; `HOS_SCREENSHOT=<bmp>[,s]`: the window's picture; end the program with
   `hos_exit` (no exit handlers: library teardown crashes while game threads run). Device limits are the game's own
   driver's (API 55.15), read by running the sdk's `nvnDeviceGetInteger` under Unicorn.
   IPC requests to services nobody emulates are answered empty (success, zeroed outputs) and logged once per service

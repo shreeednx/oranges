@@ -78,6 +78,9 @@ void full_barrier(VkCommandBuffer cb);
 // ---- the screen (vk_device.cpp)
 /// the window texture's image to the screen (and HOS_SCREENSHOT), from a command buffer about to be ended
 void present_image(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]);
+/// the settings menu (vk_menu.cpp): while it is open, the picture (its crop) with the menu over it, composed into an
+/// image of the crop's size, which then stands for the picture (crop null); false, and nothing changed, when closed
+bool menu_compose(VkImage* image, VkFormat* format, uint32_t* w, uint32_t* h, const int** crop);
 
 // ---- guest memory (vk_memory.cpp)
 struct BufRef {

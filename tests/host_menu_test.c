@@ -1,0 +1,128 @@
+/* host/hos_options.c, hos_controls.c and hos_menu.c, built alone (no SDL, no game) by tests/test_host_menu.py.
+   argv[1]: the options file (HOS_OPTIONS_FILE); argv[2]: the step ("first": change things; "again": a new process
+   reads what the first wrote). Prints "ok" or the first check that failed. */
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "hos_menu.h"
+#include "hos_options.h"
+
+void hos_log(const char *fmt, ...) {
+    (void)fmt;
+}
+int64_t hos_now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
+}
+
+#define CHECK(c) do { if (!(c)) { printf("failed: %s (line %d)\n", #c, __LINE__); return 1; } } while (0)
+enum { K_SPACE = 44, K_RETURN = 40, K_Q = 20, K_W = 26, K_F = 9, K_ESCAPE = 41 };
+
+static int row_of(const HosMenuView *v, const char *label) {
+    for (int i = 0; i < v->nrows; i++)
+        if (!strcmp(v->rows[i].label, label)) return i;
+    return -1;
+}
+static void select_row(const char *label) {   /* (from the top, with Down) */
+    HosMenuView v;
+    for (int i = 0; i < HOS_MENU_ROWS; i++) hos_menu_action(HOS_MENU_UP);
+    hos_menu_view(&v);
+    const int want = row_of(&v, label);
+    for (int i = 0; i < HOS_MENU_ROWS && v.sel != want; i++) hos_menu_action(HOS_MENU_DOWN), hos_menu_view(&v);
+}
+
+static int first(void) {
+    bool keys[512] = {0};
+    int32_t stick[4];
+    /* the defaults */
+    keys[K_SPACE] = keys[K_W] = 1;
+    CHECK(hos_controls_eval(keys, 512, 0, stick) == (1u << 0));   /* A */
+    CHECK(stick[0] == 0 && stick[1] == 32767);                     /* W: the left stick up */
+    keys[K_SPACE] = keys[K_W] = 0;
+    CHECK(hos_controls_eval(keys, 512, 1u << 1, stick) == (1u << 0));   /* the gamepad's right button: A */
+    CHECK(hos_controls_eval(keys, 512, 1u << HOS_PAD_LT, stick) == (1u << 8));   /* LT: ZL */
+    int ctl, slot;
+    CHECK(hos_binding_owner(0, K_Q, -1, &ctl, &slot) && ctl == HOS_CTL_L && slot == 0);
+
+    /* the menu: Q for B's first key, which L has: asked, then moved */
+    hos_menu_load();
+    hos_menu_action(HOS_MENU_TOGGLE);
+    CHECK(hos_menu_is_open());
+    select_row("B");
+    HosMenuView v;
+    hos_menu_view(&v);
+    CHECK(v.rows[v.sel].kind == HOS_ROW_BINDING && !strcmp(v.rows[v.sel].cell[1], "#42"));   /* Backspace (no SDL names) */
+    hos_menu_key(K_RETURN, 0, 0);
+    hos_menu_view(&v);
+    CHECK(v.mode == HOS_MENU_CAPTURE);
+    hos_menu_key(K_Q, 0, 0);
+    hos_menu_view(&v);
+    CHECK(v.mode == HOS_MENU_CONFIRM && strstr(v.question, "already bound to L"));
+    CHECK(v.confirm_yes == 0);              /* (No first) */
+    hos_menu_action(HOS_MENU_RIGHT);
+    hos_menu_action(HOS_MENU_OK);
+    hos_menu_view(&v);
+    CHECK(v.mode == HOS_MENU_NORMAL && v.rows[v.sel].changed);
+    CHECK(hos_binding(HOS_CTL_B).key[0] == K_Q && hos_binding(HOS_CTL_L).key[0] == 0);
+    keys[K_Q] = 1;
+    CHECK(hos_controls_eval(keys, 512, 0, stick) == (1u << 1));   /* Q: B now, no longer L */
+    keys[K_Q] = 0;
+
+    /* Esc cancels a capture */
+    hos_menu_key(K_RETURN, 0, 0);
+    hos_menu_key(K_ESCAPE, 0, 0);
+    hos_menu_view(&v);
+    CHECK(v.mode == HOS_MENU_NORMAL && hos_binding(HOS_CTL_B).key[0] == K_Q);
+    /* the gamepad cell: F (a key) is not taken there; the left button is Y's: asked, answered no */
+    hos_menu_action(HOS_MENU_RIGHT), hos_menu_action(HOS_MENU_RIGHT);
+    hos_menu_key(K_RETURN, 0, 0);
+    hos_menu_key(K_F, 0, 0);
+    hos_menu_view(&v);
+    CHECK(v.mode == HOS_MENU_CAPTURE);
+    hos_menu_pad(2, 0);
+    hos_menu_view(&v);
+    CHECK(v.mode == HOS_MENU_CONFIRM && strstr(v.question, "bound to Y"));
+    hos_menu_action(HOS_MENU_BACK);
+    CHECK(hos_binding(HOS_CTL_B).pad == 0 && hos_binding(HOS_CTL_Y).pad == 2);
+    /* Delete clears the cell */
+    hos_menu_action(HOS_MENU_CLEAR);
+    CHECK(hos_binding(HOS_CTL_B).pad == -1);
+
+    /* a setting: the dead zone up one step, saved */
+    select_row("Stick dead zone");
+    hos_menu_action(HOS_MENU_RIGHT);
+    CHECK(hos_setting(HOS_SET_DEAD_ZONE) == 15);
+    /* Back closes */
+    hos_menu_action(HOS_MENU_BACK);
+    CHECK(!hos_menu_is_open());
+    /* the options file keeps a line it does not know */
+    hos_option_set("future_setting", "7");
+    return 0;
+}
+
+static int again(void) {
+    /* what the first run saved */
+    CHECK(hos_binding(HOS_CTL_B).key[0] == K_Q && hos_binding(HOS_CTL_B).pad == -1);
+    CHECK(hos_binding(HOS_CTL_L).key[0] == 0);
+    CHECK(hos_setting(HOS_SET_DEAD_ZONE) == 15);
+    CHECK(hos_option_int("future_setting", 0) == 7);
+    /* Reset all: every key_ / pad_ line gone, the rest kept */
+    hos_bindings_reset_all();
+    char v[64];
+    CHECK(!hos_option("key_B", v, sizeof v) && !hos_option("key_L", v, sizeof v) && !hos_option("pad_B", v, sizeof v));
+    CHECK(hos_option_int("stick_dead_zone", 0) == 15 && hos_option_int("future_setting", 0) == 7);
+    CHECK(hos_binding(HOS_CTL_L).key[0] == K_Q);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    setenv("HOS_OPTIONS_FILE", argv[1], 1);
+    const int r = !strcmp(argv[2], "first") ? first() : again();
+    if (!r) printf("ok\n");
+    return r;
+}

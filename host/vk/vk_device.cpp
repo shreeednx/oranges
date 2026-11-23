@@ -355,6 +355,7 @@ void full_barrier(VkCommandBuffer cb) {
 }
 
 void present_image(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]) {
+    menu_compose(&image, &format, &w, &h, &crop);   // (the settings menu, while it is open: the picture with it over)
     maybe_screenshot(image, format, w, h);
     if (!g.surface) return;
     const bool srgb = srgb_format(format);

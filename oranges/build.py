@@ -72,6 +72,11 @@ OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS", "sdl3": "HOS_HAVE_SDL3",    # (pk
                       "vulkan": "HOS_HAVE_VULKAN", "libavcodec libavutil": "HOS_HAVE_FFMPEG"}
 EDEN = ROOT / "third_party" / "eden"         # eden's shader recompiler and sirit (C++, with the Vulkan back end)
 KHRONOS = ROOT / "third_party" / "khronos" / "include"
+IMGUI = ROOT / "third_party" / "imgui"           # Dear ImGui: the settings menu (host/vk/vk_menu.cpp)
+IMGUI_SOURCES = ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp",
+                 "backends/imgui_impl_vulkan.cpp")
+IMGUI_FLAGS = ["-I" + str(IMGUI), "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS", "-DIMGUI_DISABLE_WIN32_FUNCTIONS",
+               "-DIMGUI_DISABLE_DEMO_WINDOWS", "-DIMGUI_DISABLE_DEBUG_TOOLS"]
 
 
 def host_libraries() -> tuple[list[str], list[str]]:
@@ -110,9 +115,11 @@ def sources(gen: Path) -> list[tuple[Path, list[str]]]:
     host = (["-I" + str(HOST)] + support + ["-g"]   # (debug info for the OS layer: cheap, and gdb can read its state)
             + host_libraries()[0])
     out += [(RT / "a64_rt.c", support)] + [(c, host) for c in sorted(HOST.glob("*.c"))]
-    if vulkan():   # (C++: eden's recompiler and the back end; the back end with debug info, as the rest of host/)
+    if vulkan():   # (C++: eden's recompiler, Dear ImGui and the back end; the back end with debug info, as host/)
         out += [(c, cxx_flags(gen)) for c in sorted(EDEN.rglob("*.cpp"))]
-        out += [(c, cxx_flags(gen) + ["-g"] + host_libraries()[0]) for c in sorted((HOST / "vk").glob("*.cpp"))]
+        out += [(IMGUI / f, cxx_flags(gen) + IMGUI_FLAGS) for f in IMGUI_SOURCES]
+        out += [(c, cxx_flags(gen) + IMGUI_FLAGS + ["-g"] + host_libraries()[0])
+                for c in sorted((HOST / "vk").glob("*.cpp"))]
     return out
 
 
@@ -136,6 +143,8 @@ def _key(src: Path, flags: list[str], gen: Path) -> str:
         deps += sorted(p for p in HOST.rglob("*") if p.suffix in (".h", ".inc"))
     if EDEN in src.parents or src.parent == HOST / "vk":   # (and eden's headers)
         deps += sorted(p for p in EDEN.rglob("*") if p.suffix in (".h", ".hpp", ".inc"))
+    if IMGUI in src.parents or src.parent == HOST / "vk":   # (and Dear ImGui's)
+        deps += sorted(p for p in IMGUI.rglob("*.h"))
     for dep in deps:
         if dep.exists():
             h.update(str(dep).encode() + b"\0" + _digest(dep))
@@ -147,6 +156,8 @@ def _obj(src: Path, obj_dir: Path) -> Path:
         return obj_dir / ("eden." + "_".join(src.relative_to(EDEN).with_suffix("").parts) + ".o")
     if src.parent == HOST / "vk":
         return obj_dir / ("vk." + src.stem + ".o")
+    if IMGUI in src.parents:
+        return obj_dir / ("imgui." + src.stem + ".o")
     return obj_dir / (src.stem + (".rt" if src.parent in (RT, HOST) else "") + ".o")
 
 

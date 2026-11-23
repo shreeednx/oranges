@@ -125,8 +125,8 @@ Left over from it:
 
 - [ ] Frames are still paced by `nvn_native.c`'s clock (60 Hz over the present interval), not by the window (the
       Vulkan back end presents in mailbox mode): see the renderer's leftovers
-- [ ] Key remapping (a config file: task 1, the settings menu), more than one gamepad (Npad No.2-8), motion from a
-      gamepad's gyro
+- [x] Key remapping (the settings menu's Controls tab, F1). Still open: more than one gamepad (Npad No.2-8),
+      motion from a gamepad's gyro
 - [ ] The rumble value is resent each window frame; a game that stops without sending 0 keeps it rumbling
 
 ## Done: sound
@@ -295,21 +295,21 @@ Left over from it:
 
 - [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
       each piece ran on the game. Run it once on the game.
-- [ ] Touch: a tap on the island-name keyboard types nothing (see task 2, with Handheld mode).
+- [ ] Touch: a tap on the island-name keyboard types nothing (see task 1, with Handheld mode).
 - [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
       `HOS_TIME` offset would let runs see daytime.
 
 ## Done: NPC talking sounds (sub mixes into splitters)
 
-The villagers' talking was never heard. The game renders it itself (from `.bars` voice archives
-it loads) and plays it as a mono PCM16 stream (256 samples a buffer, four in a ring, started with the first
-line) on its own voice into a 1-buffer sub mix, and it sends that sub mix (and four others: 1, 6, 8, 10 of the 11) into a splitter (`SetSubMixDestination` with a
-`SplitterType`, to its bus and the final mix). `nn_audio.c` dropped a sub mix's splitter destination ("not used by
-TOTK so far"), so those mixes went nowhere. A sub mix into a splitter now feeds each destination mix: its buffers
-are the splitter's source channels, at `SetSplitterMixVolume`'s volumes (the game sets them buffer i to buffer i) times
-the sub mix volume, ramped as a voice's; the mix order follows splitters, and a released splitter drops the sub mixes
-sent to it. The shopkeeper's lines at the airport counter are 2-3x the level of the music alone (22-29 s of the
-prologue), no clipping; the day-1 save loads to the island as before.
+The villagers' talking was never heard. The game renders it itself (from `.bars` voice archives it
+loads) and plays it as a mono PCM16 stream (256 samples a buffer, four in a ring, started with the first line) on
+its own voice into a 1-buffer sub mix, and it sends that sub mix (and four others: 1, 6, 8, 10 of the 11) into a
+splitter (`SetSubMixDestination` with a `SplitterType`, to its bus and the final mix). `nn_audio.c` dropped a sub mix's
+splitter destination ("not used by TOTK so far"), so those mixes went nowhere. A sub mix into a splitter now feeds each
+destination mix: its buffers are the splitter's source channels, at `SetSplitterMixVolume`'s volumes (the game sets them
+buffer i to buffer i) times the sub mix volume, ramped as a voice's; the mix order follows splitters, and a released
+splitter drops the sub mixes sent to it. The shopkeeper's lines at the airport counter are 2-3x the level of the music
+alone (22-29 s of the prologue), no clipping; the day-1 save loads to the island as before.
 
 Left over from it:
 
@@ -319,33 +319,42 @@ Left over from it:
 - [ ] A splitter destination's biquad filters apply to voices only, not to a sub mix sent through it (unknown
       whether the console's do; the game hasn't set one there so far)
 
-## 1. An oranges settings menu (controls first)
+## Done: the settings menu (F1), with the Controls tab
 
-An in-game settings menu like Longshot's "Insert menu" (its `gpu/vk/vk_menu.cpp`, the look in `vk_ui.h`, the file in
-`host/options_path.c`; its user guide is `docs/user/graphics-and-controls.md`). That menu is drawn with Dear ImGui over
-the window's image at the end of a present, so it costs nothing while closed and never touches the game's picture.
-F1 opens it (a gamepad's Home too), and the game gets no input while it is open. It has tabs (Graphics, Audio,
-Gameplay, Controls, ...), its choices are saved as they change in an options file, and rows that need a restart are
-marked. The Controls tab comes first, then Graphics (task 2); the other tabs as there are settings for them.
+F1 (or a gamepad's Home) opens an oranges settings menu over the game, modelled on Longshot's Insert menu but much
+smaller: `host/hos_menu.c` is its model and input (tabs, rows, selection, a binding waiting for its input, questions),
+`host/vk/vk_menu.cpp` draws it with Dear ImGui's draw lists (`third_party/imgui`, 1.92.9b from Longshot's tree) in
+Longshot's Modern dark colours with the host's TrueType font. While it is open each present composes the picture and
+the menu into a canvas of the picture's size, which the window and the screenshots get (so `SHOT` shows it headless
+too); closed, it costs nothing. The game gets no input while it is open (`hos_input`, scripts included), and what is
+held when it closes stays away from the game until it is let go. Choices are saved as they change in
+`oranges_options.ini` (`host/hos_options.c`: `$XDG_CONFIG_HOME/oranges/`, else `~/.config/oranges/`;
+`HOS_OPTIONS_FILE` overrides; unknown lines kept).
 
-- [ ] The menu itself: Dear ImGui on the Vulkan back end (`host/vk`), drawn over the presented image (not with
-      `HOS_VK=0`). Keyboard, gamepad and mouse to move around it. While it is open, `hos_input()` gives the game
-      nothing.
-- [ ] An options file (`oranges_options.ini`, in the user's config folder), read at start and written on each change.
-- [ ] Controls tab: rebind each Switch button (and the left stick's and the camera's directions on the keyboard) to a
-      key and a gamepad input. This replaces the fixed key map in `hos_window.c`'s header. Also: reset a row or all of
-      them, and warn when an input is already bound. Then, as needed: stick dead zone, vibration on/off and strength,
-      which gamepad is Npad No.1, the mouse as touch.
-- [ ] Keep `HOS_INPUT_SCRIPT` and `HOS_CONTROL` independent of the bindings: they speak Switch buttons.
+The Controls tab: every Switch button and stick direction has two keys and a gamepad input (`host/hos_controls.c`,
+whose defaults are the old fixed map; `hos_window.c` reads the keyboard and gamepad through it). Enter / A waits for
+the new input (Esc or 6 s cancels); an input another control has is moved only after a yes; Delete / X clears a cell,
+R / Y resets a row, a Reset all row asks first. Also Stick dead zone (10%), Vibration (Off to 100%) and Mouse as
+touch screen. Keyboard, gamepad (the buttons bound to A, B, X, Y; D-pad or stick with repeat) and mouse (point, click,
+right click, wheel) move around it. `HOS_CONTROL` has `MENU <action>`, `MENU KEY <name>` and `MENU PAD <name>`.
+Checked headless on the day-1 save (open, rebind with a conflict, reset all, the player not moving while it is open
+and moving after) and once in the window (Wayland). `tests/test_host_menu.py` runs the options file, the bindings and
+the model without the game or SDL.
 
-Why here: what makes the game playable by a person rather than by scripts (fixed keys today).
+Left over from it:
 
-## 2. Graphics settings (the settings menu's Graphics tab)
+- [ ] Try it by hand in the window: keyboard, a gamepad (Home, the D-pad / stick repeat, triggers as bindings) and the
+      mouse (hit-testing by the console's 1280x720 coordinates). Only `HOS_CONTROL` drove it so far.
+- [ ] Which gamepad is Npad No.1 (the first one opened today), more than one gamepad (Npad No.2-8)
+- [ ] The menu is drawn only at the game's presents (30 fps): it freezes while the game does not present (a long load)
+- [ ] Nothing needs a restart yet; the row flag (`restart`, "(after a restart)") is there for the Graphics tab
 
-The resolutions the game supports itself, chosen in the menu (task 1). Longshot's Graphics tab (its user guide's
-"Every setting") is the model for how they look. The game renders for the mode the console reports: `nn_system.c`
-answers `nn::oe::GetOperationMode` with Console (docked, the 1920x1080 picture every screenshot has) and the performance
-mode with Boost.
+## 1. Graphics settings (the settings menu's Graphics tab)
+
+The resolutions the game supports itself, chosen in the menu (F1: a Graphics tab). Longshot's Graphics tab (its user
+guide's "Every setting") is the model for how they look. The game renders for the mode the console reports:
+`nn_system.c` answers `nn::oe::GetOperationMode` with Console (docked, the 1920x1080 picture every screenshot has) and
+the performance mode with Boost.
 
 - [ ] Check what the game does with each mode. Report Handheld (`GetOperationMode` 0, the normal performance mode)
       and look at its render targets' sizes (`HOS_VK_LOG`): 1280x720 presumably. Also check whether it scales its
@@ -365,9 +374,9 @@ mode with Boost.
       the game's render targets (Longshot's "Output resolution"), with whatever that breaks (the UI's layout, the
       post effects' texel offsets, the game's reads of its own targets). Decide once the native modes work.
 
-Why here: it needs the menu (task 1), and the game draws right at 1080p already; this is choice, not a fix.
+Why here: the menu is there now (F1), and the game draws right at 1080p already; this is choice, not a fix.
 
-## 3. The renderer's gaps
+## 2. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -375,7 +384,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 4. Clean-ups and checks
+## 3. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
