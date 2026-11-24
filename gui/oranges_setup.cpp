@@ -409,9 +409,10 @@ struct Child {
         }
     }
     void reset() {
-        if (proc && !finished) {
+        if (proc && !finished) {   // (make's own cancel first: it kills its compiles; killed only if it hangs)
             cancel();
-            SDL_KillProcess(proc, true);
+            for (int i = 0; i < 300 && !finished; i++) SDL_Delay(50);
+            if (!finished) SDL_KillProcess(proc, true);
         }
         if (reader.joinable()) reader.join();
         if (proc) SDL_DestroyProcess(proc);
