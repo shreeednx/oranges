@@ -38,7 +38,7 @@ HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait, CPU time,
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
 HOS_LOG_TIME=1 ./work/build/oranges       # seconds since start on every log line, and each gap between presents >= 0.25 s
-HOS_LOG_SLEEPS=50 ./work/build/oranges    # every SleepThread of >= 50 ms, with its guest backtrace (the game's own waits)
+HOS_LOG_SLEEPS=50 ./work/build/oranges    # every SleepThread, and every wait whose timeout ran out, of >= 50 ms, with its caller
 HOS_PRESENT_INTERVAL=1 ./work/build/oranges   # 60 fps instead of the game's 30 (its world runs ~2x fast: it steps per frame)
 HOS_AUDIO=1 HOS_NO_WINDOW=1 ./work/build/oranges   # sound without a window (headless runs are quiet by default)
 HOS_NO_WINDOW=1 HOS_SCREENSHOT=shot.bmp,40 ./work/build/oranges   # the presented picture at 40 s (headless draws too)

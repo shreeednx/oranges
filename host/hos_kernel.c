@@ -341,6 +341,19 @@ void hos_kernel_dump(const char *why) {
     }
 }
 
+/* HOS_LOG_SLEEPS=<ms>: each SleepThread that long or longer, and each wait with a timeout that long or longer that
+   ran out, with its caller (the game's own waits, when looking for where load time goes) */
+static void log_long_wait(Ctx *c, const char *what, int64_t ns) {
+    static int64_t min_ns = -1;
+    if (min_ns < 0) {
+        const char *e = getenv("HOS_LOG_SLEEPS");
+        min_ns = e && atof(e) > 0 ? (int64_t)(atof(e) * 1e6) : INT64_MAX;
+    }
+    if (ns < min_ns) return;
+    hos_log("thread %#x: %s %.3f s, from:", self ? self->handle : 0, what, ns / 1e9);
+    hos_backtrace(c);
+}
+
 /* ---- the SVCs: 1 when handled */
 
 int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
@@ -385,15 +398,7 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         pthread_exit(NULL);
     case 0x0B: {   /* SleepThread(ns): 0, -1 and -2 are yields */
         const int64_t ns = (int64_t)c->x[0];
-        static int64_t log_ns = -1;   /* HOS_LOG_SLEEPS=<ms>: log each sleep that long or longer, with its caller */
-        if (log_ns < 0) {
-            const char *e = getenv("HOS_LOG_SLEEPS");
-            log_ns = e && atof(e) > 0 ? (int64_t)(atof(e) * 1e6) : INT64_MAX;
-        }
-        if (ns >= log_ns) {
-            hos_log("thread %#x: sleeps %.3f s, from:", self ? self->handle : 0, ns / 1e9);
-            hos_backtrace(c);
-        }
+        log_long_wait(c, "sleeps", ns);
         if (ns > 0) {
             struct timespec ts = {ns / 1000000000, ns % 1000000000};
             while (nanosleep(&ts, &ts) && errno == EINTR) {}
@@ -503,6 +508,7 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
             if ((int64_t)c->x[3] == 0 || kwait(timed, &ts) == ETIMEDOUT) break;
         }
         pthread_mutex_unlock(&klock);
+        log_long_wait(c, "WaitSynchronization timed out after", (int64_t)c->x[3]);
         c->x[0] = KERN_TIMED_OUT;
         return 1;
     }
@@ -558,6 +564,7 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
             }
         self->wait = W_NONE;
         pthread_mutex_unlock(&klock);
+        if (r == KERN_TIMED_OUT) log_long_wait(c, "WaitProcessWideKeyAtomic timed out after", (int64_t)c->x[3]);
         c->x[0] = r;
         return 1;
     }
@@ -614,6 +621,7 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         }
         self->wait = W_NONE;
         pthread_mutex_unlock(&klock);
+        if (r == KERN_TIMED_OUT) log_long_wait(c, "WaitForAddress timed out after", (int64_t)c->x[3]);
         c->x[0] = r;
         return 1;
     }

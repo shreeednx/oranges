@@ -518,7 +518,15 @@ time goes.
 - Where it stands (the same runs): the boot's title iris at ~14 s (was ~21 s), "Press A" ~5 s later (the logo's
   animation). Title to island ~3 s on a save made at the start of a day, ~12 s on one made mid-day (a ~9 s loading
   screen: the save written again, then the island loaded).
-- [ ] Find the 17.5-21 s wait (tick-based: `GetSystemTick` comparisons in the title's or the loading icon's logic).
+- [x] The wait between the island's load and the title's iris (~4.5 s, now ~10-14.3 s): frame-counted, the game's
+      own. The title scene is up at ~9.3 s (`System_Title.bfevfl`, the title layouts); its flow has
+      `EventFlowActionWaitFrame` and fades by speed. ~140 frames both paced (30 fps) and unpaced (only ~66 fps there,
+      CPU-bound, which made it look clock-based at first). No sleep, timeout or tick comparison ends it: CNTPCT reads
+      counted by caller (a temporary hook) changed at the iris only in one loading state machine (`0xad2d2a4`), and
+      no wait with a timeout of 100 ms or more ran out (`HOS_LOG_SLEEPS` logs those too now). Left as it is.
+  - Found on the way: the loading screen stays at least 3 s (`0xad29f0c`: 3000 ms since a tick stored at
+    `[obj+0x358]` / `+0x360`). With it at ~0 (tried) the boot's title came ~0.5 s sooner and the mid-day save's load
+    not at all, so it isn't patched (it would only shorten something the player sees).
 - [ ] Cut what is ours: translation and ASTC decoding off the game's thread (or ahead of the draw that needs them), a
       dropped pool freed after the submits that may use it rather than behind `vkDeviceWaitIdle`. (A shader cache on
       disk: under "Future ideas", for stutter on weaker hardware.)
