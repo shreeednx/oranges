@@ -50,6 +50,8 @@ BUILD_BYTES = 3 << 30
 GEN_BYTES, OBJ_BYTES = 1500 << 20, 900 << 20
 # (the lift's share of its time, step by step, measured on this build: the image, discovery, writing the C)
 LIFT_STEPS = (("image:", 0.08), ("discover:", 0.30), ("emit:", 1.0))
+# (oranges' modules the lift's output depends on)
+LIFT_MODULES = ("kit", "lift", "lift_fixes", "insn", "spin", "patches", "hle", "game", "nso")
 EXIT = {"game": 3, "space": 4, "memory": 5, "cancelled": 130}
 
 
@@ -114,7 +116,7 @@ def lift_key(exefs: Path) -> str:
     patches, the kit, and host/, whose HLE( ) functions the lift hooks)"""
     h = hashlib.sha256(b"oranges lift 1\0")
     _hash_files(h, [f for f in exefs.iterdir() if f.is_file()])
-    _hash_files(h, list((ROOT / "oranges").glob("*.py")))
+    _hash_files(h, [ROOT / "oranges" / (m + ".py") for m in LIFT_MODULES])
     kit = ROOT / "third_party" / "a64-kit"
     _hash_files(h, [f for d in ("lift", "hos", "tools", "rt") for f in (kit / d).glob("*") if f.is_file()
                     and f.suffix in (".py", ".c", ".h", ".cpp")])

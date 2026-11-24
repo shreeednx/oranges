@@ -121,6 +121,21 @@ def vulkan() -> bool:
     return bool(optional_library("vulkan")[1]) and bool(optional_library("sdl3")[1])
 
 
+def target_flags() -> list[str]:
+    """compile flags every object gets for the target system: a release's sysroot (ORANGES_SYSROOT: the C library
+    the program is built against, older than the player's, oranges.release)"""
+    sysroot = os.environ.get("ORANGES_SYSROOT")
+    return ["--sysroot=" + sysroot] if sysroot else []
+
+
+def target_link_flags() -> list[str]:
+    """link flags for the target system: with a release's sysroot, its C++ runtime linked in (the player's system
+    may have an older one) and the libraries shipped beside the program found there ($ORIGIN)"""
+    if windows() or not os.environ.get("ORANGES_SYSROOT"):
+        return []
+    return target_flags() + ["-static-libstdc++", "-static-libgcc", "-Wl,-rpath,$ORIGIN", "-Wl,--as-needed"]
+
+
 def cxx_flags(gen: Path) -> list[str]:
     return ["-std=c++20", "-O2", "-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-fno-strict-aliasing",
             "-g0", "-w", "-I" + str(EDEN), "-I" + str(EDEN / "compat"), "-I" + str(EDEN / "sirit" / "include"),

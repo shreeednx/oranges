@@ -9,3 +9,7 @@ Settings are given as compiler defines by oranges/build.py, not by editing imcon
 
 Used by host/vk/vk_menu.cpp: the settings menu, drawn over the window's image with ImGui's draw lists. ImGui's own
 widgets and input are not used (the menu's model and input are host/hos_menu.c's).
+
+Added by oranges from the same release archive (its SHA-256 checked against the one above), unmodified: the SDL3
+platform backend and the SDL_Renderer backend (backends/imgui_impl_sdl3.*, backends/imgui_impl_sdlrenderer3.*). Used
+by the setup GUI (gui/oranges_setup.cpp), a window of its own with ImGui's widgets.
