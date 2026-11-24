@@ -582,15 +582,7 @@ Left over from it:
       translated for its first draw's textures (the views follow the program's types, so the picture stays
       consistent). A cache on disk would need those answers in its key.
 
-## 1. The renderer's gaps
-
-The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
-uses them (logged once), then performance ("Done: the renderer's time measured": the per-draw cost) and memory.
-
-Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
-as soon as one of those logs or a wrong picture shows.
-
-## 2. A Windows build (MinGW)
+## 1. A Windows build (MinGW)
 
 Linux only today. The target is a Windows x64 build of the same program, built with MinGW-w64 so that most of the
 POSIX code stays as it is: winpthreads for the ~17 host files that use pthreads, MinGW's `dirent.h`, `clock_gettime`
@@ -618,7 +610,7 @@ also packages pkg-config, SDL3, the Vulkan loader, libopus and FFmpeg.
   - signals the host uses elsewhere (`nn_audio.c`, `nvn_native.c`, `vk_replay.cpp` and others include `signal.h`):
     check each one.
 - [ ] LLP64: `long` is 32 bits on Windows. Look through host/ for `long` used as a 64-bit type and for `%ld` / `%lx`
-      formats (`-Wformat` finds the formats once warnings are on, a task 4 item).
+      formats (`-Wformat` finds the formats once warnings are on, a task 3 item).
 - [ ] The Python side on Windows: Python 3.14 (for `compression.zstd`), the kit's `build_emit.py` already makes
       `a64emit.dll`, and `oranges build`'s job count reads the memory size (check how it does that on Windows).
 - [ ] Run it: boot the day-1 save to the island with the window, sound, a gamepad and the F1 menu, with the save in
@@ -627,10 +619,10 @@ also packages pkg-config, SDL3, the Vulkan loader, libopus and FFmpeg.
 - [ ] Shipping: the `.exe` and the DLLs it needs beside it (SDL3, libopus, FFmpeg's, winpthread, libc++ / libunwind),
       their licence texts with them.
 
-Why here: a native Windows program is half of the project's goal ("Windows/Linux"), and the graphical setup (task 3)
+Why here: a native Windows program is half of the project's goal ("Windows/Linux"), and the graphical setup (task 2)
 needs it for its Windows half.
 
-## 3. A graphical setup (build the game without a terminal)
+## 2. A graphical setup (build the game without a terminal)
 
 Today a player needs a terminal and a developer's toolchain: a Python 3.14 venv, clang, pkg-config and the libraries,
 then `oranges check`, `oranges extract --only romfs`, `oranges lift --write`, `oranges build`, and then
@@ -660,10 +652,10 @@ checked against the release's signed checksums, so the player installs nothing e
 - [ ] Never: download or upload anything from the game. The setup reads the player's own copy only (CLAUDE.md's game
       data rules).
 
-Why here: worth it once the game is something to hand to a player, and the Windows half needs task 2. The CLI stays,
+Why here: worth it once the game is something to hand to a player, and the Windows half needs task 1. The CLI stays,
 for development and for the GUI to drive.
 
-## 4. Clean-ups and checks
+## 3. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -673,7 +665,17 @@ for development and for the GUI to drive.
 - [ ] Tests for the host side where they can run without the game (NVN object layouts, the audio mixer's buffer
       release, the `nn::time` calendar conversions)
 
-Why last: none of these blocks the game; take them on when one starts to matter (memory on long runs first).
+Why here: none of these blocks the game; take them on when one starts to matter (memory on long runs first).
+
+## 4. The renderer's gaps
+
+The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
+uses them (logged once), then performance ("Done: the renderer's time measured": the per-draw cost) and memory.
+
+Why last: the renderer is in good shape ("Done: the renderer's time measured": no GPU round trips for the UI, programs
+made on threads, 30 fps with room to spare on this machine), and nothing unreplayed has turned up yet (each is logged
+once when it does). It moves up as soon as one of those logs or a wrong picture shows, or a slower machine misses
+30 fps.
 
 ## Future ideas
 
