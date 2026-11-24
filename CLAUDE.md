@@ -32,6 +32,10 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
 .venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
 .venv/bin/oranges build                           # compile work/gen + rt + host/ (+ vk, eden), link work/build/oranges
+.venv/bin/oranges make game.nup --dir work   # all of it (check, extract, lift, build), resumable; --progress json
+.venv/bin/python -m oranges.gui [--target windows]   # the setup GUI: work/gui/oranges (finds .venv and this checkout)
+.venv/bin/python -m oranges.linuxkit              # the Linux release's toolchain, sysroot, libs, python (~/.local/opt)
+.venv/bin/python -m oranges.release linux|windows # work/release/oranges-<version>-<platform>/ and its archive
 .venv/bin/python -m oranges.mingw                 # the Windows build's libraries: ~/.local/opt/msys2-clang64 (~40 s; Windows: %LOCALAPPDATA%\oranges\...)
 .venv/bin/oranges build --target windows          # work/build-windows/oranges.exe (+ DLLs, licenses/) with llvm-mingw
 WINEDEBUG=-all ORANGES_USER=Z:/abs/dir HOS_NO_WINDOW=1 wine work/build-windows/oranges.exe   # it, under wine
@@ -78,6 +82,11 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
 - `oranges/nup.py`: the `.nup` container reader (format documented in its docstring). `Nup.chunks()` streams a file's
   contents, `read()`/`verify()`/`extract()` check per-file SHA-256s. Names are validated on load, so extraction paths
   are safe by construction.
+- `oranges/make.py`: `oranges make`, the whole pipeline for a player and the GUI (JSON events, resumable, cancel by
+  closing stdin). `gui/oranges_setup.cpp`: the setup GUI (SDL3 + Dear ImGui), which runs it as a child process.
+  `oranges/release.py` lays out a release (`oranges/linuxkit.py`: Linux's toolchain, sysroot and static libraries;
+  `oranges/wintools.py` and `oranges/mingw.py`: Windows'), and `oranges/bundled.py` makes the pipeline use a
+  release's own tools when it runs from one (`<release>/src` beside `release.json`).
 - `oranges/nso.py`: NSO loader. It builds the memory image (text/ro/data at their offsets, zeroed bss), then parses MOD0
   and `.dynamic`: symbols (count from DT_HASH or DT_GNU_HASH), RELA/JMPREL/RELR relocations, imports and exports. It also
   scans SVC instructions. `link()` reports imports that no loaded module exports.

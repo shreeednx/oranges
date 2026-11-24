@@ -9,6 +9,9 @@ are FP-exact (-ffp-contract=off) and LoopRotate is capped, which a64-kit measure
     ORANGES_OPT    optimization level of the lifted chunks (default O1)
     ORANGES_VULKAN 0: without the Vulkan back end (host/vk and eden's recompiler, ~160 C++ files)
     ORANGES_TARGET windows: the Windows build (or `oranges build --target windows`), see below
+    ORANGES_PREFIX the libraries' prefix (its lib/pkgconfig, read by oranges.pkgconf), for either target
+    ORANGES_SYSROOT the C library to build against (a Linux release's: oranges.linuxkit), with libstdc++ and libgcc
+                   linked in and $ORIGIN as the program's library path
 
 The Windows build is cross-compiled with llvm-mingw (MinGW-w64 on clang, UCRT): x86_64-w64-mingw32-clang from PATH,
 else from ORANGES_MINGW (default /opt/llvm-mingw). It goes to <work>/build-windows/oranges.exe, with its own objects.
@@ -97,8 +100,11 @@ def exe_name() -> str:
 
 
 def mingw_prefix() -> Path | None:
-    """the Windows build's library prefix (oranges.mingw's): ORANGES_MINGW_PREFIX, else its default folder when it
-    is there; None for the Linux build"""
+    """the target's library prefix, whose lib/pkgconfig files oranges.pkgconf reads: ORANGES_PREFIX (a release's
+    libs/, oranges.linuxkit's or oranges.mingw's), else for the Windows build ORANGES_MINGW_PREFIX, else
+    oranges.mingw's default folder when it is there; None: pkg-config (the Linux build on the system's libraries)"""
+    if os.environ.get("ORANGES_PREFIX"):
+        return Path(os.environ["ORANGES_PREFIX"])
     if not windows():
         return None
     if os.environ.get("ORANGES_MINGW_PREFIX"):
@@ -137,7 +143,8 @@ def target_link_flags() -> list[str]:
 
 
 def cxx_flags(gen: Path) -> list[str]:
-    return ["-std=c++20", "-O2", "-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-fno-strict-aliasing",
+    return target_flags() + [
+            "-std=c++20", "-O2", "-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-fno-strict-aliasing",
             "-g0", "-w", "-I" + str(EDEN), "-I" + str(EDEN / "compat"), "-I" + str(EDEN / "sirit" / "include"),
             "-I" + str(EDEN / "sirit" / "src"), "-I" + str(KHRONOS), "-I" + str(HOST), "-I" + str(gen),
             "-I" + str(RT)]
@@ -196,7 +203,8 @@ def host_libraries() -> tuple[list[str], list[str]]:
 
 
 def common_flags(gen: Path) -> list[str]:
-    return ["-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-ffp-contract=off", "-fno-strict-aliasing",
+    return target_flags() + [
+            "-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-ffp-contract=off", "-fno-strict-aliasing",
             "-mcx16", "-maes", "-g0", "-Wno-everything", "-I" + str(gen), "-I" + str(RT)]   # (-maes: insn.aes)
 
 
@@ -387,7 +395,7 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_na
     exe = out_dir(work) / exe_name()
     say("link: %s" % exe)
     t1 = time.monotonic()
-    libs = host_libraries()[1] + link_flags()
+    libs = host_libraries()[1] + link_flags() + target_link_flags()
     linker = compiler_cxx if any(o.name.startswith(("eden.", "vk.")) for o in objs) else compiler
     r = _run([linker, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + libs)
     if r.returncode:
@@ -398,7 +406,20 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_na
         copied = bundle_dlls(exe)
         if copied:
             say("beside it: %s" % " ".join(copied))
+    elif mingw_prefix():
+        bundle_licenses(exe, mingw_prefix())
     return exe
+
+
+def bundle_licenses(exe: Path, prefix: Path) -> None:
+    """the licence texts of the libraries linked in from a prefix (a Linux release's: static), and oranges' own,
+    into licenses/ beside the program"""
+    out = exe.parent / "licenses"
+    out.mkdir(exist_ok=True)
+    shutil.copy2(ROOT / "LICENSE", out / "oranges.txt")
+    for lic in sorted((prefix / "share" / "licenses").glob("*")):
+        if lic.is_dir():
+            shutil.copytree(lic, out / lic.name, dirs_exist_ok=True)
 
 
 SYSTEM_DLLS = ("vulkan-1.dll",)   # (the GPU driver installs it; wine has its own, which reaches the host's driver)

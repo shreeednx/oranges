@@ -163,6 +163,8 @@ def cmd_make(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import bundled
+    bundled.apply()   # (in a release: its own compilers, sysroot and libraries)
     ap = argparse.ArgumentParser(prog="oranges", description=__doc__)
     sub = ap.add_subparsers(dest="command", required=True)
     s = sub.add_parser("info", help="titles, metadata, exefs and whether the build is supported")

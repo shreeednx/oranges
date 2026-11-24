@@ -673,39 +673,58 @@ libraries (`python -m oranges.mingw` for Windows), then `oranges check`, `orange
 `oranges lift --write`, `oranges build`, and running `work/build/oranges`. That is ~12.5 GB on disk (RomFS 10 GB,
 generated C 1.4 GB, objects 0.8 GB) and ~2.5 GB of memory per compile job.
 
-- [ ] The release, one per platform (Windows x64 zip or installer, Linux x64 AppImage or tarball), self-contained:
-  - the GUI (below);
-  - a Python 3.14 runtime with oranges and the vendored a64-kit (Windows: the embeddable Python; Linux: a standalone
-    build such as python-build-standalone), run by the GUI as a child process: the CLI stays the one pipeline;
-  - the a64-kit translator library prebuilt (`liba64emit.so` / `a64emit.dll`: today the first lift builds it with
-    the system's clang++);
-  - a clang toolchain that builds the port for the platform it runs on: llvm-mingw's Windows-hosted release on
-    Windows (UCRT, what the Windows build uses now), an LLVM / clang build with a sysroot on Linux (the port must run
-    on the player's distribution: build against an old enough glibc, or ship the libraries it links);
-  - the port's libraries, headers and import libraries: SDL3, libopus, FFmpeg (the movie's decoders only, as
-    `oranges.mingw` builds it), the Vulkan headers and loader import library; their DLLs / .so files copied beside
-    the built port with their licence texts, as `bundle_dlls` does for Windows now (the build reads their `.pc`
-    files itself, `oranges/pkgconf.py`: no pkg-config to ship);
-  - for Windows, `oranges.wintools` already fetches the Python and the toolchain such a release would carry, and the
-    pipeline runs on them (under wine so far: task 1);
-  - prebuilt or source-only parts as fits: eden, Dear ImGui and the host are compiled on the player's machine with the
-    lifted C (no game code in the release), or prebuilt as objects to save time (they hold no game code either).
-  - Versioned as one unit: a release's toolchain, libraries and oranges are known to build together. Checksums
-    signed for each release (the GUI or a first-run check verifies its own files).
-- [ ] Decide what the GUI is made of: a small native program on SDL3 and Dear ImGui (both already in the tree, the F1
-      menu's look) that runs the bundled Python pipeline as a child process, or a Python GUI (Tk) in the bundled
-      Python. The first is the likelier choice: no extra dependency, the game's look, and it starts without Python.
-- [ ] The steps, one screen each: choose the game (search Downloads, Desktop, Documents for `.nup` files, or browse;
-      `game.check` says "supported" or which build the copy is and that it isn't), choose the install folder (with a
-      free-space check: ~12.5 GB while building, less after), the options (build jobs from the memory size, Console
-      mode and other F1 settings as defaults), Build, Play.
-- [ ] The build with progress: each stage (verify, extract, lift, compile chunk N of 57, link) as a bar with a time
-      estimate and the log underneath; cancel and resume (the build already caches objects per chunk: a resumed build
-      only compiles what is missing). Errors in words a player understands (no space, out of memory, wrong build),
-      with the log kept for a report. Afterwards, offer to delete what only the build needed (the generated C, the
-      objects).
-- [ ] After the build: Play, shortcuts (a `.desktop` entry on Linux, a Start menu entry on Windows), "Open the save
-      folder", and rebuilding when a new oranges release comes (the player's install keeps its saves and options).
+Where it is (2026-11-24): the pipeline is one command and the GUI exists; the release is assembled by code that has
+not run end to end yet (it runs the downloaded toolchain and Python, which this session was not allowed to do).
+
+- [x] The pipeline in one command: `oranges make <nup> --dir FOLDER [--jobs N] [--clean] [--progress json]`
+      (`oranges/make.py`): check the build, check the room (what is still missing: RomFS files, the C, objects),
+      extract, lift, compile, link, into FOLDER with the work layout (the program finds its image and RomFS beside
+      it, as before). Resumable: extracted files kept, the lift skipped while `gen/.lifted` (a hash of the exefs and
+      the lift's modules, the kit and host/) matches, objects cached. `--progress json`: one event per line (stages,
+      progress by bytes with the chunk count, log, done, error by kind), and the end of stdin cancels (running
+      compiles killed). `FOLDER/make.log` keeps every run's output, `FOLDER/oranges.json` what was built. Measured on
+      `work`: 6.4 min from a stale build (all 267 objects), 77 s with a new lift and cached objects, 2 s with nothing
+      to do; the program boots at 30 fps
+- [x] The GUI is a native program on SDL3 and Dear ImGui (`gui/oranges_setup.cpp`, ImGui's SDL3 and SDL_Renderer
+      backends vendored from the same release; `python -m oranges.gui` builds it into `work/gui/`, or
+      `work/gui-windows/` with `--target windows`). It starts without Python and runs the pipeline as a child process
+      (`<python> -m oranges make ... --progress json`; pythonw.exe on Windows, so no console window opens). In a
+      checkout it uses `.venv`; in a release, the release's `python/` and `src/` (it looks above itself for either)
+- [x] The steps, one page each: Game (the `.nup` files in Downloads, Desktop, Documents, Games and the home folder,
+      or a file dialog; `oranges check` says whether it is the supported build, or why not), Folder (free space
+      against the ~12.5 GB needed), Options (build jobs from the memory size, deleting the build's files afterwards,
+      Console mode written to `oranges_options.ini`), Build, Play. Its own settings: `setup.ini` in the user folder.
+      `--nup`, `--dir`, `--page`, `--build` start it somewhere; `--shot` saves its picture (for checks)
+- [x] The build with progress: each stage with its state, a bar and the time left (by bytes), the whole build's
+      bar, the log underneath, Cancel (stdin closed; killed after 20 s) and Continue (it resumes). Errors from
+      make's kinds in words (wrong build, no room, out of memory: fewer jobs), the log's path for a report
+- [x] After the build: Play (the program started detached), a shortcut (`~/.local/share/applications/
+      oranges.desktop`; on Windows a Start menu `.lnk`), Open the save folder / the build folder, delete the
+      build's own files (gen/ and the objects, 2.2 GB). A release newer than the one that built the port says to
+      build again (saves and options are in the user folder, untouched)
+- [ ] The release, one per platform, written and not yet run (`python -m oranges.release linux|windows`,
+      `oranges/release.py`): `oranges[.exe]` (the GUI), `release.json`, `src/` (the files git tracks under oranges/,
+      host/, gui/, third_party/, so nothing from work/ can go in, with VERSION and the translator library prebuilt),
+      `python/`, `toolchain/`, `sysroot/` (Linux), `libs/`, `SHA256SUMS` (`release verify <folder>` checks it), and a
+      `.tar.zst` / `.zip`. In a release `oranges.bundled` points the pipeline at those tools (CC, CXX,
+      ORANGES_SYSROOT, ORANGES_PREFIX; on Windows ORANGES_MINGW, ORANGES_MINGW_PREFIX, LONGSHOT_MINGW); `oranges.build`
+      reads a prefix for Linux too now (ORANGES_PREFIX) and links with `--sysroot`, libstdc++ / libgcc static,
+      `$ORIGIN` as the library path, and the prefix's licence texts beside the program
+  - Linux's parts, `python -m oranges.linuxkit` (`~/.local/opt/oranges-linuxkit`): the sysroot (done, 45 s, 94 MB:
+    43 packages of Ubuntu 22.04's frozen release pocket, glibc 2.35 and libstdc++ 12, absolute links made relative,
+    the index's SHA-256 pinned), LLVM 23.1.6's own Linux release pruned to clang, lld and their headers (downloaded,
+    2 GB, digest checked; not unpacked yet), python-build-standalone's CPython 3.14.10 with lz4's wheel, and the
+    libraries built with that clang against the sysroot: SDL3 3.4.20 static (its back ends loaded at run time),
+    FFmpeg 9.1 static with the movie's decoders, Ubuntu's static libopus, a `vulkan.pc` for the player's loader
+  - Windows' parts: oranges.wintools' Python and llvm-mingw (its other targets left out), oranges.mingw's prefix,
+    the GUI and `a64emit.dll` cross-compiled with llvm-mingw
+  - Next: run `python -m oranges.linuxkit` (toolchain, python, libs), then `python -m oranges.release linux`, and
+    build the port from the release in a clean Ubuntu 22.04 container (podman: no compiler, no Python; the `.nup`
+    mounted read-only) and boot it here; the same for Windows under wine (`oranges.exe`, a build, the port)
+- [ ] Checksums signed for each release (SHA256SUMS exists, unsigned); the GUI could run `release verify` at its
+      first start
+- [ ] The libc++ question if libstdc++ 12 (the sysroot's) lacks something eden or host/vk need (C++20: none seen
+      yet, untested)
 - [ ] Where releases are published and how the GUI learns of a new one (none yet). Updating oranges never downloads
       anything of the game.
 - [ ] Smaller: read the RomFS from the `.nup` in place rather than extracting 10 GB (`Nup` streams files; check
