@@ -512,7 +512,25 @@ Why last: none of these blocks the game; take them on when one starts to matter 
 
 Not planned yet. Each needs a look at what the game allows first.
 
-Nothing here at the moment.
+- **DLSS (and FSR 3.1) with motion vectors we make ourselves.** DLSS Super Resolution is temporal: NVIDIA's API needs
+  per-pixel motion vectors, depth and camera jitter, and there is no single-frame mode. Zero motion vectors would smear
+  everything that moves (the camera moves whenever the player walks). The game has none of these (see FSR 3.1 under
+  "Looked at and ruled out"), but Longshot's toolchain makes them for a game that has none either (`gpu/vk/vk_dlss.cpp`,
+  `shaders/dlss_prep.comp`, `dlss_actor.vert`, `temporal_jitter.h` in
+  `~/.local/share/longshot/launcher/toolchains/v3.0.0/usr/share/longshot/`):
+  - the camera's motion: the depth taken back through this frame's and the last frame's view-projection matrices;
+  - characters' own motion: skinned draws drawn again with the last frame's bone poses;
+  - jitter added to the scene passes' projection.
+  - The gain: the game has no anti-aliasing at all, so DLSS (or DLAA) would anti-alias as well as upscale, clearly
+    better than FSR 1 from 1080p to 4K.
+  - What it needs here: the camera matrices and the skinned draws found in the game's uniform buffers, and DLSS run in
+    the tonemap pass before the first UI draw (the UI is drawn into the same RGB10A2 target).
+  - What stays wrong: things that move without a skeleton (swaying trees, water, particles) get the motion of what is
+    behind them.
+  - Other costs: NVIDIA RTX only, and NVIDIA's closed NGX library loaded at runtime (check it against GPL-3.0; Longshot
+    ships it). The same motion vectors would also allow FSR 3.1, which runs on every GPU.
+  - First step: read Longshot's `vk_dlss.cpp` and estimate the port. NVIDIA Image Scaling (single-frame, no motion
+    vectors) is not worth adding: about what FSR 1 gives now.
 
 ## Looked at and ruled out
 
