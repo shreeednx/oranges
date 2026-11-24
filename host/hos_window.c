@@ -386,6 +386,7 @@ void hos_input(HosInput *out) {
 #ifdef HOS_HAVE_SDL3
 typedef struct { void (*fn)(void); } GuestMain;
 static void *guest_thread(void *p) {
+    hos_thread_start();
     ((GuestMain *)p)->fn();
     hos_log("the game's main thread ended");
     hos_exit(0);

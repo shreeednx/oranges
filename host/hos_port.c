@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <direct.h>
 #include <mmsystem.h>
+#include <winioctl.h>
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2   /* (Windows 10 1803 on) */
 #endif
@@ -33,8 +34,53 @@ void hos_port_init(void) {
     SetConsoleOutputCP(CP_UTF8);
 }
 
+static char log_file[1024];   /* the log's file, when it went to one */
+
+static int std_handle_ok(DWORD which) {
+    const HANDLE h = GetStdHandle(which);
+    return h && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN;
+}
+
+const char *hos_log_open(const char *dir) {
+    if (std_handle_ok(STD_ERROR_HANDLE)) return NULL;   /* (a redirect, a pipe, a terminal: it goes there already) */
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {   /* (a command prompt's: the GUI subsystem isn't given it) */
+        freopen("CONOUT$", "w", stdout);
+        return freopen("CONOUT$", "w", stderr), NULL;
+    }
+    char path[sizeof log_file], old[sizeof log_file];
+    const char sep = strchr(dir, '/') && !strchr(dir, '\\') ? '/' : '\\';   /* (the folder's own) */
+    snprintf(path, sizeof path, "%s%coranges.log", dir, sep);
+    snprintf(old, sizeof old, "%s%coranges.old.log", dir, sep);
+    hos_mkdir(dir);   /* (its parent, %APPDATA% or ORANGES_USER's, is there) */
+    hos_rename(path, old);
+    if (!freopen(path, "w", stderr)) return NULL;
+    snprintf(log_file, sizeof log_file, "%s", path);
+    return log_file;
+}
+
+void hos_port_stopped(const char *why) {
+    static int shown;
+    if (!log_file[0]) return;
+    if (__atomic_exchange_n(&shown, 1, __ATOMIC_ACQ_REL)) Sleep(INFINITE);   /* (one box: the first error's) */
+    char text[2048];
+    wchar_t w[2048];
+    snprintf(text, sizeof text, "oranges stopped: %s\n\nThe log is in %s", why, log_file);
+    if (!MultiByteToWideChar(CP_UTF8, 0, text, -1, w, sizeof w / sizeof w[0])) return;
+    MessageBoxW(NULL, w, L"oranges", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+}
+
+void hos_thread_start(void) {
+    ULONG keep = 64 << 10;   /* (the handler logs the registers and a backtrace through stdio) */
+    SetThreadStackGuarantee(&keep);
+}
+
 /* nanosleep is Sleep() in whole milliseconds on winpthreads: a high-resolution waitable timer instead, one per
-   thread (kept for the thread's life) */
+   thread, closed when the thread ends (a key's destructor) */
+static pthread_key_t timer_key;
+static pthread_once_t timer_once = PTHREAD_ONCE_INIT;
+static void timer_close(void *h) { CloseHandle(h); }
+static void timer_key_make(void) { pthread_key_create(&timer_key, timer_close); }
+
 void hos_sleep_ns(int64_t ns) {
     static __thread HANDLE timer;
     static __thread int tried;
@@ -43,6 +89,8 @@ void hos_sleep_ns(int64_t ns) {
         tried = 1;
         timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+        pthread_once(&timer_once, timer_key_make);
+        if (timer) pthread_setspecific(timer_key, timer);
     }
     LARGE_INTEGER due;
     due.QuadPart = -((ns + 99) / 100);   /* (relative, in 100 ns) */
@@ -132,7 +180,22 @@ int64_t hos_pwrite(int fd, const void *buf, size_t n, int64_t offset) {
     return put;
 }
 
-int hos_ftruncate(int fd, int64_t size) { return _chsize_s(fd, size) ? -1 : 0; }
+/* (not _chsize_s: it extends a file by writing zeros, 4 GB of them for HOS_CONTROL's MEM) */
+int hos_ftruncate(int fd, int64_t size) {
+    const HANDLE h = (HANDLE)_get_osfhandle(fd);
+    FILE_END_OF_FILE_INFO eof;
+    eof.EndOfFile.QuadPart = size;
+    if (h == INVALID_HANDLE_VALUE) { errno = EBADF; return -1; }
+    if (SetFileInformationByHandle(h, FileEndOfFileInfo, &eof, sizeof eof)) return 0;
+    errno = GetLastError() == ERROR_DISK_FULL ? ENOSPC : GetLastError() == ERROR_ACCESS_DENIED ? EACCES : EIO;
+    return -1;
+}
+
+int hos_file_sparse(int fd) {
+    const HANDLE h = (HANDLE)_get_osfhandle(fd);
+    DWORD got;
+    return h != INVALID_HANDLE_VALUE && DeviceIoControl(h, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &got, NULL) ? 0 : -1;
+}
 
 int hos_rename(const char *from, const char *to) {
     if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) return 0;
@@ -172,6 +235,10 @@ void *hos_control_open(const char *path) {
 #else
 
 void hos_port_init(void) {}
+const char *hos_log_open(const char *dir) { (void)dir; return NULL; }
+void hos_port_stopped(const char *why) { (void)why; }
+void hos_thread_start(void) {}
+int hos_file_sparse(int fd) { (void)fd; return 0; }
 
 void hos_sleep_ns(int64_t ns) {
     if (ns <= 0) { sched_yield(); return; }

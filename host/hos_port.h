@@ -34,6 +34,15 @@ extern "C" {
 
 void hos_port_init(void);   /* at start: on Windows the 1 ms timer resolution and a UTF-8 console */
 
+/* the log (stderr). The Windows program is a GUI one, with no console window of its own: its log goes where stderr
+   was sent (a redirect, a pipe, a terminal: MSYS2, wine), else to the console it was started from, else to
+   <dir>/oranges.log (the run before's kept as oranges.old.log). Returns that file's path, or NULL: the log isn't in
+   a file of ours (always on Linux) */
+const char *hos_log_open(const char *dir);
+/* the program stops on an error (why: one line): with the log in a file, a message box says so and where the log is
+   (a player who started it from the desktop sees nothing else) */
+void hos_port_stopped(const char *why);
+
 /* time */
 void hos_sleep_ns(int64_t ns);   /* sleep at least ns, interrupted or not */
 void hos_cond_init_monotonic(pthread_cond_t *cv);
@@ -45,6 +54,9 @@ time_t hos_timegm(struct tm *t);
 
 /* threads */
 int hos_thread_id(void);   /* the host thread's id, as the system's tools show it */
+/* at the start of a host thread that runs lifted code: on Windows, stack kept back for the crash handler after a
+   host stack overflow (deep guest call chains run on the host's stack); Linux has its signal stack */
+void hos_thread_start(void);
 
 /* the guest window's pages */
 void *hos_vm_reserve(void *at, uint64_t size);              /* exactly at `at`, inaccessible; NULL if it can't */
@@ -58,7 +70,8 @@ void hos_dirname(char *path);                               /* in place: "a/b/c"
 int hos_mkdir(const char *path);                            /* mkdir(path, 0755) */
 int64_t hos_pread(int fd, void *buf, size_t n, int64_t offset);
 int64_t hos_pwrite(int fd, const void *buf, size_t n, int64_t offset);
-int hos_ftruncate(int fd, int64_t size);
+int hos_ftruncate(int fd, int64_t size);                    /* (extending writes nothing: the end of file moves) */
+int hos_file_sparse(int fd);   /* ranges never written take no disk space (NTFS needs to be told; Linux's are) */
 int hos_rename(const char *from, const char *to);           /* rename(), replacing a file at `to` on Windows too */
 
 /* HOS_CONTROL's channel: a FIFO at path (made if missing), or on Windows a named pipe (\\.\pipe\<path's last

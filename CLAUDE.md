@@ -159,7 +159,9 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `oranges/mingw.py`'s prefix (MSYS2 CLANG64's SDL3, Vulkan loader, opus; FFmpeg built from source with only the
   movie's decoders), and the build copies the DLLs and their licence texts beside the exe. It runs under wine as on
   Linux (renderer, window, sound, movie): `HOS_CONTROL=name` is `\\.\pipe\name`, written with
-  `wine cmd /c "type Z:\path\cmds.txt > \\.\pipe\name"`.
+  `wine cmd /c "type Z:\path\cmds.txt > \\.\pipe\name"`. The exe is a GUI subsystem one: its log goes to stderr when that leads
+  somewhere (a terminal, wine's), else to the command prompt's console, else to `<user folder>\oranges.log`, and
+  then a fatal error or crash also shows a message box (`hos_log_open`, `hos_port_stopped`).
 - `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.
   `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
   stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,

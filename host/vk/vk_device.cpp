@@ -432,8 +432,7 @@ void end_and_wait(VkCommandBuffer cb) {
     }
     if (r != VK_SUCCESS) hos_log("vk: vkQueueSubmit: %d", (int)r);
     else if (w != VK_SUCCESS) {
-        hos_log("vk: a submit did not finish (%d): the device is lost or hung", (int)w);
-        abort();
+        hos_fatal(nullptr, "vk: a submit did not finish (%d): the GPU device is lost or hung", (int)w);
     }
     vkResetFences(g.dev, 1, &fence);
     vkFreeCommandBuffers(g.dev, g.pool, 1, &cb);

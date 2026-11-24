@@ -160,6 +160,7 @@ int64_t hos_mem_dump(const char *path) {
     pthread_mutex_unlock(&lock);
     const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd < 0) return free(copy), -1;
+    hos_file_sparse(fd);
     static const uint8_t zero[PAGE];
     int64_t written = 0;
     unsigned char *core = NULL;

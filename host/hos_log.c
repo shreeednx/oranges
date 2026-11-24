@@ -97,17 +97,18 @@ void hos_backtrace(Ctx *c) {
 }
 
 void hos_fatal(Ctx *c, const char *fmt, ...) {
+    char why[1024];
     va_list ap;
     va_start(ap, fmt);
-    fputs("[hos] fatal: ", stderr);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
+    vsnprintf(why, sizeof why, fmt, ap);
     va_end(ap);
+    fprintf(stderr, "[hos] fatal: %s\n", why);
     if (c) {
         hos_dump(c);
         hos_backtrace(c);
     }
     fflush(stderr);
+    hos_port_stopped(why);
     hos_exit(70);
 }
 
@@ -115,13 +116,14 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
    the context the thread runs (hos_current), as last stored: lifted code keeps them in the context across calls. */
 __thread Ctx *hos_current;
 
-static void crash_where(const char *what, uintptr_t a) {
+static void crash_where(const char *what, uintptr_t a, char *why, size_t cap) {
     const uintptr_t base = (uintptr_t)A64_PTR(0);
     if (a >= base && a < base + HOS_WINDOW)
-        hos_log("crash: %s at guest address %#llx (an unmapped page of the guest window)", what,
-                (unsigned long long)(a - base));
+        snprintf(why, cap, "%s at guest address %#llx (an unmapped page of the guest window)", what,
+                 (unsigned long long)(a - base));
     else
-        hos_log("crash: %s at host address %p", what, (void *)a);
+        snprintf(why, cap, "%s at host address %p", what, (void *)a);
+    hos_log("crash: %s", why);
     if (hos_current) {
         hos_dump(hos_current);
         hos_backtrace(hos_current);
@@ -137,12 +139,16 @@ static void crash_where(const char *what, uintptr_t a) {
    C++ code raise and handle themselves) */
 static LONG WINAPI on_exception(EXCEPTION_POINTERS *e) {
     const EXCEPTION_RECORD *r = e->ExceptionRecord;
-    char what[64];
-    snprintf(what, sizeof what, "exception %#lx", (unsigned long)r->ExceptionCode);
+    char what[96], why[256];
+    if (r->ExceptionCode == EXCEPTION_STACK_OVERFLOW)   /* (hos_thread_start kept stack back for this) */
+        snprintf(what, sizeof what, "a host stack overflow (a guest call chain too deep for the thread's stack)");
+    else
+        snprintf(what, sizeof what, "exception %#lx", (unsigned long)r->ExceptionCode);
     const int access = r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION || r->ExceptionCode == EXCEPTION_IN_PAGE_ERROR;
     crash_where(what, access && r->NumberParameters >= 2 ? (uintptr_t)r->ExceptionInformation[1]
-                                                         : (uintptr_t)r->ExceptionAddress);
+                                                         : (uintptr_t)r->ExceptionAddress, why, sizeof why);
     if (access) hos_log("crash: (the instruction at host address %p)", r->ExceptionAddress);
+    hos_port_stopped(why);
     _exit(71);
 }
 
@@ -154,9 +160,9 @@ void hos_crash_init(void) { SetUnhandledExceptionFilter(on_exception); }
 
 static void on_signal(int sig, siginfo_t *si, void *uc) {
     (void)uc;
-    char what[32];
+    char what[32], why[256];
     snprintf(what, sizeof what, "signal %d", sig);
-    crash_where(what, (uintptr_t)si->si_addr);
+    crash_where(what, (uintptr_t)si->si_addr, why, sizeof why);
     _exit(71);
 }
 

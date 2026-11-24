@@ -168,6 +168,7 @@ static int mutex_take_or_queue(KThread *t, uint64_t addr) {
 static void *thread_main(void *p) {
     KThread *t = p;
     self = t;
+    hos_thread_start();
     t->tid = hos_thread_id();
     hos_current = &t->ctx;
     Ctx *c = &t->ctx;

@@ -137,7 +137,7 @@ def _optional_library(name: str, _target: str) -> tuple[list[str], list[str]]:
                               env=env).stdout
     except (OSError, subprocess.CalledProcessError):
         return [], []
-    # (SDL3's -mwindows: the GUI subsystem, which has no console for the log; the console one for now)
+    # (SDL3's -mwindows: link_flags chooses the subsystem, with or without SDL3)
     return cflags.split(), [f for f in libs.split() if f != "-mwindows"]
 
 
@@ -240,9 +240,10 @@ def link_flags() -> list[str]:
     if not windows():
         return ["-lm", "-lpthread"]
     # (winpthreads and libc++ / libunwind linked in, so they need no DLL; a 64 MB stack reserve for the process's
-    # main thread, which runs the game without a window; the console subsystem: the log goes to it)
+    # main thread, which runs the game without a window; the GUI subsystem: no console window opens with it, and the
+    # log goes to the console it was started from, or a file (hos_log_open))
     return ["-Wl,-Bstatic", "-lpthread", "-Wl,-Bdynamic", "-static-libstdc++", "-static-libgcc",
-            "-lwinmm", "-Wl,--stack,0x4000000"]
+            "-lwinmm", "-Wl,--stack,0x4000000", "-mwindows"]
 
 
 def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_name: str | None = None) -> Path:

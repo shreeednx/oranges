@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 extern "C" void hos_log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+extern "C" [[noreturn]] void hos_fatal(void* c, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 
 namespace ovk {
 /// at most `limit` messages of a kind

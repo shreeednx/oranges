@@ -630,13 +630,24 @@ The differences live in `host/hos_port.h` / `hos_port.c`:
       NVIDIA's and AMD's Windows drivers. The build on Windows (MSYS2 CLANG64: `clang`, `pkg-config`, `windres`; the
       target defaults to windows there) is written but untried
 - [ ] The Python side on Windows: Python 3.14, the kit's `build_emit.py` makes `a64emit.dll`; `oranges lift` there
-- [ ] Shipping: the DLLs and licences are beside the exe now. Still the console subsystem (SDL3's `-mwindows` is
-      dropped, so the log goes to a console window): a GUI subsystem build with the log in a file, for players.
-      The MSYS2 database's PGP signature is not checked (HTTPS only)
+- [x] Shipping, for players: a GUI subsystem build (no console window opens with it). Its log (`hos_log_open`) goes
+      where stderr was sent (a redirect, a pipe, a terminal: MSYS2's, wine's), else to the command prompt it was
+      started from (`AttachConsole`), else to `<user folder>\oranges.log` (`%APPDATA%\oranges`; the run before's kept
+      as `oranges.old.log`). With the log in that file, a fatal error or a crash shows a message box with the reason
+      and the log's path (`hos_port_stopped`): a player who started it from the desktop would see it vanish otherwise.
+      Checked under wine (`wine start /wait /unix` starts it without std handles): the file, its rotation, the box
+      (its text in `WINEDEBUG=+msgbox`), the window and a headless run as before. A lost or hung GPU device is a fatal
+      error now too (it was `abort()`).
+- [ ] The MSYS2 database's PGP signature is not checked (HTTPS only)
 - [ ] Gamepads and the keyboard by hand in the window (only `HOS_CONTROL` drove the wine runs), and SDL3's gamepad
       backends on Windows (XInput, RawInput, Steam Input's)
-- [ ] Small things: `HOS_CONTROL MEM`'s sparse file isn't sparse on NTFS (4 GB written); a guest stack overflow on
-      Windows has no guard to log it from; the waitable timer of each thread that sleeps is never closed
+- [x] Small things: `HOS_CONTROL MEM`'s file is sparse on NTFS (`FSCTL_SET_SPARSE`; `hos_ftruncate` moves the end
+      of file with `SetFileInformationByHandle` now, where `_chsize_s` wrote 4 GB of zeros: under wine 954 MB on disk
+      for the 4 GB file); each thread's sleep timer is closed when it ends (a pthread key's destructor)
+- [ ] A host stack overflow (a guest call chain too deep for its 8 MB host stack) on Windows itself: the threads that
+      run lifted code keep 64 KB back for the handler (`hos_thread_start`, `SetThreadStackGuarantee`), which logs
+      it by name. Unverifiable under wine: it ends the thread silently before any handler runs
+      (`err:virtual:virtual_setup_exception stack overflow`), guarantee or not (a test program showed it)
 
 ## 2. A downloadable oranges with a graphical setup (build the port without a terminal)
 

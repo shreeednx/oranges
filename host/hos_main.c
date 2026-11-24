@@ -139,8 +139,13 @@ int main(int argc, char **argv) {
             snprintf(hos_old_user_dir, sizeof hos_old_user_dir, "%s/user", work);
         }
     }
+    {
+        const char *log = hos_log_open(hos_user_dir);
+        if (log) hos_log("the log is %s", log);
+    }
     hos_fs_init();
     hos_crash_init();
+    hos_thread_start();   /* (the game's main thread when there is no window) */
     hos_kernel_init();
     hos_sampler_start();
     hos_mem_init();
