@@ -682,9 +682,9 @@ once when it does). It moves up as soon as one of those logs or a wrong picture 
 Not planned yet. Each needs a look at what the game allows first.
 
 - **A shader cache on disk, if weaker hardware stutters.** Each NVN program is translated (eden) and made into Vulkan
-  shader objects the first time a draw uses it, on the game's submitting thread under `big_lock`: ~1.5-6 ms each,
-  679 ms for the 201 programs by the island on this machine (an RTX 5080, a fast CPU), where it doesn't show. On a
-  slower CPU, a frame that meets several new programs (a new area, a menu) would miss its 33 ms.
+  shader objects the first time a draw uses it, ~1.5-6 ms each, on maker threads ahead of the draw (several at
+  once; the draw waits only if its program isn't done yet). On this machine (an RTX 5080, a fast CPU) it doesn't
+  show. On a slower CPU with fewer cores, a frame that meets many new programs (a new area, a menu) could still wait.
   - The cache: each program's translated SPIR-V written to `$XDG_CACHE_HOME/oranges/` (the user folders' rules),
     keyed by the program's hash and everything the translation asked about (the bound textures' types,
     `vk_replay.cpp:197`; the previous stage; c1), and read back instead of translating; optionally loaded and made
