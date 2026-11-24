@@ -27,7 +27,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
 .venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
 .venv/bin/oranges build                           # compile work/gen + rt + host/ (+ vk, eden), link work/build/oranges
-.venv/bin/oranges build --target windows          # work/build-windows/oranges.exe with llvm-mingw (/opt/llvm-mingw)
+.venv/bin/python -m oranges.mingw                 # the Windows build's libraries: ~/.local/opt/msys2-clang64 (~40 s)
+.venv/bin/oranges build --target windows          # work/build-windows/oranges.exe (+ DLLs, licenses/) with llvm-mingw
 WINEDEBUG=-all ORANGES_USER=Z:/abs/dir HOS_NO_WINDOW=1 wine work/build-windows/oranges.exe   # it, under wine
 ./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
 HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
@@ -150,7 +151,10 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   these rather than the POSIX ones in host code: winpthreads can't wait on CLOCK_MONOTONIC and its `nanosleep` sleeps
   whole milliseconds; MinGW's `open` needs `O_BINARY`. `host/win/`: the Windows manifest (UTF-8 code page) and `.rc`.
   The Windows build (`oranges/build.py`'s docstring) links winpthreads and libc++ statically; its libraries come from
-  `x86_64-w64-mingw32-pkg-config` or `ORANGES_MINGW_PREFIX`.
+  `oranges/mingw.py`'s prefix (MSYS2 CLANG64's SDL3, Vulkan loader, opus; FFmpeg built from source with only the
+  movie's decoders), and the build copies the DLLs and their licence texts beside the exe. It runs under wine as on
+  Linux (renderer, window, sound, movie): `HOS_CONTROL=name` is `\\.\pipe\name`, written with
+  `wine cmd /c "type Z:\path\cmds.txt > \\.\pipe\name"`.
 - `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.
   `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
   stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,

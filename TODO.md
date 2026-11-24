@@ -589,9 +589,22 @@ is. clang stays the compiler, since the chunks' flags (`-mllvm -rotation-max-hea
 are clang's: llvm-mingw (`x86_64-w64-mingw32-clang`, UCRT) cross from Linux, or MSYS2's CLANG64 on Windows.
 
 Where it is (2026-11-24): `oranges build --target windows` cross-compiles `work/build-windows/oranges.exe` with
-llvm-mingw (`/opt/llvm-mingw`, LLVM 23.1), and it boots the day-1 save headless under wine 11.22 at 30 fps for a
-minute, as the Linux build does (the null back end: no libraries yet). It imports only system DLLs (UCRT, kernel32,
-winmm): winpthreads and libc++ are linked in. The differences live in `host/hos_port.h` / `hos_port.c`:
+llvm-mingw (`/opt/llvm-mingw`, LLVM 23.1), everything included: eden, Dear ImGui and the Vulkan back end compiled
+under MinGW's libc++ without a change. Under wine 11.22 (its Vulkan reaching the host's NVIDIA driver) it does what
+the Linux build does, at 29.6-30 fps: the day-1 save to the title and onto the island (the manager's announcement),
+drawn right, headless and in a window (Vulkan swapchain, sound through WASAPI, the F1 menu with its font, `HOS_CONTROL`
+through the named pipe from wine's `cmd`), and a new game to the opening movie (all 1960 pictures decoded by FFmpeg,
+the end of stream as on Linux). winpthreads and libc++ are linked in; the build copies the DLLs it needs beside the
+exe (SDL3, libopus, libiconv, avcodec, avutil; not `vulkan-1.dll`: the driver's, or wine's, is the one to use) with
+their licence texts in `licenses/` (oranges' own GPL too).
+
+The libraries: `python -m oranges.mingw` makes `~/.local/opt/msys2-clang64` (the build finds it there, or by
+`ORANGES_MINGW_PREFIX`): MSYS2's CLANG64 packages (SDL3, the Vulkan loader and headers, opus; clang, libc++ and UCRT
+like llvm-mingw), checked against the repository database's SHA-256s, and FFmpeg 9.1 built from its release
+(signature checked, SHA-256 pinned) with only libavcodec / libavutil and the VP8, VP9, H.264 decoders (MSYS2's
+FFmpeg pulls in 124 packages), with its assembly (nasm built from source for it). ~37 s from nothing.
+
+The differences live in `host/hos_port.h` / `hos_port.c`:
 
 - the guest window: `VirtualAlloc` reserve at the fixed address, commit / decommit per mapping (Linux: `mmap`,
   `mprotect`, `madvise`); the image is read into its segments (no `mmap` of the file);
@@ -611,16 +624,17 @@ winmm): winpthreads and libc++ are linked in. The differences live in `host/hos_
   paths. The options file is `%APPDATA%\oranges\oranges_options.ini`, beside the saves.
 - LLP64: the host C has no bare `long` used as 64 bits and no `-Wformat` warnings under MinGW.
 
-- [ ] The libraries for MinGW (the user installs them): SDL3, the Vulkan loader, libopus, FFmpeg, found through
-      `x86_64-w64-mingw32-pkg-config` or `ORANGES_MINGW_PREFIX`. Then the C++ (eden, Dear ImGui, host/vk) under
-      MinGW's libc++, and a run under wine with the window, sound and the renderer (winevulkan)
+- [x] The libraries for MinGW, the C++ under MinGW, and runs under wine with the window, sound, renderer and movie
 - [ ] Run it on Windows itself: boot the day-1 save to the island with the window, sound, a gamepad and the F1 menu,
       with the save in `%APPDATA%\oranges\saves\01006F8002326000\device`. `VK_EXT_external_memory_host` is on
       NVIDIA's and AMD's Windows drivers. The build on Windows (MSYS2 CLANG64: `clang`, `pkg-config`, `windres`; the
       target defaults to windows there) is written but untried
 - [ ] The Python side on Windows: Python 3.14, the kit's `build_emit.py` makes `a64emit.dll`; `oranges lift` there
-- [ ] Shipping: the `.exe` and the DLLs it needs beside it, their licence texts with them; the console subsystem
-      today (the log goes to a console window): a GUI subsystem build with the log in a file, for players
+- [ ] Shipping: the DLLs and licences are beside the exe now. Still the console subsystem (SDL3's `-mwindows` is
+      dropped, so the log goes to a console window): a GUI subsystem build with the log in a file, for players.
+      The MSYS2 database's PGP signature is not checked (HTTPS only)
+- [ ] Gamepads and the keyboard by hand in the window (only `HOS_CONTROL` drove the wine runs), and SDL3's gamepad
+      backends on Windows (XInput, RawInput, Steam Input's)
 - [ ] Small things: `HOS_CONTROL MEM`'s sparse file isn't sparse on NTFS (4 GB written); a guest stack overflow on
       Windows has no guard to log it from; the waitable timer of each thread that sleeps is never closed
 

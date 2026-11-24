@@ -12,10 +12,11 @@ are FP-exact (-ffp-contract=off) and LoopRotate is capped, which a64-kit measure
 
 The Windows build is cross-compiled with llvm-mingw (MinGW-w64 on clang, UCRT): x86_64-w64-mingw32-clang from PATH,
 else from ORANGES_MINGW (default /opt/llvm-mingw). It goes to <work>/build-windows/oranges.exe, with its own objects.
-Its libraries (SDL3, the Vulkan loader, libopus, FFmpeg) come from a MinGW prefix: ORANGES_MINGW_PREFIX (an unpacked
-MSYS2 CLANG64 tree, say), whose lib/pkgconfig is searched with pkg-config's --define-prefix, or
-x86_64-w64-mingw32-pkg-config when that is on PATH. With neither, it builds without them (headless, the null back
-end). winpthreads and libc++ are linked in statically, so the program needs only those libraries' DLLs beside it.
+Its libraries (SDL3, the Vulkan loader, libopus, FFmpeg) come from a MinGW prefix: ORANGES_MINGW_PREFIX, else
+~/.local/opt/msys2-clang64 when it exists (`python -m oranges.mingw` makes it), whose lib/pkgconfig is searched with
+pkg-config's --define-prefix; else x86_64-w64-mingw32-pkg-config when that is on PATH. Without them it builds
+headless (the null back end). winpthreads and libc++ are linked in statically, so the program needs only those
+libraries' DLLs beside it.
 Run on Windows itself (MSYS2's CLANG64 shell), the target is windows and its own clang, pkg-config and windres are used.
 """
 
@@ -39,6 +40,7 @@ RT = Path(kit.KIT) / "rt"
 
 TARGETS = ("linux", "windows")
 MINGW_TRIPLE = "x86_64-w64-mingw32"
+MINGW_PREFIX = Path.home() / ".local" / "opt" / "msys2-clang64"   # (python -m oranges.mingw's default)
 
 
 def target() -> str:
@@ -91,14 +93,14 @@ def _pkg_config() -> tuple[list[str], dict] | None:
     """the pkg-config command line and environment for the target's libraries, or None: none to be had"""
     if not _cross():   # (on Windows: MSYS2's own pkg-config knows its CLANG64 libraries)
         return ["pkg-config"], dict(os.environ)
+    prefix = os.environ.get("ORANGES_MINGW_PREFIX") or (str(MINGW_PREFIX) if MINGW_PREFIX.is_dir() else None)
+    if prefix:
+        env = dict(os.environ, PKG_CONFIG_LIBDIR=str(Path(prefix) / "lib" / "pkgconfig"))
+        env.pop("PKG_CONFIG_PATH", None)
+        return ["pkg-config", "--define-prefix"], env
     if shutil.which(MINGW_TRIPLE + "-pkg-config"):
         return [MINGW_TRIPLE + "-pkg-config"], dict(os.environ)
-    prefix = os.environ.get("ORANGES_MINGW_PREFIX")
-    if not prefix:
-        return None
-    env = dict(os.environ, PKG_CONFIG_LIBDIR=str(Path(prefix) / "lib" / "pkgconfig"))
-    env.pop("PKG_CONFIG_PATH", None)
-    return ["pkg-config", "--define-prefix"], env
+    return None
 
 
 def vulkan() -> bool:
@@ -135,7 +137,8 @@ def _optional_library(name: str, _target: str) -> tuple[list[str], list[str]]:
                               env=env).stdout
     except (OSError, subprocess.CalledProcessError):
         return [], []
-    return cflags.split(), libs.split()
+    # (SDL3's -mwindows: the GUI subsystem, which has no console for the log; the console one for now)
+    return cflags.split(), [f for f in libs.split() if f != "-mwindows"]
 
 
 OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS", "sdl3": "HOS_HAVE_SDL3",    # (pkg-config name: the macro host/ tests)
@@ -302,4 +305,57 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_na
     if r.returncode:
         raise RuntimeError("link failed:\n%s" % r.stderr[-6000:])
     say("linked %.0f MB in %.0f s" % (exe.stat().st_size / 1e6, time.monotonic() - t1))
+    if windows():
+        copied = bundle_dlls(exe)
+        if copied:
+            say("beside it: %s" % " ".join(copied))
     return exe
+
+
+SYSTEM_DLLS = ("vulkan-1.dll",)   # (the GPU driver installs it; wine has its own, which reaches the host's driver)
+# (the licence folder, under <prefix>/share/licenses, of each DLL the program is shipped with)
+DLL_LICENSES = {"sdl3.dll": "SDL3", "libopus-0.dll": "opus", "libiconv-2.dll": "libiconv",
+                "libcharset-1.dll": "libiconv", "avcodec": "ffmpeg", "avutil": "ffmpeg"}
+
+
+def _imports(path: Path) -> list[str]:
+    """the DLLs a PE file imports"""
+    r = subprocess.run([shutil.which("llvm-objdump") or _tool("llvm-objdump"), "-p", str(path)], capture_output=True,
+                       text=True)
+    return [line.split(":", 1)[1].strip() for line in r.stdout.splitlines() if "DLL Name:" in line]
+
+
+def bundle_dlls(exe: Path) -> list[str]:
+    """copies the DLLs the program needs from the libraries' prefix(es) beside it, theirs too; the names copied"""
+    dirs = []
+    for flag in host_libraries()[1]:
+        if flag.startswith("-L") and (Path(flag[2:]).parent / "bin").is_dir():
+            d = (Path(flag[2:]).parent / "bin").resolve()
+            if d not in dirs:
+                dirs.append(d)
+    found = {f.name.lower(): f for d in dirs for f in d.glob("*.dll")}
+    copied, todo, seen = [], [exe], set()
+    while todo:
+        for name in _imports(todo.pop()):
+            key = name.lower()
+            if key in seen or key in SYSTEM_DLLS or key not in found:
+                continue
+            seen.add(key)
+            src, dst = found[key], exe.parent / found[key].name
+            if not dst.exists() or dst.stat().st_mtime_ns != src.stat().st_mtime_ns:
+                shutil.copy2(src, dst)
+                copied.append(src.name)
+            todo.append(src)
+    # the licence texts: oranges' own, and each shipped library's from its prefix (licenses/<package>/)
+    out = exe.parent / "licenses"
+    out.mkdir(exist_ok=True)
+    shutil.copy2(ROOT / "LICENSE", out / "oranges.txt")
+    for key in seen:
+        name = DLL_LICENSES.get(key) or DLL_LICENSES.get(key.split("-")[0])
+        lic = next((d.parent / "share" / "licenses" / name for d in dirs
+                    if name and (d.parent / "share" / "licenses" / name).is_dir()), None)
+        if lic is None:
+            print("warning: no licence text found for %s" % key)
+        elif not (out / name).exists():
+            shutil.copytree(lic, out / name)
+    return copied
