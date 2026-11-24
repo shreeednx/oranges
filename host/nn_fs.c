@@ -1,6 +1,6 @@
 /* nn::fs as HLE: mounts map to host folders (after Longshot's host/nn_fs.c, on POSIX calls).
      MountRom(name)            hos_romfs_dir: the game's RomFS (`oranges extract <nup> work --only romfs`), read-only
-     MountDeviceSaveData(name) <hos_user_dir>/save/device
+     MountDeviceSaveData(name) <hos_user_dir>/saves/<program id>/device (hos_fs_init: the folder, moving an old save)
      MountAddOnContent         no add-on content: "target not found"
    A path is "<mount>:/<path>". FileHandle and DirectoryHandle (one pointer each, passed in a register) are indexes
    into the tables here, plus one. Reads and writes are positional (pread/pwrite), so threads may share a file. Results
@@ -31,7 +31,8 @@
 #define R_READ_ONLY FS_RESULT(6371)
 #define R_TOO_MANY_HANDLES FS_RESULT(6705)
 
-char hos_romfs_dir[1024], hos_user_dir[1024];
+char hos_romfs_dir[1024], hos_user_dir[1024], hos_old_user_dir[1024];
+static char save_dir[1024];   /* the device save's host folder */
 
 #define PATH_CAP 2048
 #define MAX_MOUNTS 32
@@ -52,7 +53,7 @@ static int mkdirs(const char *path) {
     for (char *s = p + 1; *s; s++)
         if (*s == '/') {
             *s = 0;
-            mkdir(p, 0755);
+            if (mkdir(p, 0755) && errno != EEXIST) return -1;
             *s = '/';
         }
     return mkdir(p, 0755) == 0 || errno == EEXIST ? 0 : -1;
@@ -127,6 +128,82 @@ static int file_fd(uint64_t h, int *writable) {
     return fd > 0 ? fd : -1;
 }
 
+/* ---- the save folder */
+
+/* whether dir holds anything (a missing folder holds nothing) */
+static int has_entries(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *e;
+    int any = 0;
+    while (!any && (e = readdir(d))) any = strcmp(e->d_name, ".") && strcmp(e->d_name, "..");
+    closedir(d);
+    return any;
+}
+
+/* a copy of the file or folder tree from into to (which must not exist): 0, or -1 with errno */
+static int copy_tree(const char *from, const char *to) {
+    struct stat st;
+    if (lstat(from, &st)) return -1;
+    if (S_ISDIR(st.st_mode)) {
+        if (mkdir(to, 0755)) return -1;
+        DIR *d = opendir(from);
+        if (!d) return -1;
+        struct dirent *e;
+        int r = 0;
+        while (!r && (e = readdir(d))) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            char a[PATH_CAP], b[PATH_CAP];
+            snprintf(a, sizeof a, "%s/%s", from, e->d_name);
+            snprintf(b, sizeof b, "%s/%s", to, e->d_name);
+            r = copy_tree(a, b);
+        }
+        closedir(d);
+        return r;
+    }
+    if (!S_ISREG(st.st_mode)) return 0;   /* (a save holds files and folders only) */
+    const int in = open(from, O_RDONLY), out = in < 0 ? -1 : open(to, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    int r = in < 0 || out < 0 ? -1 : 0;
+    static char buf[1 << 16];
+    for (ssize_t n; !r && (n = read(in, buf, sizeof buf)) != 0;)
+        if (n < 0 || write(out, buf, (size_t)n) != n) r = -1;
+    if (!r && fsync(out)) r = -1;
+    if (in >= 0) close(in);
+    if (out >= 0 && close(out)) r = -1;
+    return r;
+}
+
+static int remove_tree(const char *path, int keep_top);
+
+/* At boot: the device save's folder, <hos_user_dir>/saves/<program id>/device. When it holds nothing and the old
+   default (<work>/user/save/device, before saves moved to the data folder; hos_old_user_dir is empty when
+   ORANGES_USER chose the folder) holds a save, that save is copied over once: into device.part first, renamed into
+   place when complete, so a copy cut short is never taken for a save. The old one is left where it is. A copy that
+   fails stops the program. */
+void hos_fs_init(void) {
+    snprintf(save_dir, sizeof save_dir, "%s/saves/%016llX/device", hos_user_dir, (unsigned long long)hos_program_id);
+    char old[PATH_CAP];
+    snprintf(old, sizeof old, "%s/save/device", hos_old_user_dir);
+    if (hos_old_user_dir[0] && !has_entries(save_dir) && has_entries(old)) {
+        char part[PATH_CAP];
+        snprintf(part, sizeof part, "%s.part", save_dir);
+        remove_tree(part, 0);   /* (left by a copy cut short) */
+        char parent[PATH_CAP];
+        snprintf(parent, sizeof parent, "%s", save_dir);
+        *strrchr(parent, '/') = 0;
+        if (mkdirs(parent) || copy_tree(old, part) || (rmdir(save_dir) && errno != ENOENT) || rename(part, save_dir)) {
+            const int e = errno;
+            remove_tree(part, 0);
+            /* (not a new game in its place: once that is saved, the old save would never be moved over) */
+            hos_fatal(NULL, "the save in %s could not be copied to %s (%s); set ORANGES_USER to choose another folder",
+                      old, save_dir, strerror(e));
+        } else {
+            hos_log("fs: the save in %s was copied to %s (the old one is left as it was)", old, save_dir);
+        }
+    }
+    hos_log("fs: the save folder is %s%s", save_dir, has_entries(save_dir) ? "" : " (no save yet)");
+}
+
 /* ---- mounts */
 
 HLE(_ZN2nn2fs22QueryMountRomCacheSizeEPm) { G64(ARG(0)) = 0x10000; RET(0); }
@@ -137,10 +214,8 @@ HLE(_ZN2nn2fs8MountRomEPKcPvm) {
 HLE(_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi) { G64(ARG(0)) = 0x10000; RET(0); }
 HLE(_ZN2nn2fs17MountAddOnContentEPKciPvm) { RET(R_TARGET_NOT_FOUND); }
 HLE(_ZN2nn2fs19MountDeviceSaveDataEPKc) {
-    char host[PATH_CAP];
-    snprintf(host, sizeof host, "%s/save/device", hos_user_dir);
-    if (mkdirs(host)) hos_fatal(c, "cannot make the save folder %s (%s)", host, strerror(errno));
-    RET(add_mount(gstr(ARG(0)), host, 1));
+    if (mkdirs(save_dir)) hos_fatal(c, "cannot make the save folder %s (%s)", save_dir, strerror(errno));
+    RET(add_mount(gstr(ARG(0)), save_dir, 1));
 }
 HLE(_ZN2nn2fs21GetDeviceSaveDataSizeEPlS1_) {   /* (size, journal size): room enough for any save */
     G64(ARG(0)) = 0x20000000;

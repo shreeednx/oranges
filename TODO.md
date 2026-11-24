@@ -503,7 +503,7 @@ Where the time goes now:
   1 ms sleeps at `0xa807b4c` and waits on light events); file reads are instant, our renderer isn't in its way.
 - The loading screen stays at least 3 s (`0xad29f0c`: 3000 ms since a tick at `[obj+0x358]` / `+0x360`). At ~0
   (tried) it saved ~0.5 s at boot and nothing on the mid-day load: not patched (it is something the player sees).
-- Ours that is left (none of it on a load's critical path, now under task 2's performance): program translation
+- Ours that is left (none of it on a load's critical path, now under the renderer's performance): program translation
   (679 ms for the 201 programs by the island, on the submitting thread under `big_lock`), memory pool imports (4,245
   by the title, 0.56 s on the loader threads, every pool but one GPU-visible; 1,270 replace an older one behind a
   `vkDeviceWaitIdle`), other `big_lock` waits from game threads (~0.3 s over the boot).
@@ -514,28 +514,30 @@ Left over from it:
       ~6 threads): the chunks are built at `-O1`. Try `-O2` on the hot chunks if loads matter again.
 - [ ] A shader cache on disk, if weaker hardware stutters: under "Future ideas".
 
-## 1. Saves in the user's data folder
+## Done: saves in the user's data folder
 
-Saves go to `<work>/user/save/device` today, beside the build (`hos_main.c`: `work/build/oranges` -> `work/user`;
-`ORANGES_USER` overrides). A save should outlive the build folder and sit where other games keep theirs, as the settings
-file already does (`hos_options.c`: `$XDG_CONFIG_HOME/oranges/`, else `~/.config/oranges/`).
+The save outlives the build folder now: the user folder is `$XDG_DATA_HOME/oranges` (when absolute, as the XDG spec
+asks), else `~/.local/share/oranges` (`%APPDATA%\oranges` in a branch for the Windows build to come), and the device
+save is `<user>/saves/01006F8002326000/device` (the program id from `main.npdm`), so another game or build would not
+mix with it. `ORANGES_USER` still chooses the user folder (the same layout under it). `hos_fs_init` (`nn_fs.c`, at
+boot) chooses the folder and logs it (`fs: the save folder is ...`, with "(no save yet)" when it is empty). When it
+holds nothing and the old default `work/user/save/device` holds a save (not with `ORANGES_USER`), that save is copied
+over once: into `device.part`, renamed into place when complete, the old one left as it was. A copy that fails stops
+the program with the reason, rather than starting a new game whose first save would keep the old one from ever being
+moved. Checked headless with a scratch `XDG_DATA_HOME`: the copy is identical (`diff -r`) and loads to the title
+screen; a second boot copies nothing; `ORANGES_USER` on an empty folder starts fresh; a stale `device.part` and an
+empty `device` folder are handled; an unwritable data folder stops with "Permission denied". The player's own save is
+still only in `work/user/save`: the first run without `ORANGES_USER` moves it. `work/user/save_day1` stays (a test
+fixture: copy it to `<dir>/saves/01006F8002326000/device` and run with `ORANGES_USER=<dir>`).
 
-- [ ] The default user folder: `$XDG_DATA_HOME/oranges/`, else `~/.local/share/oranges/` on Linux; `%APPDATA%\oranges\`
-      once there is a Windows build (task 3). Saves under a folder named by the title id
-      (`.../saves/01006F8002326000/device/`), so a second build or game would not mix with this one. Made at the first
-      write, as the options file's folder is. `ORANGES_USER` still overrides (runs on a copy of a save use it).
-- [ ] Moving over: when the new folder has no save and `work/user/save` has one, copy it once (never move it or
-      overwrite a save that is there) and log both paths. The save there now has been played past day 1;
-      `work/user/save_day1` stays where it is (a test fixture, not a player's save).
-- [ ] The log names the save folder at boot, so a player can find it.
-- [ ] Other user files by the same rules: a shader cache on disk (a future idea) in `$XDG_CACHE_HOME/oranges/`,
-      screenshots (`nn::album`, a leftover above) in the data folder.
-- [ ] CLAUDE.md: the new default and `ORANGES_USER`.
+Left over from it:
 
-Why first: small and felt by anyone who rebuilds or moves the build folder, but nothing is lost today as long as `work/`
-stays.
+- [ ] Other user files by the same rules when they come: a shader cache on disk (a future idea) in
+      `$XDG_CACHE_HOME/oranges/`, screenshots (`nn::album`, a leftover above) in the data folder.
+- [ ] Deleting `work/user/save` once the moved save has been played on is the player's call (nothing reads it again
+      while the new folder holds a save).
 
-## 2. The renderer's gaps
+## 1. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -547,7 +549,7 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 3. Clean-ups and checks
+## 2. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -568,8 +570,8 @@ Not planned yet. Each needs a look at what the game allows first.
   shader objects the first time a draw uses it, on the game's submitting thread under `big_lock`: ~1.5-6 ms each,
   679 ms for the 201 programs by the island on this machine (an RTX 5080, a fast CPU), where it doesn't show. On a
   slower CPU, a frame that meets several new programs (a new area, a menu) would miss its 33 ms.
-  - The cache: each program's translated SPIR-V written to `$XDG_CACHE_HOME/oranges/` (task 1's rules), keyed by the
-    program's hash and everything the translation asked about (the bound textures' types, `vk_replay.cpp:197`; the
+  - The cache: each program's translated SPIR-V written to `$XDG_CACHE_HOME/oranges/` (the user folders' rules),
+    keyed by the program's hash and everything the translation asked about (the bound textures' types, `vk_replay.cpp:197`; the
     previous stage; c1), and read back instead of translating; optionally loaded and made into shader objects on a
     background thread at boot.
   - Not ahead-of-time precompiling from the RomFS: a translation depends on draw-time state the files don't hold, so

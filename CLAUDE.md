@@ -33,6 +33,8 @@ HOS_CONTROL=ctl.fifo HOS_NO_WINDOW=1 ./work/build/oranges &   # drive it live: o
 printf '2 LSTICK=0,1\n0.2 A\n1.5\nSHOT a.bmp\n' > ctl.fifo  # hold 2 s, press, wait; the picture (also DUMP, PROFILE, QUIT)
 printf 'MENU OPEN\nMENU DOWN\nSHOT m.bmp\n' > ctl.fifo   # the F1 settings menu, driven (SHOT shows it, headless too)
 printf 'SHOT big.bmp 3840x2160\n' > ctl.fifo   # the picture as a 4K window shows it (the Scaling setting: FSR 1 too)
+ORANGES_USER=dir ./work/build/oranges   # another user folder: the save is dir/saves/01006F8002326000/device
+#   (a run on a copy of the day-1 save: cp -r work/user/save_day1 dir/saves/01006F8002326000/device first)
 HOS_OPTIONS_FILE=opts.ini ./work/build/oranges   # the menu's settings file (default ~/.config/oranges/oranges_options.ini)
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait, CPU time, host tid, guest backtrace every 20 s
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
@@ -148,8 +150,10 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `hos_kernel_dump` (each thread's nn::os name, what it waits for, its guest backtrace) for `HOS_SAMPLE` and the frame
   watchdog (`HOS_WATCHDOG`, default 5 s: dumps once when frames stop), and the `HOS_PROFILE` sampler. `hos_hostcall.c` provides guest
   addresses that are host functions (through `a64_lookup_host`), for function pointers handed to the game.
-  `nn_fs.c` is `nn::fs` (RomFS read-only from `work/romfs`, device save data in `work/user/save/device`). `nvn.c` has
-  the nv:: driver setup HLE. `nvn_native.c` is NVN itself, ported from Longshot's NVN1-descended layer: objects live in
+  `nn_fs.c` is `nn::fs` (RomFS read-only from `work/romfs`; device save data in
+  `<user>/saves/01006F8002326000/device`, the user folder being `$XDG_DATA_HOME/oranges`, else `~/.local/share/oranges`,
+  or `ORANGES_USER`; a save in the old `work/user/save/device` is copied over once when the new folder has none, and
+  the log names the folder at boot). `nvn.c` has the nv:: driver setup HLE. `nvn_native.c` is NVN itself, ported from Longshot's NVN1-descended layer: objects live in
   the game's NVN object memory (`nvn/rx_nvn.h` layouts, checked against `nvn/nvn_api.h` sizes), GPU work is recorded
   and handed to a render back end at submit (`host/vk`). `rx_null.c` is the back end where that is not built or does
   not start: it applies the CPU-visible effects (events, counters, buffer copies/updates) and draws nothing. The proc

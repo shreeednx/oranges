@@ -9,7 +9,8 @@
    usage: oranges [image.bin]   (default: ../image/image.bin beside the executable, i.e. work/image/image.bin)
           HOS_TRACE=1           log every SVC, stub call and file opened
           ORANGES_ROMFS=<dir>   the extracted RomFS (default work/romfs)
-          ORANGES_USER=<dir>    saves (default work/user) */
+          ORANGES_USER=<dir>    the user folder: saves in <dir>/saves/<program id>/device (default $XDG_DATA_HOME/oranges,
+                                else ~/.local/share/oranges; a save in the old default, work/user, is copied over once) */
 #include "hos.h"
 
 #include <errno.h>
@@ -102,6 +103,20 @@ static void boot_call(Ctx *c, uint64_t sp, uint64_t addr, const char *what) {
 
 static void boot(void);
 
+/* the user's data folder for oranges, as other programs keep theirs: $XDG_DATA_HOME/oranges (when absolute, as the
+   XDG spec asks), else ~/.local/share/oranges; on Windows %APPDATA%\oranges */
+static void data_dir(char *out, size_t cap) {
+#ifdef _WIN32
+    const char *appdata = getenv("APPDATA");
+    snprintf(out, cap, "%s\\oranges", appdata && *appdata ? appdata : ".");
+#else
+    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+    if (xdg && xdg[0] == '/') snprintf(out, cap, "%s/oranges", xdg);
+    else if (home && *home) snprintf(out, cap, "%s/.local/share/oranges", home);
+    else snprintf(out, cap, "oranges-user");
+#endif
+}
+
 int main(int argc, char **argv) {
     hos_now_ns();   /* (the clock's zero: HOS_LOG_TIME counts from here) */
     const char *t = getenv("HOS_TRACE");
@@ -123,9 +138,14 @@ int main(int argc, char **argv) {
         const char *romfs = getenv("ORANGES_ROMFS"), *user = getenv("ORANGES_USER");
         if (romfs) snprintf(hos_romfs_dir, sizeof hos_romfs_dir, "%s", romfs);
         else snprintf(hos_romfs_dir, sizeof hos_romfs_dir, "%s/romfs", work);
-        if (user) snprintf(hos_user_dir, sizeof hos_user_dir, "%s", user);
-        else snprintf(hos_user_dir, sizeof hos_user_dir, "%s/user", work);
+        if (user && *user) {
+            snprintf(hos_user_dir, sizeof hos_user_dir, "%s", user);
+        } else {
+            data_dir(hos_user_dir, sizeof hos_user_dir);
+            snprintf(hos_old_user_dir, sizeof hos_old_user_dir, "%s/user", work);
+        }
     }
+    hos_fs_init();
     hos_crash_init();
     hos_kernel_init();
     hos_sampler_start();

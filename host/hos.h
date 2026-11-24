@@ -91,8 +91,10 @@ extern uint64_t hos_heap_size, hos_total_memory;
 int64_t hos_mem_dump(const char *path);   /* HOS_CONTROL MEM: the mapped writable pages into a sparse file */
 
 /* ---- host folders (hos_main.c): the RomFS (ORANGES_ROMFS, default work/romfs) and the user folder with saves
-   (ORANGES_USER, default work/user) */
-extern char hos_romfs_dir[1024], hos_user_dir[1024];
+   (ORANGES_USER, default $XDG_DATA_HOME/oranges, else ~/.local/share/oranges). hos_old_user_dir: where saves were
+   before (work/user), copied from once (empty when ORANGES_USER is set) */
+extern char hos_romfs_dir[1024], hos_user_dir[1024], hos_old_user_dir[1024];
+void hos_fs_init(void);   /* (nn_fs.c) the save folder: chosen, an old save moved over, logged */
 
 /* ---- the kernel's threads, handles and synchronization (hos_kernel.c) */
 enum { HOS_H_FREE, HOS_H_THREAD, HOS_H_EVENT, HOS_H_SESSION, HOS_H_TRANSFER, HOS_H_OTHER };
