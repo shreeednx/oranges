@@ -519,15 +519,14 @@ time goes.
   animation). Title to island ~3 s on a save made at the start of a day, ~12 s on one made mid-day (a ~9 s loading
   screen: the save written again, then the island loaded).
 - [ ] Find the 17.5-21 s wait (tick-based: `GetSystemTick` comparisons in the title's or the loading icon's logic).
-- [ ] Cut what is ours: a shader cache on disk (translated SPIR-V by program hash, so a second run translates
-      nothing: ~0.7 s by the island, and the hitches of first draws), translation and ASTC decoding off the game's
-      thread (or ahead of the draw that needs them), a dropped pool freed after the submits that may use it rather
-      than behind `vkDeviceWaitIdle`.
+- [ ] Cut what is ours: translation and ASTC decoding off the game's thread (or ahead of the draw that needs them), a
+      dropped pool freed after the submits that may use it rather than behind `vkDeviceWaitIdle`. (A shader cache on
+      disk: under "Future ideas", for stutter on weaker hardware.)
 - [ ] The door's 2.8 s of black: files load from +0.7 s to +2.1 s, one present gap of 0.42 s at the end of the load.
       Profile it (CPU per thread) to split the game's fixed fades from the loading work.
 
-Why first: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
-game's thread are also renderer performance (task 3).
+Why first: felt on every start and every door, and its first step is only measuring; the work off the game's thread is
+also renderer performance (task 3).
 
 ## 2. Saves in the user's data folder
 
@@ -543,8 +542,8 @@ file already does (`hos_options.c`: `$XDG_CONFIG_HOME/oranges/`, else `~/.config
       overwrite a save that is there) and log both paths. The save there now has been played past day 1;
       `work/user/save_day1` stays where it is (a test fixture, not a player's save).
 - [ ] The log names the save folder at boot, so a player can find it.
-- [ ] Other user files by the same rules: a shader cache on disk (task 1) in `$XDG_CACHE_HOME/oranges/`, screenshots
-      (`nn::album`, a leftover above) in the data folder.
+- [ ] Other user files by the same rules: a shader cache on disk (a future idea) in `$XDG_CACHE_HOME/oranges/`,
+      screenshots (`nn::album`, a leftover above) in the data folder.
 - [ ] CLAUDE.md: the new default and `ORANGES_USER`.
 
 Why second: small and felt by anyone who rebuilds or moves the build folder, but nothing is lost today as long as `work/`
@@ -574,6 +573,20 @@ Why last: none of these blocks the game; take them on when one starts to matter 
 ## Future ideas
 
 Not planned yet. Each needs a look at what the game allows first.
+
+- **A shader cache on disk, if weaker hardware stutters.** Each NVN program is translated (eden) and made into Vulkan
+  shader objects the first time a draw uses it, on the game's submitting thread under `big_lock`: ~1.5-6 ms each,
+  679 ms for the 201 programs by the island on this machine (an RTX 5080, a fast CPU), where it doesn't show. On a
+  slower CPU, a frame that meets several new programs (a new area, a menu) would miss its 33 ms.
+  - The cache: each program's translated SPIR-V written to `$XDG_CACHE_HOME/oranges/` (task 2's rules), keyed by the
+    program's hash and everything the translation asked about (the bound textures' types, `vk_replay.cpp:197`; the
+    previous stage; c1), and read back instead of translating; optionally loaded and made into shader objects on a
+    background thread at boot.
+  - Not ahead-of-time precompiling from the RomFS: a translation depends on draw-time state the files don't hold, so
+    a guess would draw wrong. One play fills the cache instead.
+  - First step: measure where a program's time goes, eden's translation or the driver's `vkCreateShadersEXT` (the
+    driver may already cache its half on disk), and how many distinct programs a long session uses. If the driver's
+    half dominates, moving translation off the submitting thread helps more than a cache.
 
 - **DLSS (and FSR 3.1) with motion vectors we make ourselves.** DLSS Super Resolution is temporal: NVIDIA's API needs
   per-pixel motion vectors, depth and camera jitter, and there is no single-frame mode. Zero motion vectors would smear
