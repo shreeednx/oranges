@@ -673,8 +673,9 @@ libraries (`python -m oranges.mingw` for Windows), then `oranges check`, `orange
 `oranges lift --write`, `oranges build`, and running `work/build/oranges`. That is ~12.5 GB on disk (RomFS 10 GB,
 generated C 1.4 GB, objects 0.8 GB) and ~2.5 GB of memory per compile job.
 
-Where it is (2026-11-24): the pipeline is one command and the GUI exists; the release is assembled by code that has
-not run end to end yet (it runs the downloaded toolchain and Python, which this session was not allowed to do).
+Where it is (2026-11-24): the pipeline is one command, the GUI exists, and the Linux release builds the port with
+nothing of the system's: from its archive, in a clean Ubuntu 22.04 container, a port that boots here at 30 fps with
+its window and sound. The Windows release does the same under wine: its pipeline builds `oranges.exe` (14.4 min), which boots at 29.9 fps.
 
 - [x] The pipeline in one command: `oranges make <nup> --dir FOLDER [--jobs N] [--clean] [--progress json]`
       (`oranges/make.py`): check the build, check the room (what is still missing: RomFS files, the C, objects),
@@ -702,29 +703,45 @@ not run end to end yet (it runs the downloaded toolchain and Python, which this 
       oranges.desktop`; on Windows a Start menu `.lnk`), Open the save folder / the build folder, delete the
       build's own files (gen/ and the objects, 2.2 GB). A release newer than the one that built the port says to
       build again (saves and options are in the user folder, untouched)
-- [ ] The release, one per platform, written and not yet run (`python -m oranges.release linux|windows`,
-      `oranges/release.py`): `oranges[.exe]` (the GUI), `release.json`, `src/` (the files git tracks under oranges/,
-      host/, gui/, third_party/, so nothing from work/ can go in, with VERSION and the translator library prebuilt),
-      `python/`, `toolchain/`, `sysroot/` (Linux), `libs/`, `SHA256SUMS` (`release verify <folder>` checks it), and a
-      `.tar.zst` / `.zip`. In a release `oranges.bundled` points the pipeline at those tools (CC, CXX,
-      ORANGES_SYSROOT, ORANGES_PREFIX; on Windows ORANGES_MINGW, ORANGES_MINGW_PREFIX, LONGSHOT_MINGW); `oranges.build`
-      reads a prefix for Linux too now (ORANGES_PREFIX) and links with `--sysroot`, libstdc++ / libgcc static,
-      `$ORIGIN` as the library path, and the prefix's licence texts beside the program
-  - Linux's parts, `python -m oranges.linuxkit` (`~/.local/opt/oranges-linuxkit`): the sysroot (done, 45 s, 94 MB:
-    43 packages of Ubuntu 22.04's frozen release pocket, glibc 2.35 and libstdc++ 12, absolute links made relative,
-    the index's SHA-256 pinned), LLVM 23.1.6's own Linux release pruned to clang, lld and their headers (downloaded,
-    2 GB, digest checked; not unpacked yet), python-build-standalone's CPython 3.14.10 with lz4's wheel, and the
-    libraries built with that clang against the sysroot: SDL3 3.4.20 static (its back ends loaded at run time),
-    FFmpeg 9.1 static with the movie's decoders, Ubuntu's static libopus, a `vulkan.pc` for the player's loader
-  - Windows' parts: oranges.wintools' Python and llvm-mingw (its other targets left out), oranges.mingw's prefix,
-    the GUI and `a64emit.dll` cross-compiled with llvm-mingw
-  - Next: run `python -m oranges.linuxkit` (toolchain, python, libs), then `python -m oranges.release linux`, and
-    build the port from the release in a clean Ubuntu 22.04 container (podman: no compiler, no Python; the `.nup`
-    mounted read-only) and boot it here; the same for Windows under wine (`oranges.exe`, a build, the port)
+- [x] The release, one per platform (`python -m oranges.release linux|windows`, `oranges/release.py`):
+      `oranges[.exe]` (the GUI), `release.json`, `src/` (the files git tracks under oranges/, host/, gui/,
+      third_party/, so nothing from work/ can go in, with VERSION and the translator library prebuilt), `python/`,
+      `toolchain/`, `sysroot/` (Linux), `libs/`, `SHA256SUMS` (without bytecode; `release verify <folder>` checks
+      it), and a `.tar.zst` / `.zip` beside it. In a release `oranges.bundled` points the pipeline at those tools
+      (CC, CXX, ORANGES_SYSROOT, ORANGES_PREFIX; on Windows ORANGES_MINGW, ORANGES_MINGW_PREFIX, LONGSHOT_MINGW).
+      `oranges.build` reads a prefix for Linux too (ORANGES_PREFIX); with a sysroot it builds C++ on LLVM's libc++
+      and links libc++, libc++abi and libgcc in, `$ORIGIN` as the library path, the libraries' licence texts beside
+      the program. Object stamps name the sysroot, prefix, work folder and tree by placeholders, so moving a release
+      or a build folder recompiles nothing
+  - Linux (658 MB, archive 178 MB): `python -m oranges.linuxkit` (`~/.local/opt/oranges-linuxkit`, ~5 min from
+    nothing) makes LLVM 23.1.6's own Linux release pruned and stripped (clang, lld, clang's headers, libc++: 390 MB;
+    runs on glibc 2.34+ with the system's zlib and libstdc++), two sysroots from Ubuntu 22.04's frozen release
+    pocket (index SHA-256 pinned, packages by dependency closure, absolute links made relative): `sysroot/` for
+    players (34 packages, 81 MB: glibc 2.35, the Vulkan loader) and `build-sysroot/` (184 packages: what SDL3 is
+    built against; its build reads each library's real .so for the name it loads), python-build-standalone's
+    CPython 3.14.10 with lz4, and static SDL3 3.4.20 (X11, Wayland, PipeWire, PulseAudio, ALSA, hidraw; libusb off),
+    FFmpeg 9.1 (the movie's decoders), Ubuntu's libopus, libatomic. eden needs `<format>`, which libstdc++ 12 lacks:
+    hence libc++ (checked: it needs nothing of glibc newer than 2.35)
+  - Checked: the archive unpacked fresh verifies and its GUI starts and checks the game; in podman's ubuntu:22.04
+    (no compiler, no Python; the release and the `.nup` mounted read-only) `python/bin/python3 -m oranges make`
+    extracts, lifts and builds the port (7.5 min); the port needs only libc, libm and libvulkan.so.1 (GLIBC_2.35),
+    and here it boots at 30 fps headless, as the dev build, and with a Wayland window, Vulkan swapchain and PipeWire
+    sound. The release's GUI drives a build (it found its own Python and tools); quitting it mid-build cancels the
+    pipeline (its compiles killed, "cancelled" in make.log); a folder without room is refused before anything is
+    written
+  - Windows (643 MB): oranges.wintools' embeddable Python (`..\src` in its `._pth`) and llvm-mingw without its
+    other targets, oranges.mingw's prefix as `libs/`, the GUI and `a64emit.dll` cross-compiled (static) with
+    llvm-mingw, SDL3.dll beside the GUI. Under wine its GUI runs pythonw through pipes: the check, a build's stages
+    and log, cancel on quit. With its own Python and llvm-mingw (`python\\python.exe -m oranges make`, the RomFS
+    already there) it lifts and builds the port in 14.4 min under wine; that `oranges.exe` (SDL3, opus, FFmpeg
+    DLLs and licences beside it) boots at 29.9 fps. Archive: a .zip beside the folder
 - [ ] Checksums signed for each release (SHA256SUMS exists, unsigned); the GUI could run `release verify` at its
       first start
-- [ ] The libc++ question if libstdc++ 12 (the sysroot's) lacks something eden or host/vk need (C++20: none seen
-      yet, untested)
+- [ ] The Linux toolchain needs the player's zlib and libstdc++ (every desktop distribution has them; a container
+      image may not); the release's own Python and clang are untested on distributions other than this one and
+      Ubuntu 22.04 (Fedora, Arch, SteamOS: try them in containers)
+- [ ] The Windows release on Windows itself (task 1's open item), and its first lift there builds nothing (the
+      translator is prebuilt): check it
 - [ ] Where releases are published and how the GUI learns of a new one (none yet). Updating oranges never downloads
       anything of the game.
 - [ ] Smaller: read the RomFS from the `.nup` in place rather than extracting 10 GB (`Nup` streams files; check

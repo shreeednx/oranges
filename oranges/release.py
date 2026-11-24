@@ -192,7 +192,7 @@ def windows(dest: Path, version: str, wintools: Path, prefix: Path, say=print) -
 def archive(dest: Path, say=print) -> Path:
     """the release's archive beside its folder (without the bytecode Python writes when it runs from there)"""
     if (dest / "release.json").is_file() and "windows" in json.loads((dest / "release.json").read_text())["platform"]:
-        out = dest.with_suffix(".zip")
+        out = dest.with_name(dest.name + ".zip")
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             for f in sorted(dest.rglob("*")):
                 if f.is_file() and "__pycache__" not in f.parts:
