@@ -4,12 +4,15 @@
     python -m oranges.linuxkit [--dir DIR]          (default ~/.local/opt/oranges-linuxkit)
 
 DIR gets:
-  toolchain/  clang, clang++ and lld from LLVM's own Linux release (pruned: the compilers, the linker and clang's
-              headers), which runs on glibc 2.27 and newer;
-  sysroot/    Ubuntu 22.04's C library (glibc 2.35), libstdc++ 12, the Linux and Vulkan loader headers, and the headers
-              SDL3 is built with: the port is built against it, so it runs on glibc 2.35 and newer whatever the
-              player's distribution is (libstdc++ and libgcc are linked in);
-  libs/       the port's libraries, built here with that toolchain and sysroot: SDL3 (static; its video and sound
+  toolchain/  clang, clang++ and lld from LLVM's own Linux release (pruned and stripped: the compilers, the linker,
+              the archive tools and clang's headers), which runs on glibc 2.34 and newer (with the system's zlib and
+              libstdc++, which every desktop distribution has);
+  sysroot/    Ubuntu 22.04's C library (glibc 2.35), libstdc++ 12, the Linux headers and the Vulkan loader: the port
+              is built against it, so it runs on glibc 2.35 and newer whatever the player's distribution is
+              (libstdc++ and libgcc are linked in);
+  build-sysroot/  the same, with the headers and libraries SDL3 is built with (X11, Wayland, sound, D-Bus, ...: what
+              it loads at run time; its build reads their .so files for the names), which the release leaves out;
+  libs/       the port's libraries, built here with that toolchain and build-sysroot: SDL3 (static; its video and sound
               back ends load their system libraries at run time, as SDL does), libopus (Ubuntu's static library) and
               FFmpeg's libavcodec / libavutil (static, the movie's decoders only, as oranges.mingw builds them for
               Windows), with lib/pkgconfig files oranges.pkgconf reads and their licence texts in share/licenses;
@@ -29,6 +32,7 @@ import hashlib
 import io
 import lzma
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,8 +50,8 @@ INDEXES = (   # (jammy's release pocket: frozen)
     ("dists/jammy/universe/binary-amd64/Packages.xz",
      "d29cb24c93fec5f43255706bce7eb46d4779952039d8c68ac1bb14a6f3655ce2"),
 )
-# the sysroot's packages (no dependency resolution: the list is what the build needs, the headers' own -dev
-# packages included)
+# the sysroot's packages, and what they depend on (closure()): SDL3's build reads each library's real .so file for
+# the name it loads at run time, so the -dev packages' runtime libraries must be there too
 SYSROOT = (
     # the C and C++ libraries, the kernel's headers
     "libc6", "libc6-dev", "linux-libc-dev", "libcrypt1", "libcrypt-dev", "libgcc-s1", "libgcc-12-dev", "libstdc++6",
@@ -59,8 +63,19 @@ SYSROOT = (
     "libxrender-dev", "libxcursor-dev", "libxi-dev", "libxfixes-dev", "libxss-dev", "libxtst-dev",
     "libxkbcommon-dev", "libwayland-dev", "wayland-protocols", "libdecor-0-dev", "libegl-dev", "libgl-dev",
     "libgles-dev", "libglx-dev", "libdrm-dev", "libgbm-dev", "libpulse-dev", "libasound2-dev",
-    "libpipewire-0.3-dev", "libspa-0.2-dev", "libudev-dev", "libdbus-1-dev", "libusb-1.0-0-dev",
+    "libpipewire-0.3-dev", "libspa-0.2-dev", "libudev-dev", "libdbus-1-dev", "libffi-dev",
 )
+# the release's sysroot, what a player's build of the port links against: the C and C++ libraries and the Vulkan
+# loader (SDL3, opus and FFmpeg are static in libs/, their headers there)
+PLAYER_SYSROOT = ("libc6", "libc6-dev", "linux-libc-dev", "libcrypt1", "libcrypt-dev", "libgcc-s1", "libgcc-12-dev",
+                  "libstdc++6", "libstdc++-12-dev", "libvulkan1", "libvulkan-dev")
+# (the sanitizers' runtimes, which come with libgcc-12-dev: not used)
+SANITIZERS = ("libasan", "libtsan", "liblsan", "libubsan", "libhwasan")
+# (dependencies not followed: programs and their data, which a sysroot does not run)
+NOT_FOLLOWED = ("perl", "perl-base", "perl-modules-5.34", "python3", "python3-minimal", "python3.10",
+                "python3.10-minimal", "python3-distutils", "python3-lib2to3", "dpkg", "debconf", "tar", "pkg-config",
+                "lsb-base", "readline-common", "xkb-data", "media-types", "xorg-sgml-doctools", "x11-common",
+                "install-info", "sensible-utils", "init-system-helpers", "adduser", "passwd")
 LLVM = ("https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.6/LLVM-23.1.6-Linux-X64.tar.xz",
         "bd4d1c434ff69ef06d19e7934c04708da677e5f2eb51f5bcf052ab91818f0094")
 LLVM_KEEP = ("bin/clang", "bin/clang++", "bin/clang-23", "bin/clang-cpp", "bin/lld", "bin/ld.lld",
@@ -164,7 +179,33 @@ def unpack_deb(deb: bytes, dest: Path) -> None:
         tar.extractall(dest, members=list(_relative_links(tar, dest)), filter="data")
 
 
-def make_sysroot(dest: Path, cache: Path, say=print) -> list[str]:
+def closure(index: dict[str, dict], wanted) -> list[str]:
+    """the packages wanted and what they depend on (Depends, Pre-Depends; an alternative's first choice; virtual
+    packages through Provides), without NOT_FOLLOWED"""
+    provides = {}
+    for name, p in index.items():
+        for prov in re.split(r",\s*", p.get("Provides", "")):
+            if prov:
+                provides.setdefault(prov.split()[0], name)
+    seen, todo = [], list(wanted)
+    while todo:
+        name = todo.pop(0)
+        name = name if name in index else provides.get(name, name)
+        if name in seen or name in NOT_FOLLOWED:
+            continue
+        if name not in index:
+            raise SystemExit("%s: not in Ubuntu 22.04's index" % name)
+        seen.append(name)
+        for field in ("Pre-Depends", "Depends"):
+            for dep in re.split(r",\s*", index[name].get(field, "")):
+                if dep:
+                    todo.append(dep.split("|")[0].split()[0].split(":")[0])
+    return seen
+
+
+def make_sysroot(dest: Path, cache: Path, say=print, wanted=SYSROOT) -> list[str]:
+    """the packages wanted and their dependencies unpacked into dest: SYSROOT into the kit's build-sysroot/ (the
+    libraries are built against it), PLAYER_SYSROOT into sysroot/ (the release's)"""
     index = {}
     for path, sha in INDEXES:
         f = fetch(UBUNTU + path, sha, cache / path.split("/")[2], say)
@@ -173,9 +214,7 @@ def make_sysroot(dest: Path, cache: Path, say=print) -> list[str]:
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     got = []
-    for name in SYSROOT:
-        if name not in index:
-            raise SystemExit("%s: not in Ubuntu 22.04's index" % name)
+    for name in closure(index, wanted):
         p = index[name]
         deb = fetch(UBUNTU + p["Filename"], p["SHA256"], cache / "debs", say)
         unpack_deb(deb.read_bytes(), dest)
@@ -183,6 +222,9 @@ def make_sysroot(dest: Path, cache: Path, say=print) -> list[str]:
     for d in ("usr/share/doc", "usr/share/man", "usr/share/lintian", "usr/share/info", "usr/bin", "usr/sbin",
               "sbin", "usr/lib/x86_64-linux-gnu/gconv", "usr/share/locale", "usr/libexec"):
         shutil.rmtree(dest / d, ignore_errors=True)
+    for f in list((dest / "usr" / "lib").rglob("*")):
+        if f.name.startswith(SANITIZERS) and (f.is_file() or f.is_symlink()):
+            f.unlink()
     (dest / "PACKAGES").write_text("".join(g + "\n" for g in got))
     return got
 
@@ -203,6 +245,8 @@ def make_toolchain(dest: Path, cache: Path, say=print) -> None:
                 m.name = rel
                 keep.append(m)
         tar.extractall(dest, members=keep, filter="data")
+    for exe in ("clang-23", "lld", "llvm-ar", "llvm-nm", "llvm-objdump", "llvm-objcopy"):   # (-13%: unstripped)
+        subprocess.run([str(dest / "bin" / "llvm-strip"), str(dest / "bin" / exe)], check=True)
     # (compiler-rt's sanitizers and profile runtimes: not needed, most of lib/clang's size)
     for d in (dest / "lib" / "clang").glob("*/lib/*"):
         for f in d.iterdir():
@@ -229,9 +273,10 @@ def make_python(dest: Path, cache: Path, say=print) -> None:
 
 # ---- the libraries ----
 
-def env_for(kit: Path) -> dict:
-    """the environment that builds for the release's Linux: its clang against its sysroot"""
-    sysroot, bin_ = kit / "sysroot", kit / "toolchain" / "bin"
+def env_for(kit: Path, sysroot_name: str = "sysroot") -> dict:
+    """the environment that builds for the release's Linux: its clang against its sysroot (build-sysroot: the
+    libraries' builds)"""
+    sysroot, bin_ = kit / sysroot_name, kit / "toolchain" / "bin"
     return dict(os.environ, CC=str(bin_ / "clang"), CXX=str(bin_ / "clang++"), AR=str(bin_ / "llvm-ar"),
                 RANLIB=str(bin_ / "llvm-ranlib"), NM=str(bin_ / "llvm-nm"), ORANGES_SYSROOT=str(sysroot),
                 ORANGES_PREFIX=str(kit / "libs"),
@@ -257,8 +302,8 @@ def build_sdl3(kit: Path, cache: Path, say=print) -> None:
     build = cache / ("build-" + src.name)
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir()
-    env = env_for(kit)
-    sysroot = kit / "sysroot"
+    env = env_for(kit, "build-sysroot")
+    sysroot = kit / "build-sysroot"
     flags = "--sysroot=%s" % sysroot
     say("build %s (static)" % src.name)
     _run(["cmake", "-S", str(src), "-B", str(build), "-G", "Ninja" if shutil.which("ninja") else "Unix Makefiles",
@@ -272,6 +317,7 @@ def build_sdl3(kit: Path, cache: Path, say=print) -> None:
           "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_INSTALL_DOCS=OFF",
           "-DSDL_DEPS_SHARED=ON", "-DSDL_X11=ON", "-DSDL_WAYLAND=ON", "-DSDL_PIPEWIRE=ON", "-DSDL_PULSEAUDIO=ON",
           "-DSDL_ALSA=ON", "-DSDL_VULKAN=ON", "-DSDL_OPENGL=ON", "-DSDL_HIDAPI=ON", "-DSDL_JACK=OFF",
+          "-DSDL_HIDAPI_LIBUSB=OFF",   # (gamepads through hidraw and udev, as SDL does without libusb on Linux)
           "-DSDL_SNDIO=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_RPI=OFF", "-DSDL_VIVANTE=OFF", "-DSDL_OFFSCREEN=ON",
           "-DSDL_LIBURING=OFF", "-DSDL_CAMERA=OFF"], build, env, "SDL3's cmake")
     _run(["cmake", "--build", str(build), "-j", str(os.cpu_count() or 4)], build, env, "SDL3")
@@ -283,7 +329,7 @@ def build_sdl3(kit: Path, cache: Path, say=print) -> None:
 
 def install_opus(kit: Path) -> None:
     """Ubuntu's libopus.a and headers (from the sysroot) into libs/, with a .pc file for static linking"""
-    libs, sysroot = kit / "libs", kit / "sysroot"
+    libs, sysroot = kit / "libs", kit / "build-sysroot"
     (libs / "include").mkdir(parents=True, exist_ok=True)
     (libs / "lib" / "pkgconfig").mkdir(parents=True, exist_ok=True)
     shutil.copytree(sysroot / "usr" / "include" / "opus", libs / "include" / "opus", dirs_exist_ok=True)
@@ -302,7 +348,7 @@ def build_ffmpeg(kit: Path, cache: Path, say=print) -> None:
     """FFmpeg's libavcodec and libavutil, static, with only the movie's decoders (oranges.mingw's choice)"""
     tools = cache / "tools"
     nasm = tools / "nasm"
-    env = env_for(kit)
+    env = env_for(kit, "build-sysroot")
     if not nasm.exists():   # (nasm for this machine, as oranges.mingw builds it)
         src = mingw._source(cache, "nasm", say)
         say("build nasm")
@@ -316,7 +362,7 @@ def build_ffmpeg(kit: Path, cache: Path, say=print) -> None:
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir()
     env["PATH"] = os.pathsep.join([str(tools), env.get("PATH", "")])
-    sysroot = kit / "sysroot"
+    sysroot = kit / "build-sysroot"
     say("build %s (static; decoders %s)" % (src.name, mingw.FFMPEG_DECODERS))
     _run([str(src / "configure"), "--prefix=" + str(kit / "libs"), "--cc=" + env["CC"], "--cxx=" + env["CXX"],
           "--ar=" + env["AR"], "--ranlib=" + env["RANLIB"], "--nm=" + env["NM"], "--x86asmexe=nasm",
@@ -357,7 +403,9 @@ def finish_libs(kit: Path) -> None:
 def install(kit: Path, say=print, parts: tuple[str, ...] = ("sysroot", "toolchain", "python", "libs")) -> None:
     cache = kit / ".cache"
     if "sysroot" in parts:
-        got = make_sysroot(kit / "sysroot", cache, say)
+        got = make_sysroot(kit / "build-sysroot", cache, say, SYSROOT)
+        say("build-sysroot: %d packages" % len(got))
+        got = make_sysroot(kit / "sysroot", cache, say, PLAYER_SYSROOT)
         say("sysroot: %d packages" % len(got))
     if "toolchain" in parts:
         make_toolchain(kit / "toolchain", cache, say)

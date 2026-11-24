@@ -35,7 +35,7 @@ def compile_flags() -> list[str]:
 def link_flags() -> list[str]:
     if build.windows():
         return ["-static-libstdc++", "-static-libgcc", "-Wl,-Bstatic", "-lpthread", "-Wl,-Bdynamic", "-lole32",
-                "-luuid", "-lshell32", "-mwindows"]
+                "-luuid", "-lshell32", "-lwinmm", "-mwindows"]
     return build.target_link_flags() + ["-lpthread", "-lm"]
 
 

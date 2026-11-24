@@ -39,6 +39,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TREE = ("oranges", "host", "gui", "third_party", "LICENSE", "pyproject.toml")
 KIT_LIFT = ROOT / "third_party" / "a64-kit" / "lift"
+# (the kit's tools that only building its libraries needs: a player's build compiles and links with clang and lld)
+LINUX_BUILD_ONLY = ("llvm-ar", "llvm-ranlib", "llvm-nm", "llvm-objdump", "llvm-objcopy", "llvm-strip")
 # (llvm-mingw's targets other than x86_64: not needed to build the port)
 MINGW_OTHER = ("aarch64-w64-mingw32", "armv7-w64-mingw32", "i686-w64-mingw32", "arm64ec-w64-mingw32")
 
@@ -132,7 +134,7 @@ def linux(dest: Path, version: str, kit: Path, say=print) -> None:
     (lift / "liba64emit.so.sha1").write_text(emit_key())
     for part in ("toolchain", "sysroot", "libs"):
         say("copy %s" % part)
-        _copytree(kit / part, dest / part)
+        _copytree(kit / part, dest / part, ignore=lambda d, names: [n for n in names if n in LINUX_BUILD_ONLY])
     _copytree(kit / "python", dest / "python")
     site = next((dest / "python" / "lib").glob("python3.*")) / "site-packages"
     (site / "oranges-release.pth").write_text("../../../../src\n")   # (relative to site-packages: <release>/src)
