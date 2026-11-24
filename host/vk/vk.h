@@ -19,7 +19,7 @@
 #include "vk_log.h"
 
 extern "C" int64_t hos_now_ns(void);
-extern "C" int hos_control_shot(char* path, size_t size);   // (hos.h)
+extern "C" int hos_control_shot(char* path, size_t size, int* w, int* h);   // (hos.h)
 extern "C" void hos_control_shot_done(void);
 extern "C" void hos_window_picture(int x, int y, int w, int h, int sw, int sh);   // (hos.h)
 
@@ -82,6 +82,12 @@ void present_image(VkImage image, VkFormat format, uint32_t w, uint32_t h, const
 /// the settings menu (vk_menu.cpp): while it is open, the picture (its crop) with the menu over it, composed into an
 /// image of the crop's size, which then stands for the picture (crop null); false, and nothing changed, when closed
 bool menu_compose(VkImage* image, VkFormat* format, uint32_t* w, uint32_t* h, const int** crop);
+/// FSR 1 (vk_fsr.cpp): the crop (sx, sy, cw x ch) of image (GENERAL) upscaled to dw x dh by EASU, then sharpened by
+/// RCAS (sharpness 1-100 %; 0: not sharpened), into an image returned in GENERAL: RGBA8 in the picture's encoding
+/// (srgb), holding its gamma-encoded values, for a 1:1 blit into a target of the same encoding. Null when FSR 1 cannot
+/// run (the caller scales as Smooth).
+VkImage fsr_upscale(VkCommandBuffer cb, VkImage image, bool srgb, int32_t sx, int32_t sy, uint32_t cw, uint32_t ch,
+                    uint32_t dw, uint32_t dh, int sharpness);
 
 // ---- guest memory (vk_memory.cpp)
 struct BufRef {

@@ -78,8 +78,19 @@ static int first(void) {
     CHECK(!strcmp(v.rows[v.sel].value, "Handheld (1280x720)") && v.rows[v.sel].changed);
     CHECK(hos_setting(HOS_SET_CONSOLE_MODE) == HOS_MODE_HANDHELD);
     select_row("Scaling");
-    hos_menu_action(HOS_MENU_OK), hos_menu_action(HOS_MENU_OK), hos_menu_action(HOS_MENU_OK);   /* (round to the first) */
-    CHECK(hos_setting(HOS_SET_FILTER) == HOS_FILTER_LINEAR);
+    hos_menu_view(&v);
+    CHECK(row_of(&v, "Sharpness") < 0);   /* (only with FSR 1) */
+    hos_menu_action(HOS_MENU_OK), hos_menu_action(HOS_MENU_OK), hos_menu_action(HOS_MENU_OK);
+    hos_menu_view(&v);
+    CHECK(hos_setting(HOS_SET_FILTER) == HOS_FILTER_FSR && !strcmp(v.rows[v.sel].value, "FSR 1"));
+    CHECK(row_of(&v, "Sharpness") == v.sel + 1 && !strcmp(v.rows[v.sel + 1].value, "80%"));
+    hos_menu_action(HOS_MENU_DOWN), hos_menu_action(HOS_MENU_RIGHT), hos_menu_action(HOS_MENU_RIGHT);
+    CHECK(hos_setting(HOS_SET_SHARPNESS) == 100);   /* (no higher) */
+    hos_menu_action(HOS_MENU_UP);
+    hos_menu_action(HOS_MENU_OK);   /* (round to the first) */
+    hos_menu_view(&v);
+    CHECK(hos_setting(HOS_SET_FILTER) == HOS_FILTER_LINEAR && row_of(&v, "Sharpness") < 0);
+    CHECK(v.sel == row_of(&v, "Scaling"));
     hos_menu_action(HOS_MENU_LEFT);   /* (no lower) */
     hos_menu_view(&v);
     CHECK(!strcmp(v.rows[v.sel].value, "Smooth"));

@@ -32,16 +32,18 @@ HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, s
 HOS_CONTROL=ctl.fifo HOS_NO_WINDOW=1 ./work/build/oranges &   # drive it live: one line, or several, at a time:
 printf '2 LSTICK=0,1\n0.2 A\n1.5\nSHOT a.bmp\n' > ctl.fifo  # hold 2 s, press, wait; the picture (also DUMP, PROFILE, QUIT)
 printf 'MENU OPEN\nMENU DOWN\nSHOT m.bmp\n' > ctl.fifo   # the F1 settings menu, driven (SHOT shows it, headless too)
+printf 'SHOT big.bmp 3840x2160\n' > ctl.fifo   # the picture as a 4K window shows it (the Scaling setting: FSR 1 too)
 HOS_OPTIONS_FILE=opts.ini ./work/build/oranges   # the menu's settings file (default ~/.config/oranges/oranges_options.ini)
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
-HOS_PRESENT_INTERVAL=1 ./work/build/oranges   # 60 fps instead of the game's 30 (its world then runs ~2x fast: TODO 2)
+HOS_PRESENT_INTERVAL=1 ./work/build/oranges   # 60 fps instead of the game's 30 (its world then runs ~2x fast: TODO 1)
 HOS_AUDIO=1 HOS_NO_WINDOW=1 ./work/build/oranges   # sound without a window (headless runs are quiet by default)
 HOS_NO_WINDOW=1 HOS_SCREENSHOT=shot.bmp,40 ./work/build/oranges   # the presented picture at 40 s (headless draws too)
 HOS_VK_SHOTS=dir,5 ./work/build/oranges   # a screenshot every 5 s; HOS_VK=0: the null back end (nothing drawn)
 HOS_VK_PASSDUMP=dir@57 ./work/build/oranges   # every render pass's targets (and depth) for one frame from 57 s on
 HOS_VK_LOG=2000@57 ./work/build/oranges   # trace targets, clears, draws (state, bindings, programs) from 57 s on
+.venv/bin/python -m oranges.shaders [--check]     # host/vk/shaders/*.comp -> the checked-in *_spv.h (glslang)
 .venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
 .venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
 ```
@@ -114,15 +116,21 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   while it is open. `HOS_CONTROL`'s `MENU <action>|KEY <name>|PAD <name>` drive it; `tests/test_host_menu.py` builds
   the three C files alone (no SDL, no game). A new tab or setting: a row in `hos_menu.c` (`settings_def` with its tab,
   `build_rows`); read it with `hos_setting` where it applies. Tabs: Graphics (Console mode, Full screen, V-Sync,
-  Scaling) and Controls. Console mode is what `nn::oe` reports: docked renders 1920x1080, handheld 1280x720 (its
-  window texture stays 1920x1080, cropped); a change goes to the running game as the console's OperationModeChanged /
+  Scaling, and Sharpness only while Scaling is FSR 1) and Controls. Scaling's FSR 1 is `host/vk/vk_fsr.cpp`: AMD's
+  EASU then RCAS on the picture's gamma-encoded values (the game presents UNORM), when the window is larger than the
+  picture; its passes are `host/vk/shaders/fsr1_*.comp` on `third_party/fidelityfx-fsr1` (the SDK's FSR 1 headers,
+  unchanged, MIT), compiled by `python -m oranges.shaders` into checked-in headers (a build needs no glslang;
+  `tests/test_shaders.py` checks them against their sources). Console mode is what `nn::oe` reports: docked renders
+  1920x1080, handheld 1280x720 (its window texture stays 1920x1080, cropped); a change goes to the running game as the console's OperationModeChanged /
   PerformanceModeChanged messages (`TryPopNotificationMessage`), and the game re-renders at the new size at once.
   `HOS_HANDHELD=0/1` and `HOS_VSYNC=0/1` set those two for a run (unsaved).
   The gamepad's sticks go through the bindings too (by direction, analog). Started by Steam (`SteamGameId`), the window
   is X11 (XWayland): Steam Input keeps its Desktop layout (keyboard and mouse) for a native Wayland window;
   `HOS_WAYLAND=1` keeps Wayland.
 - `third_party/eden/`: eden's Maxwell shader recompiler and sirit, vendored unchanged from the Longshot toolchain
-  (`PROVENANCE.md`); `third_party/khronos/`: the Vulkan and SPIR-V C headers (the system has none). Don't edit them.
+  (`PROVENANCE.md`); `third_party/khronos/`: the Vulkan and SPIR-V C headers (the system has none);
+  `third_party/fidelityfx-fsr1/`: AMD's FSR 1 GPU headers (FidelityFX SDK v1.1.4, MIT, `PROVENANCE.md`). Don't edit
+  them.
 - `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.
   `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
   stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,

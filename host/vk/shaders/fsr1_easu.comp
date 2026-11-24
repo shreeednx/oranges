@@ -1,0 +1,33 @@
+// (oranges) FSR 1's EASU at the present: the picture (gamma-encoded, as the window shows it) upscaled to the size it
+// is shown at. AMD's EASU (third_party/fidelityfx-fsr1, MIT), 32-bit path, one output pixel per invocation.
+// Push constants: con0..con3 as ffxFsrPopulateEasuConstants makes them (host/vk/vk_fsr.cpp computes them).
+// Compiled into fsr1_easu_comp_spv.h by `python -m oranges.shaders`.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define FFX_GPU 1
+#define FFX_GLSL 1
+#define FFX_FSR_EASU_FLOAT 1
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D picture;   // (linear, clamp to edge: gathers only)
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D upscaled;
+layout(push_constant) uniform Constants {
+    uvec4 con0, con1, con2, con3;
+} pc;
+
+#include "ffx_core.h"
+
+FfxFloat32x4 FsrEasuRF(FfxFloat32x2 p) { return textureGather(picture, p, 0); }
+FfxFloat32x4 FsrEasuGF(FfxFloat32x2 p) { return textureGather(picture, p, 1); }
+FfxFloat32x4 FsrEasuBF(FfxFloat32x2 p) { return textureGather(picture, p, 2); }
+
+#include "fsr1/ffx_fsr1.h"
+
+void main() {
+    const uvec2 ip = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(ip, uvec2(imageSize(upscaled))))) return;
+    FfxFloat32x3 c;
+    ffxFsrEasuFloat(c, ip, pc.con0, pc.con1, pc.con2, pc.con3);
+    imageStore(upscaled, ivec2(ip), vec4(c, 1.0));
+}

@@ -6,7 +6,8 @@
 //   HOS_VK_VALIDATE=1   the Khronos validation layer
 // The settings menu's Graphics tab: V-Sync (FIFO presents; off: mailbox, else immediate, the game pacing itself;
 // HOS_VSYNC=1 for a run) and Scaling (the filter of the blit into the window; whole steps: the largest integer scale
-// that fits, nearest, else as Sharp), both read at each present.
+// that fits, nearest, else as Sharp; FSR 1: vk_fsr.cpp's passes when the window is the larger, else as Smooth), both
+// read at each present. HOS_CONTROL's "SHOT <bmp> <w>x<h>" saves the picture as a window of that size would show it.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
@@ -173,6 +174,7 @@ void write_bmp(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
 
 // (w x h from sx, sy: the crop)
 void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, int32_t sx = 0, int32_t sy = 0);
+template <typename Fill> void read_back(uint32_t w, uint32_t h, bool srgb, Fill fill);
 }  // namespace
 void dump_written_images(const char* dir);   // (vk_texture.cpp)
 void texdump(VkCommandBuffer cb);
@@ -186,7 +188,19 @@ void save_image_bmp(VkImage image, VkFormat format, uint32_t w, uint32_t h, cons
 namespace {
 void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, int32_t sx, int32_t sy) {
     // (blitted to RGBA8 of the same encoding first: the window texture may be RGB10A2 or RGBA16F)
-    const VkFormat out = srgb_format(format) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    read_back(w, h, srgb_format(format), [&](VkCommandBuffer cb, VkImage tmp) {
+        VkImageBlit bl{};
+        bl.srcSubresource = bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        bl.srcOffsets[0] = {sx, sy, 0};
+        bl.srcOffsets[1] = {sx + (int32_t)w, sy + (int32_t)h, 1};
+        bl.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
+        vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, tmp, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    });
+}
+
+/// shot.path: a w x h RGBA8 image (of the sRGB encoding or not), in GENERAL, that fill(cb, image) draws
+template <typename Fill> void read_back(uint32_t w, uint32_t h, bool srgb, Fill fill) {
+    const VkFormat out = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType = VK_IMAGE_TYPE_2D;
     ii.format = out;
@@ -215,12 +229,7 @@ void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, int
     b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                          nullptr, 1, &b);
-    VkImageBlit bl{};
-    bl.srcSubresource = bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    bl.srcOffsets[0] = {sx, sy, 0};
-    bl.srcOffsets[1] = {sx + (int32_t)w, sy + (int32_t)h, 1};
-    bl.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
-    vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, tmp, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    fill(cb, tmp);
     full_barrier(cb);
     VkBufferImageCopy c{};
     c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -235,6 +244,8 @@ void take_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, int
 }
 
 void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]);
+void scale_picture(VkCommandBuffer cb, VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4],
+                   VkImage dst, VkImageLayout dst_layout, uint32_t dst_w, uint32_t dst_h, int32_t at[4]);
 /// HOS_VK_SHOTS=<dir>,<seconds> (debugging): the presented picture every that many seconds, <dir>/shot_<seconds>.bmp
 void periodic_shots(VkImage image, VkFormat format, uint32_t w, uint32_t h, int32_t sx, int32_t sy) {
     static std::string dir;
@@ -261,15 +272,24 @@ void periodic_shots(VkImage image, VkFormat format, uint32_t w, uint32_t h, int3
 }
 // the picture as shown: the crop of the window texture (handheld: 1280x720 of its 1920x1080)
 void maybe_screenshot(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]) {
+    const uint32_t full_w = w, full_h = h;
     int32_t sx = 0, sy = 0;
     if (crop && crop[2] > 0 && crop[3] > 0 && crop[0] >= 0 && crop[1] >= 0 && (uint32_t)(crop[0] + crop[2]) <= w &&
         (uint32_t)(crop[1] + crop[3]) <= h)
         sx = crop[0], sy = crop[1], w = (uint32_t)crop[2], h = (uint32_t)crop[3];
     periodic_shots(image, format, w, h, sx, sy);
-    if (char path[512]; hos_control_shot(path, sizeof path)) {   // (HOS_CONTROL's SHOT)
+    int ww = 0, wh = 0;
+    if (char path[512]; hos_control_shot(path, sizeof path, &ww, &wh)) {   // (HOS_CONTROL's SHOT)
         const std::string keep = shot.path;
         shot.path = path;
-        take_screenshot(image, format, w, h, sx, sy);
+        if (ww > 0 && wh > 0)   // (as a window of ww x wh would show it)
+            read_back((uint32_t)ww, (uint32_t)wh, srgb_format(format), [&](VkCommandBuffer cb, VkImage tmp) {
+                int32_t at[4];
+                scale_picture(cb, image, format, full_w, full_h, crop, tmp, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)ww,
+                              (uint32_t)wh, at);
+            });
+        else
+            take_screenshot(image, format, w, h, sx, sy);
         shot.path = keep;
         hos_control_shot_done();
     }
@@ -366,6 +386,47 @@ void full_barrier(VkCommandBuffer cb) {
                          nullptr, 0, nullptr);
 }
 
+namespace {
+/// The picture (the crop of image: x, y, w, h; w 0 or no crop, the whole image) into dst (dst_w x dst_h, in dst_layout:
+/// GENERAL or TRANSFER_DST_OPTIMAL, the same after), black around it, as the Scaling setting scales it: letterboxed,
+/// keeping its shape. Where it went: at (x, y, w, h).
+void scale_picture(VkCommandBuffer cb, VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4],
+                   VkImage dst, VkImageLayout dst_layout, uint32_t dst_w, uint32_t dst_h, int32_t at[4]) {
+    VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkClearColorValue black{};
+    vkCmdClearColorImage(cb, dst, dst_layout, &black, 1, &range);
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = dst;
+    b.subresourceRange = range;
+    b.oldLayout = b.newLayout = dst_layout;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    const int32_t sx = crop ? crop[0] : 0, sy = crop ? crop[1] : 0;
+    const int32_t cw = crop && crop[2] > 0 ? crop[2] : (int32_t)w, ch = crop && crop[3] > 0 ? crop[3] : (int32_t)h;
+    const int filter = hos_setting(HOS_SET_FILTER);
+    double scale = std::min((double)dst_w / cw, (double)dst_h / ch);
+    if (filter == HOS_FILTER_INTEGER && scale >= 1) scale = (double)(int)scale;
+    const int32_t dw = (int32_t)(cw * scale), dh = (int32_t)(ch * scale);
+    const int32_t dx = ((int32_t)dst_w - dw) / 2, dy = ((int32_t)dst_h - dh) / 2;
+    at[0] = dx, at[1] = dy, at[2] = dw, at[3] = dh;
+    VkImageBlit bl{};
+    bl.srcSubresource = bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    bl.srcOffsets[0] = {sx, sy, 0}, bl.srcOffsets[1] = {sx + cw, sy + ch, 1};
+    bl.dstOffsets[0] = {dx, dy, 0}, bl.dstOffsets[1] = {dx + dw, dy + dh, 1};
+    VkFilter how = filter == HOS_FILTER_NEAREST || filter == HOS_FILTER_INTEGER ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    if (filter == HOS_FILTER_FSR && scale > 1 && dw > 0 && dh > 0) {   // (FSR 1 only upscales: else as Smooth)
+        if (VkImage up = fsr_upscale(cb, image, srgb_format(format), sx, sy, (uint32_t)cw, (uint32_t)ch, (uint32_t)dw,
+                                     (uint32_t)dh, hos_setting(HOS_SET_SHARPNESS))) {
+            image = up;   // (its result, 1:1)
+            bl.srcOffsets[0] = {0, 0, 0}, bl.srcOffsets[1] = {dw, dh, 1};
+            how = VK_FILTER_NEAREST;
+        }
+    }
+    vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, dst, dst_layout, 1, &bl, how);
+}
+}  // namespace
+
 void present_image(VkImage image, VkFormat format, uint32_t w, uint32_t h, const int crop[4]) {
     menu_compose(&image, &format, &w, &h, &crop);   // (the settings menu, while it is open: the picture with it over)
     maybe_screenshot(image, format, w, h, crop);
@@ -389,26 +450,10 @@ void present_image(VkImage image, VkFormat format, uint32_t w, uint32_t h, const
     b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
                          nullptr, 1, &b);
-    VkClearColorValue black{};
-    vkCmdClearColorImage(cb, sw.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &b.subresourceRange);
-    b.oldLayout = b.newLayout;
-    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-    // the crop (x, y, w, h; w 0: the whole texture), scaled into the window keeping its shape
-    int32_t sx = crop ? crop[0] : 0, sy = crop ? crop[1] : 0, cw = crop && crop[2] > 0 ? crop[2] : (int32_t)w,
-            ch = crop && crop[3] > 0 ? crop[3] : (int32_t)h;
-    const int filter = hos_setting(HOS_SET_FILTER);
-    double scale = std::min((double)sw.extent.width / cw, (double)sw.extent.height / ch);
-    if (filter == HOS_FILTER_INTEGER && scale >= 1) scale = (double)(int)scale;
-    const int32_t dw = (int32_t)(cw * scale), dh = (int32_t)(ch * scale);
-    const int32_t dx = ((int32_t)sw.extent.width - dw) / 2, dy = ((int32_t)sw.extent.height - dh) / 2;
-    VkImageBlit bl{};
-    bl.srcSubresource = bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    bl.srcOffsets[0] = {sx, sy, 0}, bl.srcOffsets[1] = {sx + cw, sy + ch, 1};
-    bl.dstOffsets[0] = {dx, dy, 0}, bl.dstOffsets[1] = {dx + dw, dy + dh, 1};
-    hos_window_picture(dx, dy, dw, dh, (int)sw.extent.width, (int)sw.extent.height);
-    vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, sw.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl,
-                   filter == HOS_FILTER_LINEAR ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    int32_t at[4];
+    scale_picture(cb, image, format, w, h, crop, sw.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, sw.extent.width,
+                  sw.extent.height, at);
+    hos_window_picture(at[0], at[1], at[2], at[3], (int)sw.extent.width, (int)sw.extent.height);
     b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, b.dstAccessMask = 0;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,

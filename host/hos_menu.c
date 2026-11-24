@@ -34,7 +34,7 @@ enum { P_SOUTH, P_EAST, P_WEST, P_NORTH, P_GUIDE = 5, P_LSHOULDER = 9, P_RSHOULD
 enum { TAB_GRAPHICS, TAB_CONTROLS, NTABS };
 static const char *const tab_names[NTABS] = {"Graphics", "Controls"};
 static const char *const mode_names[] = {"Docked (1920x1080)", "Handheld (1280x720)"};
-static const char *const filter_names[] = {"Smooth", "Sharp", "Sharp, whole steps"};
+static const char *const filter_names[] = {"Smooth", "Sharp", "Sharp, whole steps", "FSR 1"};
 static const struct {
     int tab;
     const char *key, *label, *help;
@@ -56,8 +56,12 @@ static const struct {
                        NULL, NULL, NULL, "HOS_VSYNC"},
     [HOS_SET_FILTER] = {TAB_GRAPHICS, "scaling_filter", "Scaling",
                         "How the picture is scaled to the window. Smooth: filtered. Sharp: the nearest pixel. Sharp, "
-                        "whole steps: the nearest pixel, at the largest whole multiple that fits (a border around it).",
-                        0, 2, 1, 0, NULL, NULL, filter_names, NULL},
+                        "whole steps: the nearest pixel, at the largest whole multiple that fits (a border around it). "
+                        "FSR 1: AMD's edge-aware upscaler and sharpener, for a window larger than the picture (else "
+                        "as Smooth).", 0, 3, 1, 0, NULL, NULL, filter_names, NULL},
+    [HOS_SET_SHARPNESS] = {TAB_GRAPHICS, "fsr_sharpness", "Sharpness",
+                           "How much FSR 1 sharpens the upscaled picture (its RCAS pass). Off: not at all.", 0, 100,
+                           10, 80, "Off", "%", NULL, NULL},
     [HOS_SET_DEAD_ZONE] = {TAB_CONTROLS, "stick_dead_zone", "Stick dead zone",
                            "How far a gamepad's stick moves before the game sees it. Raise it if the player walks by "
                            "itself; lower it for finer steps.", 0, 30, 5, 10, NULL, "%", NULL, NULL},
@@ -90,10 +94,13 @@ int hos_setting(int id) {
     if (!__atomic_load_n(&settings_loaded, __ATOMIC_ACQUIRE)) hos_menu_load();
     return __atomic_load_n(&settings[id], __ATOMIC_RELAXED);
 }
+static void rows_changed(void);
 static void setting_put(int id, int v) {
     if (v < settings_def[id].lo) v = settings_def[id].lo;
     if (v > settings_def[id].hi) v = settings_def[id].hi;
+    const int was = settings[id];
     __atomic_store_n(&settings[id], v, __ATOMIC_RELAXED);
+    if (id == HOS_SET_FILTER && (was == HOS_FILTER_FSR) != (v == HOS_FILTER_FSR)) rows_changed();   /* (Sharpness) */
     if (v == settings_def[id].def) {
         hos_option_unset(settings_def[id].key);
     } else {
@@ -131,7 +138,8 @@ static void build_rows(void) {   /* (the tab's) */
     nrows = 0;
     if (npads && tab == TAB_CONTROLS) rows[nrows++] = (Row){HOS_ROW_CONTROLLER, 0};
     for (int i = 0; i < HOS_SET_N; i++)
-        if (settings_def[i].tab == tab) rows[nrows++] = (Row){HOS_ROW_SETTING, i};
+        if (settings_def[i].tab == tab && (i != HOS_SET_SHARPNESS || settings[HOS_SET_FILTER] == HOS_FILTER_FSR))
+            rows[nrows++] = (Row){HOS_ROW_SETTING, i};
     if (tab != TAB_CONTROLS) return;
     rows[nrows++] = (Row){HOS_ROW_ACTION, ACT_RESET_ALL};
     rows[nrows++] = (Row){HOS_ROW_HEADING, 0};
@@ -142,6 +150,15 @@ static void build_rows(void) {   /* (the tab's) */
 static int open_;   /* (read without the lock: hos_menu_is_open) */
 static int opened;  /* (ever: until then the selection is the first row, whatever rows come) */
 static int sel, col, pad_last;
+/* the rows again, when one comes or goes (Sharpness with the FSR 1 filter): the same row stays selected */
+static void rows_changed(void) {
+    if (!nrows) return;
+    const Row was = sel >= 0 && sel < nrows ? rows[sel] : (Row){HOS_ROW_SETTING, 0};
+    build_rows();
+    sel = 0;
+    for (int i = 0; i < nrows; i++)
+        if (rows[i].kind == was.kind && rows[i].id == was.id) sel = i;
+}
 static int mode = HOS_MENU_NORMAL;
 static int64_t capture_end;
 enum { Q_CONFLICT, Q_RESET_ALL };

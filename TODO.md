@@ -411,28 +411,38 @@ Left over from it:
 - [ ] Each mode switch leaves the old size's targets allocated (the renderer never frees images: its memory leftover).
 - [x] Above 1080p: decided against enlarging the game's render targets (Longshot's "Output resolution": the UI's
       layout, the post effects' texel offsets, the game's reads of its own targets would all need care). FSR 1 at the
-      present instead (task 1); FSR 3.1 is ruled out (see "Looked at and ruled out").
+      present instead (done: "Done: FSR 1"); FSR 3.1 is ruled out (see "Looked at and ruled out").
 
-## 1. FSR 1: a sharper picture on big screens
+## Done: FSR 1 (a sharper picture on big screens)
 
-AMD FSR 1 (EASU upscaling, then RCAS sharpening) at the present: the game's 1920x1080 (or handheld 1280x720) picture
-scaled to the window's size, for 1440p and 4K screens, in place of the plain linear blit. A fourth Scaling choice on
-the Graphics tab ("FSR 1", with a Sharpness row), applied only when the window is larger than the picture.
+The Graphics tab's Scaling has a fourth choice, FSR 1, with a Sharpness row (Off, 10-100%, default 80%) shown only
+while it is chosen. When the window is larger than the picture, `host/vk/vk_fsr.cpp` runs AMD's EASU (upscaling to
+the size the window shows it at) and then RCAS (sharpening) as compute passes, and the present copies the result 1:1
+into the swapchain. When the window isn't larger, it scales as Smooth. The passes are `host/vk/shaders/fsr1_*.comp` on
+the FidelityFX SDK's FSR 1 headers (`third_party/fidelityfx-fsr1`, v1.1.4 as Longshot pins it, unchanged, MIT).
+`python -m oranges.shaders` compiles them into checked-in SPIR-V headers, so a build needs no glslang, and
+`tests/test_shaders.py` checks those headers against their sources.
 
-- [ ] The two passes as compute shaders on the picture (the crop of the window texture) into a window-sized image,
-      then the copy to the swapchain. FSR 1's shader source is MIT-licensed (AMD's FidelityFX); vendor it under
-      `third_party/` with its notice.
-- [ ] Input: the final picture, the UI included (the game composites its UI into the same RGB10A2 target as the
-      tonemapped scene, so there is no clean pre-UI picture without finding that point in the frame). FSR 1 copes with
-      text and flat UI; compare the menus and the HUD text against Smooth at 4K.
-- [ ] Linear vs sRGB: EASU wants perceptual (gamma) input, the window texture is RGBA8 (UNORM or sRGB view). Check
-      which the game presents and feed it accordingly.
-- [ ] Screenshots keep the game's own size (they are of the picture, not of the window).
+- Input: the final picture with the UI (the crop of the window texture, or the menu's canvas while the menu is open),
+  blitted 1:1 into an RGBA8 image first, so a crop, a wider format or an sRGB texture all work the same way.
+- Encoding: the game presents a UNORM picture holding gamma-encoded values, which is what EASU wants. The passes work on
+  the stored values (through a UNORM view when a texture is sRGB) and RCAS writes into an image of the picture's own
+  encoding, so the blit to the swapchain (same encoding) passes the bytes through. The mean brightness of a 4K shot is
+  the same as Smooth's (0.312 for both).
+- `HOS_CONTROL`'s `SHOT <bmp> <w>x<h>` saves the picture as a window of that size would show it, Scaling applied, so
+  this was checked headless on the day-1 save's island (an RTX 5080): 4K and 1440p, docked and handheld (a 1280x720
+  crop upscaled 3x), Sharpness 80% and Off, and a window smaller than the picture (Smooth). The HUD clock's text and
+  the outlines are clearly sharper than with Smooth at 4K, with no halos or colour shift. Plain screenshots keep the
+  game's size.
 
-Why first: small and self-contained (one present-time pass, nothing in the game changes), and the visible win for
-anyone with a screen above 1080p. It is the upscaler that fits this game: FSR 3.1 needs inputs the game does not have.
+Left over from it:
 
-## 2. 60 fps: the game's own time step (research first)
+- [ ] Try it by hand in the window at 1440p / 4K (full screen): only the headless `SHOT` path was looked at. A window
+      resized live rebuilds FSR's images each frame of the resize (a device wait each time).
+- [ ] Its GPU cost was not measured (two compute passes over the window's pixels, between full barriers, every present).
+- [ ] The 16-bit (half) paths of EASU / RCAS are unused: the 32-bit ones run everywhere.
+
+## 1. 60 fps: the game's own time step (research first)
 
 The game's loop runs faster when let (`HOS_NO_PACING=1`: ~120 fps; `HOS_PRESENT_INTERVAL=1`: 55-60 fps, the picture
 right), but its world steps once per frame: in 2 s of walking right at 60 fps the player went about twice as far as at
@@ -451,10 +461,10 @@ time and halving the step, as Longshot did for its game (`host/oot_high_fps.h` t
 - [ ] Measurement note: `python -m oranges.drive find` picked a wrong body at 60 and 120 fps (its moves did not follow
       the stick), so compare by screenshots or fix `find` first.
 
-Why second: the bigger win of the two (smoothness, all the time), but a research task with a real chance of a no; the
-renderer needs headroom for it too (task 4). Frame generation is no way around it here (see "Looked at and ruled out").
+Why first: the bigger visible win left (smoothness, all the time), but a research task with a real chance of a no; the
+renderer needs headroom for it too (task 3). Frame generation is no way around it here (see "Looked at and ruled out").
 
-## 3. Faster loading
+## 2. Faster loading
 
 The boot to the title screen and the title screen to the island (~30 s here) are long, and every scene change (a
 building, the airport) waits too. Only what oranges adds can be cut without changing the game, so first find where the
@@ -470,22 +480,22 @@ time goes.
       nothing), translation and ASTC decoding off the game's thread (or ahead of the draw that needs them), texture
       uploads batched rather than one submit each.
 - [ ] The game's own pacing (fixed waits, frame-counted fades, loads it spreads over frames at 30 fps) stays as it is;
-      write down how much of the time it is, so it is clear what is left. (If task 2 finds the time step, frame-counted
+      write down how much of the time it is, so it is clear what is left. (If task 1 finds the time step, frame-counted
       waits would shorten at 60 fps only with the step halved: leave those alone.)
 
-Why third: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
-game's thread are also renderer performance (task 4), which task 2 needs.
+Why second: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
+game's thread are also renderer performance (task 3), which task 1 needs.
 
-## 4. The renderer's gaps
+## 3. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
 
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
-as soon as one of those logs or a wrong picture shows. Its performance part comes first if task 2 goes ahead: at a
+as soon as one of those logs or a wrong picture shows. Its performance part comes first if task 1 goes ahead: at a
 forced 60 fps the game held 55-60 fps headless here, with no headroom.
 
-## 5. Clean-ups and checks
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -515,4 +525,4 @@ Nothing here at the moment.
   picture without UI; frame generation needs the same motion vectors. They could only be faked: camera-only motion
   vectors from depth and the view-projection matrices (found in the uniform buffers), wrong for everything that moves
   (villagers, the player, swaying trees, water), jitter patched into the projection of the scene passes only, the UI
-  split out of the final target. Too fragile for what it would give; FSR 1 instead (task 1).
+  split out of the final target. Too fragile for what it would give; FSR 1 instead (done).

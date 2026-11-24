@@ -26,7 +26,8 @@
    HOS_CONTROL=<fifo>: input while the game runs (made if missing; with a random island a fixed script goes astray).
    Lines run in order, each to its end before the next: "<seconds> [inputs...]" holds those inputs (the script's
    names) that long and releases them ("0.2 A", "3 LSTICK=0,1", "1.5": nothing), "SHOT <file.bmp>" saves the next
-   presented picture (the Vulkan back end's), "DUMP" logs every thread (hos_kernel_dump), "PROFILE <s> [thread]" samples
+   presented picture (the Vulkan back end's; "SHOT <file.bmp> 3840x2160": as a window of that size would show it,
+   scaled as the Graphics tab's Scaling says, so headless runs can check it), "DUMP" logs every thread (hos_kernel_dump), "PROFILE <s> [thread]" samples
    one (HOS_PROFILE), "QUIT" ends the program. Added to the player's and the script's. The settings menu: "MENU <what>"
    with OPEN, CLOSE, UP, DOWN, LEFT, RIGHT, OK, BACK, CLEAR, RESET, TAB (its actions), KEY <SDL key name> or PAD <SDL
    gamepad button name> (a press, as from the keyboard or the gamepad). For finding things in the
@@ -150,13 +151,14 @@ static ScriptStep live;   /* the control's input now (under input_lock) */
 static pthread_mutex_t shot_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t shot_cond = PTHREAD_COND_INITIALIZER;
 static char shot_path[512];
+static int shot_w, shot_h;   /* (0: the picture's own size) */
 static int shot_state;   /* 1: asked for, 2: taken */
 
-int hos_control_shot(char *path, size_t size) {
+int hos_control_shot(char *path, size_t size, int *w, int *h) {
     if (!__atomic_load_n(&shot_state, __ATOMIC_ACQUIRE)) return 0;
     pthread_mutex_lock(&shot_lock);
     const int asked = shot_state == 1;
-    if (asked) snprintf(path, size, "%s", shot_path);
+    if (asked) snprintf(path, size, "%s", shot_path), *w = shot_w, *h = shot_h;
     pthread_mutex_unlock(&shot_lock);
     return asked;
 }
@@ -227,6 +229,15 @@ static void control_line(char *line) {
         while (*path == ' ' || *path == '\t') path++;
         pthread_mutex_lock(&shot_lock);
         snprintf(shot_path, sizeof shot_path, "%s", path);
+        shot_w = shot_h = 0;
+        char *last = strrchr(shot_path, ' ');   /* (a last word <w>x<h>: the window size) */
+        int w, h, n = 0;
+        if (last && sscanf(last + 1, "%dx%d%n", &w, &h, &n) == 2 && !last[1 + n] && w > 0 && h > 0 && w <= 16384 &&
+            h <= 16384) {
+            shot_w = w, shot_h = h;
+            while (last > shot_path && (last[-1] == ' ' || last[-1] == '\t')) last--;
+            *last = 0;
+        }
         __atomic_store_n(&shot_state, 1, __ATOMIC_RELEASE);
         struct timespec until;
         clock_gettime(CLOCK_REALTIME, &until);

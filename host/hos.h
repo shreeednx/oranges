@@ -172,9 +172,9 @@ typedef struct {
 } HosInput;
 void hos_input(HosInput *out);     /* the input now: the window's, and HOS_INPUT_SCRIPT's */
 void hos_rumble(int motor, float amplitude);   /* a gamepad's motor (0 low, 1 high frequency): 0..1 */
-/* HOS_CONTROL's SHOT, for the back end at each present: whether a picture is asked for (its path in path), and that
-   it is saved */
-int hos_control_shot(char *path, size_t size);
+/* HOS_CONTROL's SHOT, for the back end at each present: whether a picture is asked for (its path in path; w and h
+   the window size to show it at, as the present scales it, or 0: the picture itself), and that it is saved */
+int hos_control_shot(char *path, size_t size, int *w, int *h);
 void hos_control_shot_done(void);
 /* where the present put the picture: x, y, w, h in the swapchain's pixels of sw x sh (the mouse maps through it) */
 void hos_window_picture(int x, int y, int w, int h, int sw, int sh);

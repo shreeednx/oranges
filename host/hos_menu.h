@@ -56,12 +56,12 @@ const char *hos_pad_name(int input);                              /* "Right (eas
 /* ---- the menu's own settings (hos_menu.c) -----------------------------------------------------------------------
    Graphics: the console mode (HOS_MODE_*: what nn::oe reports, so the resolution the game renders at; HOS_HANDHELD=0/1
    overrides it), full screen 0/1, V-Sync 0/1 (HOS_VSYNC), the filter scaling the picture to the window
-   (HOS_FILTER_*). Controls: the stick dead zone in %, the vibration in %, the mouse as touch 0/1. Read them where
+   (HOS_FILTER_*), FSR 1's sharpness in % (0: Off, no sharpening; its row is shown only with HOS_FILTER_FSR). Controls: the stick dead zone in %, the vibration in %, the mouse as touch 0/1. Read them where
    they apply (each read is cheap): a change in the menu takes effect at the next read. */
-enum { HOS_SET_CONSOLE_MODE, HOS_SET_FULLSCREEN, HOS_SET_VSYNC, HOS_SET_FILTER,
+enum { HOS_SET_CONSOLE_MODE, HOS_SET_FULLSCREEN, HOS_SET_VSYNC, HOS_SET_FILTER, HOS_SET_SHARPNESS,
        HOS_SET_DEAD_ZONE, HOS_SET_VIBRATION, HOS_SET_MOUSE_TOUCH, HOS_SET_N };
 enum { HOS_MODE_DOCKED, HOS_MODE_HANDHELD };
-enum { HOS_FILTER_LINEAR, HOS_FILTER_NEAREST, HOS_FILTER_INTEGER };
+enum { HOS_FILTER_LINEAR, HOS_FILTER_NEAREST, HOS_FILTER_INTEGER, HOS_FILTER_FSR };
 int hos_setting(int id);
 void hos_setting_set(int id, int value);   /* (saved; e.g. F11 for full screen) */
 
