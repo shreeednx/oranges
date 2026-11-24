@@ -1,8 +1,9 @@
 """(oranges) Fixes to the game's own code, applied to the image before the lift (lift.build_image).
 
-Only for a fault in the game that the console's timing hides and that no faithful OS behaviour can hide here. Each
-patch names the supported build's original words, and apply() refuses an image where they differ. It changes the
-image (image.bin too), so the lifted C and the data the game reads agree.
+Only for a fault in the game that the console's timing hides and that no faithful OS behaviour can hide here, or (asked
+for by the user, 2026-11-24: "faster loading") a wait of the game's that only costs time, changing nothing the player
+sees. Each patch names the supported build's original words, and apply() refuses an image where they differ. It
+changes the image (image.bin too), so the lifted C and the data the game reads agree.
 
 The Resource Memory crash (about 1 boot in 10 with several processes running at once)
 -------------------------------------------------------------------------------------
@@ -28,6 +29,23 @@ singleton did not exist yet. The `add` folds into the load's offset, which frees
     086d6598  cbz  x8, 0x86d65bc
     086d659c  ldr  x8, [x8, #8]
     086d65a0  cbz  x8, 0x86d65bc         (new) not initialized yet: try again with the next message
+
+The play-report poll (7 s of every boot, 0.5 s at each later save step)
+-----------------------------------------------------------------------
+At each step of loading (and saving) the save, SaveProc queues a play report for the PlayReporter thread, then waits
+for it to be sent: 0xbe26e50(reporter, 5000 ms) returns once bit 0 of the queue's +0x120 is clear, and sleeps between
+checks. The reporter takes the queue at its next wake-up (~30 ms here: a frame), but the first check comes right after
+the push, so every step sleeps one whole period, and the period is half a second of ticks:
+
+    0be26ec0  ldr  x24, [x9]             the tick frequency
+    0be26ec4  cmp  x24, #0
+    0be26ec8  cinc x9, x24, lt
+    0be26ecc  asr  x21, x9, #1           the sleep: frequency / 2 ticks (ConvertToTimeSpan, SleepThread at 0be26f00)
+
+The boot does 14 such steps (5.8-13.6 s with the day-1 save, the process otherwise idle). The console runs the same
+code, so it waits the same. The patch polls every 1/256 s (3.9 ms) instead; the 5 s timeout counts ticks, unchanged:
+
+    0be26ecc  asr  x21, x9, #8
 """
 import struct
 from dataclasses import dataclass
@@ -47,6 +65,9 @@ PATCHES = (
     Patch("resource handler: wait for the singleton's init", 0x6D6594,
           (0x910DE108, 0xF9400108, 0xB4000108, 0xF9400508),
           (0xF941BD08, 0xB4000128, 0xF9400508, 0xB40000E8)),
+    Patch("play-report poll: every 3.9 ms, not 0.5 s", 0x3E26ECC,
+          (0x9341FD35,),
+          (0x9348FD35,)),
 )
 
 

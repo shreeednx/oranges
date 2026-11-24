@@ -51,3 +51,16 @@ def test_the_resource_handler_patch_is_what_its_comment_says():
 def test_make_nso_module_id_is_the_fake_id():
     from oranges import nso
     assert nso.load(make_nso()).build_id == FAKE_ID
+
+
+def test_the_play_report_poll_patch_is_what_its_comment_says():
+    capstone = pytest.importorskip("capstone")
+    p = patches.PATCHES[1]
+    md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+
+    def dis(words):
+        return ["%s %s" % (i.mnemonic, i.op_str)
+                for i in md.disasm(struct.pack("<%dI" % len(words), *words), 0x08000000 + p.main_offset)]
+    assert p.main_offset + 0x08000000 == 0xBE26ECC
+    assert dis(p.original) == ["asr x21, x9, #1"]
+    assert dis(p.words) == ["asr x21, x9, #8"]

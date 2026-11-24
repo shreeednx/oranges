@@ -508,9 +508,16 @@ time goes.
     submitting thread under `big_lock`.
   - Other `big_lock` waits from game threads (flushes, pool creation): ~0.3 s over the boot.
   - File reads, our HLE and the sound: nothing that shows.
-- [ ] The play-report poll (7 s of the boot, 0.5 s per save step later): only a patch to the game can cut it
-      (`oranges/patches.py`, e.g. `asr x21, x9, #1` at `0xbe26ecc` -> a few ms per poll). It changes nothing the player
-      sees, but it is the game's own code: decide first.
+- [x] The play-report poll, patched (the user's choice): `oranges/patches.py` makes it poll every 3.9 ms
+      (`asr x21, x9, #8` at `0xbe26ecc`). The island now loads at 9-10 s instead of 14-17 s; a save written with it
+      (after the morning announcement) loads again, to the title and onto the island.
+- [x] AES on AES-NI: suyu's C did AESE/AESD/AESMC/AESIMC a byte and a bit at a time, and the game's save goes through
+      nn::crypto's AES-CTR: ~1.5 s of SaveProc for each save it writes or loads (30% of its time in the load of a save
+      made mid-day), ~0.3 s at the boot. `oranges/insn.py` emits them as AES-NI builtins (chunks built with `-maes`;
+      Unicorn agrees, 532 sites). The mid-day save's title-to-island load is ~2 s shorter.
+- Where it stands (the same runs): the boot's title iris at ~14 s (was ~21 s), "Press A" ~5 s later (the logo's
+  animation). Title to island ~3 s on a save made at the start of a day, ~12 s on one made mid-day (a ~9 s loading
+  screen: the save written again, then the island loaded).
 - [ ] Find the 17.5-21 s wait (tick-based: `GetSystemTick` comparisons in the title's or the loading icon's logic).
 - [ ] Cut what is ours: a shader cache on disk (translated SPIR-V by program hash, so a second run translates
       nothing: ~0.7 s by the island, and the hitches of first draws), translation and ASTC decoding off the game's

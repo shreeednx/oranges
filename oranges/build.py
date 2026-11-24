@@ -93,7 +93,7 @@ def host_libraries() -> tuple[list[str], list[str]]:
 
 def common_flags(gen: Path) -> list[str]:
     return ["-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-ffp-contract=off", "-fno-strict-aliasing",
-            "-mcx16", "-g0", "-Wno-everything", "-I" + str(gen), "-I" + str(RT)]
+            "-mcx16", "-maes", "-g0", "-Wno-everything", "-I" + str(gen), "-I" + str(RT)]   # (-maes: insn.aes)
 
 
 def chunk_flags(gen: Path) -> list[str]:

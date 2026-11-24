@@ -263,6 +263,31 @@ def pmull(w):
     return None
 
 
+def aes(w):
+    """(oranges) AESE / AESD / AESMC / AESIMC Vd.16B, Vn.16B on x86's AES-NI (chunks are built with -maes). suyu's C
+    does them a byte and a bit at a time (MixColumns as a GF(2^8) multiply loop): nn::crypto's AES-CTR, which the game's
+    save goes through, took ~1.5 s of SaveProc's time for each save it loads or writes. The ARM and x86 states are the
+    same 16 bytes in memory order:
+      AESE   Vd = SubBytes(ShiftRows(Vd ^ Vn))            = AESENCLAST(Vd ^ Vn, 0)
+      AESD   Vd = InvSubBytes(InvShiftRows(Vd ^ Vn))      = AESDECLAST(Vd ^ Vn, 0)
+      AESMC  Vd = MixColumns(Vn)                          = AESENC(AESDECLAST(Vn, 0), 0)  (the byte steps cancel)
+      AESIMC Vd = InvMixColumns(Vn)                       = AESIMC(Vn)"""
+    op, rn, rd = (w >> 12) & 0x1F, (w >> 5) & 31, w & 31
+    head = "{ typedef long long _v __attribute__((vector_size(16))); const _v _z = {0, 0}; _v _s, _k; "
+    if op in (4, 5):
+        f = "__builtin_ia32_aesenclast128" if op == 4 else "__builtin_ia32_aesdeclast128"
+        body = ("memcpy(&_s, c->vreg[%d], 16); memcpy(&_k, c->vreg[%d], 16); _s = %s(_s ^ _k, _z); "
+                % (rd, rn, f))
+    elif op == 6:
+        body = ("memcpy(&_s, c->vreg[%d], 16); (void)_k; "
+                "_s = __builtin_ia32_aesenc128(__builtin_ia32_aesdeclast128(_s, _z), _z); " % rn)
+    elif op == 7:
+        body = "memcpy(&_s, c->vreg[%d], 16); (void)_k; (void)_z; _s = __builtin_ia32_aesimc128(_s); " % rn
+    else:
+        return None
+    return head + body + "memcpy(c->vreg[%d], &_s, 16); }" % rd
+
+
 def ldnp_stnp_q(w):
     """(oranges) LDNP / STNP Qt1, Qt2, [Xn|SP, #imm] (SIMD&FP, 128-bit): a plain pair access (the non-temporal hint
     has no effect here). In the game: 2 STNP sites in main's memset-like code"""
@@ -280,6 +305,8 @@ def emit(w):
     """C for one of the forms above, or None (then suyu translates it)"""
     if (w & 0xBF20FC00) == 0x0E20E000:                # (oranges) PMULL / PMULL2
         return pmull(w)
+    if (w & 0xFFFFCC00) == 0x4E284800:                # (oranges) AESE / AESD / AESMC / AESIMC
+        return aes(w)
     if (w & 0xFF800000) == 0xAC000000:                # (oranges) STNP / LDNP Q (L = bit 22)
         return ldnp_stnp_q(w)
     if (w & 0x3FBF7C00) == 0x089F7C00:                # LDAR, STLR, LDLAR, STLLR (o0 = bit 15)

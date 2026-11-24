@@ -88,7 +88,7 @@ def _posix_build_harness():
 def _install(words=None, only=None):
     insn_test.unicorn = _Unicorn
     insn_test.mem_regs = mem_regs
-    toolchain.native_target = lambda *a, **k: _BASE["target"](*a, **k) + ["-mcx16"]   # (CASP on 128 bits)
+    toolchain.native_target = lambda *a, **k: _BASE["target"](*a, **k) + ["-mcx16", "-maes"]   # (CASP; insn.aes)
     if os.name != "nt":
         insn_test.build_harness = _posix_build_harness()
     base_sample = _BASE["sample"]

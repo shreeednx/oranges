@@ -78,10 +78,12 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `Lifter.emit_function`; `report.json` `emit.spin_barriers` counts them (~159k).
 - `oranges/patches.py`: (oranges) fixes to the game's own code, written into the image before the lift
   (`build_image`; `report.json` `patches`). Only for a game race the console's timing hides and no faithful OS
-  behaviour can (the docstring has the case). Each names the supported build's original words; a mismatch is an error.
-  A new one needs a lift again.
+  behaviour can, or (the user's choice) a wait of the game's that only costs time: the play-report poll, 0.5 s per
+  save step, 7 s of every boot (the docstring has both cases). Each names the supported build's original words; a
+  mismatch is an error. A new one needs a lift again.
 - `oranges/insn.py`: Longshot's `nx2/insn.py` (forms suyu lacks: LSE, LDAPR, SQSHL #imm, SDIV overflow, ...), plus
-  oranges' PMULL/PMULL2 and LDNP/STNP Q, marked `(oranges)`. `install()` wraps `a64_lift.classify` and
+  oranges' PMULL/PMULL2, LDNP/STNP Q and AESE/AESD/AESMC/AESIMC (on AES-NI: suyu's byte-at-a-time C cost ~1.5 s
+  of every save's AES-CTR), marked `(oranges)`. `install()` wraps `a64_lift.classify` and
   `a64emit.translate`. A new form goes in `emit()` and gets encodings in `tests/test_insn.py`, checked against Unicorn.
 - `oranges/insncheck.py`: drives the kit's `tests/insn_test.py` (Unicorn vs lifted C) on Linux. It wraps rather than
   edits: the harness's `VirtualAlloc` becomes `mmap`, the CPU model is Unicorn's "max", and `words=` tests chosen
@@ -89,7 +91,7 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
 - `oranges/lift.py`: the lift stage driver (`install`, `build_image`, `discover`, `coverage`, `translate_coverage`,
   `write_c`, `run`). `install()` applies `lift_fixes` and `insn` and must run before discovery and emission.
 - `oranges/build.py`: compiles and links. Chunk flags follow Longshot's (`-O1 -ffp-contract=off -fno-strict-aliasing
-  -mcx16 -ffunction-sections -mllvm -rotation-max-header-size=0`).
+  -mcx16 -ffunction-sections -mllvm -rotation-max-header-size=0`), plus `-maes` (`insn.aes`).
 - `oranges/hle.py`: the lift-time half of the OS layer (from Longshot's `nx2/standalone.py`). `hle_set` hooks every
   `HLE(sym)` / `void imp_sym(Ctx` that `host/*.c` defines, at the import and at the sdk's definition, and stubs every
   OS-facing `nn::<service ns>::f` the game imports (`OS_NAMESPACES`). It writes `gen/a64_stubs.c` (stubs log their
