@@ -5,8 +5,8 @@
 
 DIR gets:
   toolchain/  clang, clang++ and lld from LLVM's own Linux release (pruned and stripped: the compilers, the linker,
-              the archive tools and clang's headers), which runs on glibc 2.34 and newer (with the system's zlib and
-              libstdc++, which every desktop distribution has);
+              the archive tools, clang's headers and libc++, static), which runs on glibc 2.34 and newer (with
+              the system's zlib and libstdc++, which every desktop distribution has);
   sysroot/    Ubuntu 22.04's C library (glibc 2.35), libstdc++ 12, the Linux headers and the Vulkan loader: the port
               is built against it, so it runs on glibc 2.35 and newer whatever the player's distribution is
               (libstdc++ and libgcc are linked in);
@@ -80,7 +80,11 @@ LLVM = ("https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.6/L
         "bd4d1c434ff69ef06d19e7934c04708da677e5f2eb51f5bcf052ab91818f0094")
 LLVM_KEEP = ("bin/clang", "bin/clang++", "bin/clang-23", "bin/clang-cpp", "bin/lld", "bin/ld.lld",
              "bin/llvm-ar", "bin/llvm-ranlib", "bin/llvm-nm", "bin/llvm-objdump", "bin/llvm-strip", "bin/llvm-objcopy",
-             "lib/clang/", "LICENSE.TXT")
+             "lib/clang/", "LICENSE.TXT",
+             # (LLVM's C++ library, linked in: eden needs C++20's <format>, which the sysroot's libstdc++ 12 lacks)
+             "include/c++/v1/", "include/x86_64-unknown-linux-gnu/c++/v1/",
+             "lib/x86_64-unknown-linux-gnu/libc++.a", "lib/x86_64-unknown-linux-gnu/libc++abi.a",
+             "lib/x86_64-unknown-linux-gnu/libunwind.a")
 PYTHON = ("https://github.com/astral-sh/python-build-standalone/releases/download/20261123/"
           "cpython-3.14.10%2B20261123-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
           "92102b15f5149d124b5b4b2f00f1ff2f827cf1a99dc1a22447ad52861bd80ace")
@@ -383,7 +387,8 @@ def build_ffmpeg(kit: Path, cache: Path, say=print) -> None:
 
 def finish_libs(kit: Path) -> None:
     """libs/ for static linking: each .pc file's Libs.private folded into its Libs (oranges.pkgconf reads Libs, as
-    for shared libraries), and a vulkan.pc for the sysroot's loader (its headers are third_party/khronos's)"""
+    for shared libraries), libatomic static, and a vulkan.pc for the sysroot's loader (its headers are
+    third_party/khronos's)"""
     pcdir = kit / "libs" / "lib" / "pkgconfig"
     for pc in pcdir.glob("*.pc"):
         lines = pc.read_text().splitlines()
@@ -394,6 +399,8 @@ def finish_libs(kit: Path) -> None:
                 continue
             if ln.startswith("Libs:") and private:
                 ln = ln + " " + " ".join(private)
+            if ln.startswith("Libs:"):   # (libatomic linked in: not every distribution installs libatomic.so.1)
+                ln = ln.replace(" -latomic", " -l:libatomic.a")
             out.append(ln)
         pc.write_text("\n".join(out) + "\n")
     (pcdir / "vulkan.pc").write_text("Name: Vulkan-Loader\nDescription: the player's Vulkan loader (linked against "

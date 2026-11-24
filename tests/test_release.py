@@ -87,6 +87,7 @@ def test_the_prefix_and_sysroot_reach_the_build(monkeypatch, tmp_path):
     assert build.target_flags() == ["--sysroot=/sr"]
     assert "-static-libstdc++" in build.target_link_flags() and "-Wl,-rpath,$ORIGIN" in build.target_link_flags()
     assert build.common_flags(Path("gen"))[0] == "--sysroot=/sr"
+    assert "-stdlib=libc++" in build.cxx_flags(Path("gen")) and "-stdlib=libc++" not in build.common_flags(Path("g"))
 
 
 def test_tracked_files_hold_nothing_of_the_game():
@@ -105,3 +106,15 @@ def test_sha256sums_and_verify(tmp_path):
     (tmp_path / "d" / "b").write_text("changed")
     (tmp_path / "a").unlink()
     assert sorted(release.verify(tmp_path)) == ["a: missing", "d/b: changed"]
+
+
+def test_object_keys_do_not_depend_on_where_folders_are(tmp_path, monkeypatch):
+    src = tmp_path / "a.c"
+    src.write_text("int x;\n")
+    keys = []
+    for where in ("one", "two"):
+        sysroot, gen = tmp_path / where / "sysroot", tmp_path / where / "work" / "gen"
+        monkeypatch.setenv("ORANGES_SYSROOT", str(sysroot))
+        keys.append(build._key(src, ["--sysroot=%s" % sysroot, "-I%s" % gen, "-O1"], gen))
+    assert keys[0] == keys[1]
+    assert build._key(src, ["-O2"], gen) != keys[0]

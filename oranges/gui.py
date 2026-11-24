@@ -51,7 +51,7 @@ def build_gui(out: Path | None = None, say=print) -> Path:
         o = obj / (src.stem + ".o")
         cpp = src.suffix == ".cpp"
         cmd = [build.cxx() if cpp else build.cc(), "-c", str(src), "-o", str(o)] + compile_flags() + cflags
-        cmd += ["-std=c++20"] if cpp else ["-std=gnu11"]
+        cmd += ["-std=c++20"] + build.target_cxx_flags() if cpp else ["-std=gnu11"]
         if build.windows():
             cmd += ["-D_FILE_OFFSET_BITS=64"]
         if not o.exists() or o.stat().st_mtime < max(src.stat().st_mtime, *(h.stat().st_mtime for h in

@@ -134,16 +134,24 @@ def target_flags() -> list[str]:
     return ["--sysroot=" + sysroot] if sysroot else []
 
 
+def target_cxx_flags() -> list[str]:
+    """C++ flags for the target system: with a release's sysroot, LLVM's libc++ (the toolchain's: the sysroot's
+    libstdc++ 12 has no <format>, which eden uses)"""
+    return ["-stdlib=libc++"] if os.environ.get("ORANGES_SYSROOT") and not windows() else []
+
+
 def target_link_flags() -> list[str]:
-    """link flags for the target system: with a release's sysroot, its C++ runtime linked in (the player's system
-    may have an older one) and the libraries shipped beside the program found there ($ORIGIN)"""
+    """link flags for the target system: with a release's sysroot, libc++ and the C runtime's support linked in (the
+    player's system may have none, or an older one) and the libraries shipped beside the program found there
+    ($ORIGIN)"""
     if windows() or not os.environ.get("ORANGES_SYSROOT"):
         return []
-    return target_flags() + ["-static-libstdc++", "-static-libgcc", "-Wl,-rpath,$ORIGIN", "-Wl,--as-needed"]
+    return target_flags() + ["-stdlib=libc++", "-static-libstdc++", "-lc++abi", "-static-libgcc", "-Wl,-rpath,$ORIGIN",
+                             "-Wl,--as-needed"]
 
 
 def cxx_flags(gen: Path) -> list[str]:
-    return target_flags() + [
+    return target_flags() + target_cxx_flags() + [
             "-std=c++20", "-O2", "-march=" + os.environ.get("ORANGES_MARCH", "x86-64-v3"), "-fno-strict-aliasing",
             "-g0", "-w", "-I" + str(EDEN), "-I" + str(EDEN / "compat"), "-I" + str(EDEN / "sirit" / "include"),
             "-I" + str(EDEN / "sirit" / "src"), "-I" + str(KHRONOS), "-I" + str(HOST), "-I" + str(gen),
@@ -248,9 +256,25 @@ def _digest(path: Path) -> bytes:
     return _digests[k]
 
 
+def _places(gen: Path) -> list[tuple[str, str]]:
+    """the folders a key names by a placeholder: moving the work folder, the tree or a release's tools (a player
+    moving their oranges or build folder) changes no object (the chunks have no debug info; the host's only names
+    its sources' paths in it)"""
+    out = [(os.environ.get("ORANGES_SYSROOT", ""), "<sysroot>"), (os.environ.get("ORANGES_PREFIX", ""), "<prefix>"),
+           (str(gen.parent), "<work>"), (str(ROOT), "<root>")]
+    return [(path, token) for path, token in out if path]
+
+
+def _neutral(text: str, places: list[tuple[str, str]]) -> str:
+    for path, token in places:
+        text = text.replace(path, token)
+    return text
+
+
 def _key(src: Path, flags: list[str], gen: Path) -> str:
-    """What an object depends on: its flags, its source and the headers it includes"""
-    h = hashlib.sha256("\0".join(flags).encode())
+    """What an object depends on: its flags, its source and the headers it includes (where folders are, left out)"""
+    places = _places(gen)
+    h = hashlib.sha256(_neutral("\0".join(flags), places).encode())
     deps = [src, RT / "a64.h", gen / "a64_suyu.h", gen / "a64_fpx.h"]
     if HOST in src.parents:   # (every host header and include file: few, and cheap to hash)
         deps += sorted(p for p in HOST.rglob("*") if p.suffix in (".h", ".inc"))
@@ -260,7 +284,7 @@ def _key(src: Path, flags: list[str], gen: Path) -> str:
         deps += sorted(p for p in IMGUI.rglob("*.h"))
     for dep in deps:
         if dep.exists():
-            h.update(str(dep).encode() + b"\0" + _digest(dep))
+            h.update(_neutral(str(dep), places).encode() + b"\0" + _digest(dep))
     return h.hexdigest()
 
 
