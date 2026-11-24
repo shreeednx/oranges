@@ -157,6 +157,11 @@ def cmd_build(args) -> int:
     return 0
 
 
+def cmd_make(args) -> int:
+    from . import make
+    return make.main(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="oranges", description=__doc__)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -195,6 +200,14 @@ def main(argv: list[str] | None = None) -> int:
                         "else linux)")
     s.add_argument("--jobs", type=int, help="parallel compiles (default: what fits in memory, or ORANGES_JOBS)")
     s.set_defaults(run=cmd_build)
+    s = sub.add_parser("make", help="the whole build from a .nup: check, extract, lift, compile, link (resumable)")
+    s.add_argument("nup")
+    s.add_argument("--dir", default="work", help="the folder to build in (default: work)")
+    s.add_argument("--jobs", type=int, help="parallel compiles (default: what fits in memory)")
+    s.add_argument("--progress", choices=("text", "json"), default="text",
+                   help="json: one JSON event per line on stdout (for the setup GUI); stdin's end cancels")
+    s.add_argument("--clean", action="store_true", help="delete the generated C and the objects once linked")
+    s.set_defaults(run=cmd_make)
     args = ap.parse_args(argv)
     try:
         return args.run(args)

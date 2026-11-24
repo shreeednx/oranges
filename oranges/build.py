@@ -28,6 +28,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -42,6 +43,9 @@ RT = Path(kit.KIT) / "rt"
 
 
 TARGETS = ("linux", "windows")
+# (a compiler's exit when Windows ended it for want of memory: STATUS_NO_MEMORY, as an unsigned exit code; on Linux
+# the OOM killer's SIGKILL is a negative returncode)
+KILLED_EXITS = (0xC0000017,)
 MINGW_TRIPLE = "x86_64-w64-mingw32"
 MINGW_PREFIX = tools_dir("msys2-clang64")   # (python -m oranges.mingw's default)
 
@@ -258,7 +262,52 @@ def link_flags() -> list[str]:
             "-lwinmm", "-Wl,--stack,0x4000000", "-mwindows"]
 
 
-def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_name: str | None = None) -> Path:
+_running: set[subprocess.Popen] = set()   # (the compiles under way: cancel() ends them)
+_running_lock = threading.Lock()
+_cancelled = threading.Event()
+
+
+class Cancelled(Exception):
+    """the build was stopped (cancel())"""
+
+
+def cancel() -> None:
+    """stops the build: the compiles under way are killed, and build() raises Cancelled (from any thread)"""
+    _cancelled.set()
+    with _running_lock:
+        for proc in list(_running):
+            proc.kill()
+
+
+def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    """subprocess.run that cancel() can stop"""
+    if _cancelled.is_set():
+        raise Cancelled()
+    with _running_lock:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kw)
+        _running.add(proc)
+    try:
+        out, err = proc.communicate()
+    finally:
+        with _running_lock:
+            _running.discard(proc)
+    if _cancelled.is_set():
+        raise Cancelled()
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+class CompileError(RuntimeError):
+    """a compile or the link failed; killed: the compiler was killed by a signal (out of memory, usually)"""
+
+    def __init__(self, message: str, killed: bool = False):
+        super().__init__(message)
+        self.killed = killed
+
+
+def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_name: str | None = None,
+          progress=None) -> Path:
+    """compiles what changed and links; progress(done, total, name, done_bytes, total_bytes) after each object (the
+    bytes: of the sources, a better measure of the time left than the count, as the chunks are most of it)"""
     if target_name:
         os.environ["ORANGES_TARGET"] = target_name
     work = Path(work)
@@ -284,20 +333,32 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_na
         src, flags, obj, stamp, key = item
         start = time.monotonic()
         tmp = obj.with_suffix(".o.tmp")
-        r = subprocess.run([compiler_cxx if src.suffix == ".cpp" else compiler, "-c", str(src), "-o", str(tmp)] + flags,
-                           capture_output=True, text=True)
+        r = _run([compiler_cxx if src.suffix == ".cpp" else compiler, "-c", str(src), "-o", str(tmp)] + flags)
         if r.returncode:
-            raise RuntimeError("%s failed:\n%s" % (src.name, r.stderr[-4000:]))
+            raise CompileError("%s failed (exit %d):\n%s" % (src.name, r.returncode, r.stderr[-4000:]),
+                               killed=r.returncode < 0 or r.returncode in KILLED_EXITS)
         os.replace(tmp, obj)
         stamp.write_text(key)
-        return src.name, time.monotonic() - start
+        return src.name, time.monotonic() - start, src.stat().st_size
 
-    done = 0
+    done = done_bytes = 0
+    total_bytes = sum(t[0].stat().st_size for t in todo)
+    if progress:
+        progress(0, len(todo), "", 0, total_bytes)
     with ThreadPoolExecutor(jobs) as pool:
-        for fut in as_completed([pool.submit(compile_one, t) for t in todo]):
-            name, secs = fut.result()
-            done += 1
-            say("  [%d/%d] %s %.0f s (%.0f s elapsed)" % (done, len(todo), name, secs, time.monotonic() - t0))
+        futures = [pool.submit(compile_one, t) for t in todo]
+        try:
+            for fut in as_completed(futures):
+                name, secs, size = fut.result()
+                done += 1
+                done_bytes += size
+                say("  [%d/%d] %s %.0f s (%.0f s elapsed)" % (done, len(todo), name, secs, time.monotonic() - t0))
+                if progress:
+                    progress(done, len(todo), name, done_bytes, total_bytes)
+        except BaseException:   # (the first failure ends the build: the queued compiles don't start)
+            for fut in futures:
+                fut.cancel()
+            raise
 
     if windows():   # (the manifest: UTF-8 as the code page)
         res = (obj_dir / "oranges.res.o").resolve()
@@ -313,10 +374,10 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_na
     t1 = time.monotonic()
     libs = host_libraries()[1] + link_flags()
     linker = compiler_cxx if any(o.name.startswith(("eden.", "vk.")) for o in objs) else compiler
-    r = subprocess.run([linker, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + libs,
-                       capture_output=True, text=True)
+    r = _run([linker, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + libs)
     if r.returncode:
-        raise RuntimeError("link failed:\n%s" % r.stderr[-6000:])
+        raise CompileError("link failed (exit %d):\n%s" % (r.returncode, r.stderr[-6000:]),
+                           killed=r.returncode < 0 or r.returncode in KILLED_EXITS)
     say("linked %.0f MB in %.0f s" % (exe.stat().st_size / 1e6, time.monotonic() - t1))
     if windows():
         copied = bundle_dlls(exe)
