@@ -13,11 +13,13 @@ are FP-exact (-ffp-contract=off) and LoopRotate is capped, which a64-kit measure
 The Windows build is cross-compiled with llvm-mingw (MinGW-w64 on clang, UCRT): x86_64-w64-mingw32-clang from PATH,
 else from ORANGES_MINGW (default /opt/llvm-mingw). It goes to <work>/build-windows/oranges.exe, with its own objects.
 Its libraries (SDL3, the Vulkan loader, libopus, FFmpeg) come from a MinGW prefix: ORANGES_MINGW_PREFIX, else
-~/.local/opt/msys2-clang64 when it exists (`python -m oranges.mingw` makes it), whose lib/pkgconfig is searched with
-pkg-config's --define-prefix; else x86_64-w64-mingw32-pkg-config when that is on PATH. Without them it builds
-headless (the null back end). winpthreads and libc++ are linked in statically, so the program needs only those
-libraries' DLLs beside it.
-Run on Windows itself (MSYS2's CLANG64 shell), the target is windows and its own clang, pkg-config and windres are used.
+~/.local/opt/msys2-clang64 when it exists (`python -m oranges.mingw` makes it), whose lib/pkgconfig files
+oranges.pkgconf reads (no pkg-config needed, and the prefix may have moved); else pkg-config: MSYS2's own on Windows,
+x86_64-w64-mingw32-pkg-config across. Without them it builds headless (the null back end). winpthreads and libc++
+are linked in statically, so the program needs only those libraries' DLLs beside it.
+Run on Windows itself, the target is windows, and clang, llvm-objdump and windres come from PATH or ORANGES_MINGW's
+bin: llvm-mingw's Windows release (`python -m oranges.wintools` fetches it, with a Python to run oranges on) or
+MSYS2's CLANG64 shell.
 """
 
 import functools
@@ -29,7 +31,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from . import kit
+from . import kit, pkgconf
 
 import toolchain  # noqa: E402,I001  (the kit's)
 
@@ -89,18 +91,21 @@ def exe_name() -> str:
     return "oranges.exe" if windows() else "oranges"
 
 
-def _pkg_config() -> tuple[list[str], dict] | None:
-    """the pkg-config command line and environment for the target's libraries, or None: none to be had"""
-    if not _cross():   # (on Windows: MSYS2's own pkg-config knows its CLANG64 libraries)
-        return ["pkg-config"], dict(os.environ)
-    prefix = os.environ.get("ORANGES_MINGW_PREFIX") or (str(MINGW_PREFIX) if MINGW_PREFIX.is_dir() else None)
-    if prefix:
-        env = dict(os.environ, PKG_CONFIG_LIBDIR=str(Path(prefix) / "lib" / "pkgconfig"))
-        env.pop("PKG_CONFIG_PATH", None)
-        return ["pkg-config", "--define-prefix"], env
-    if shutil.which(MINGW_TRIPLE + "-pkg-config"):
-        return [MINGW_TRIPLE + "-pkg-config"], dict(os.environ)
-    return None
+def mingw_prefix() -> Path | None:
+    """the Windows build's library prefix (oranges.mingw's): ORANGES_MINGW_PREFIX, else its default folder when it
+    is there; None for the Linux build"""
+    if not windows():
+        return None
+    if os.environ.get("ORANGES_MINGW_PREFIX"):
+        return Path(os.environ["ORANGES_MINGW_PREFIX"])
+    return MINGW_PREFIX if MINGW_PREFIX.is_dir() else None
+
+
+def _pkg_config() -> list[str] | None:
+    """the pkg-config command for the target's libraries when there is no prefix, or None: none to be had"""
+    if not _cross():   # (Linux; on Windows MSYS2's own pkg-config, which knows its CLANG64 libraries)
+        return ["pkg-config"]
+    return [MINGW_TRIPLE + "-pkg-config"] if shutil.which(MINGW_TRIPLE + "-pkg-config") else None
 
 
 def vulkan() -> bool:
@@ -126,19 +131,25 @@ def optional_library(name: str) -> tuple[list[str], list[str]]:
 
 @functools.cache
 def _optional_library(name: str, _target: str) -> tuple[list[str], list[str]]:
-    pc = _pkg_config()
-    if pc is None:
-        return [], []
-    cmd, env = pc
-    try:
-        cflags = subprocess.run(cmd + ["--cflags"] + name.split(), capture_output=True, text=True, check=True,
-                                env=env).stdout
-        libs = subprocess.run(cmd + ["--libs"] + name.split(), capture_output=True, text=True, check=True,
-                              env=env).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return [], []
+    prefix = mingw_prefix()
+    if prefix:
+        try:
+            cflags, libs = pkgconf.flags(name.split(), [prefix / "lib" / "pkgconfig"])
+        except LookupError:
+            return [], []
+    else:
+        cmd = _pkg_config()
+        if cmd is None:
+            return [], []
+        try:
+            cflags = subprocess.run(cmd + ["--cflags"] + name.split(), capture_output=True, text=True,
+                                    check=True).stdout.split()
+            libs = subprocess.run(cmd + ["--libs"] + name.split(), capture_output=True, text=True,
+                                  check=True).stdout.split()
+        except (OSError, subprocess.CalledProcessError):
+            return [], []
     # (SDL3's -mwindows: link_flags chooses the subsystem, with or without SDL3)
-    return cflags.split(), [f for f in libs.split() if f != "-mwindows"]
+    return cflags, [f for f in libs if f != "-mwindows"]
 
 
 OPTIONAL_LIBRARIES = {"opus": "HOS_HAVE_OPUS", "sdl3": "HOS_HAVE_SDL3",    # (pkg-config name: the macro host/ tests)

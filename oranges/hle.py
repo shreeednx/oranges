@@ -92,7 +92,7 @@ def demangle(syms: list[str]) -> dict[str, str]:
 
 def _write_if_changed(path: Path, text: str) -> None:
     if not path.exists() or path.read_text() != text:
-        path.write_text(text)
+        path.write_text(text, newline="\n")   # (the same bytes from a lift on Windows)
 
 
 def write_stubs(gen: Path, meta: dict, host: Path = HOST) -> int:

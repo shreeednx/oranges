@@ -627,9 +627,19 @@ The differences live in `host/hos_port.h` / `hos_port.c`:
 - [x] The libraries for MinGW, the C++ under MinGW, and runs under wine with the window, sound, renderer and movie
 - [ ] Run it on Windows itself: boot the day-1 save to the island with the window, sound, a gamepad and the F1 menu,
       with the save in `%APPDATA%\oranges\saves\01006F8002326000\device`. `VK_EXT_external_memory_host` is on
-      NVIDIA's and AMD's Windows drivers. The build on Windows (MSYS2 CLANG64: `clang`, `pkg-config`, `windres`; the
-      target defaults to windows there) is written but untried
-- [ ] The Python side on Windows: Python 3.14, the kit's `build_emit.py` makes `a64emit.dll`; `oranges lift` there
+      NVIDIA's and AMD's Windows drivers
+- [x] The Python side on Windows, under wine (2026-11-24): `python -m oranges.wintools` (new) fetches the embeddable
+      Python 3.14.10 (with lz4's wheel) and llvm-mingw's Windows release (LLVM 23.1.6), SHA-256s pinned, into
+      `~/.local/opt/oranges-wintools` (955 MB), with a `.pth` naming this checkout. With them, under wine:
+      `oranges lift --write` (94 s; the kit builds `a64emit.dll` with that clang++, static) writes the same C as the
+      Linux lift, byte for byte (oranges' own generated files are written with `\n` now; the kit's `functions.txt`
+      and `image.json` stay CRLF on Windows), and `oranges build` with that clang (the chunks ~12 min under wine,
+      the rest ~30 s) makes an `oranges.exe` that boots the day-1 save to the title in a window, with sound, at
+      30 fps. The libraries' `.pc` files are read by `oranges/pkgconf.py` (new) now, not pkg-config, for the prefix:
+      a build on Windows needs no MSYS2, and the prefix may move (FFmpeg's `.pc` files hold absolute paths, which
+      `--define-prefix` left as they were). Recipe in CLAUDE.md
+- [ ] The same on Windows itself (the lift's and the build's times there; MSYS2's CLANG64 shell is the other way,
+      untried)
 - [x] Shipping, for players: a GUI subsystem build (no console window opens with it). Its log (`hos_log_open`) goes
       where stderr was sent (a redirect, a pipe, a terminal: MSYS2's, wine's), else to the command prompt it was
       started from (`AttachConsole`), else to `<user folder>\oranges.log` (`%APPDATA%\oranges`; the run before's kept
@@ -673,7 +683,10 @@ generated C 1.4 GB, objects 0.8 GB) and ~2.5 GB of memory per compile job.
     on the player's distribution: build against an old enough glibc, or ship the libraries it links);
   - the port's libraries, headers and import libraries: SDL3, libopus, FFmpeg (the movie's decoders only, as
     `oranges.mingw` builds it), the Vulkan headers and loader import library; their DLLs / .so files copied beside
-    the built port with their licence texts, as `bundle_dlls` does for Windows now;
+    the built port with their licence texts, as `bundle_dlls` does for Windows now (the build reads their `.pc`
+    files itself, `oranges/pkgconf.py`: no pkg-config to ship);
+  - for Windows, `oranges.wintools` already fetches the Python and the toolchain such a release would carry, and the
+    pipeline runs on them (under wine so far: task 1);
   - prebuilt or source-only parts as fits: eden, Dear ImGui and the host are compiled on the player's machine with the
     lifted C (no game code in the release), or prebuilt as objects to save time (they hold no game code either).
   - Versioned as one unit: a release's toolchain, libraries and oranges are known to build together. Checksums

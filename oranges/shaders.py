@@ -128,7 +128,7 @@ def run(check: bool, say=print) -> int:
             out[hdr] = render(comp, compile_words(exe, comp), version)
     for hdr, text in out.items():   # (nothing written until every shader compiled)
         if not hdr.exists() or hdr.read_text() != text:
-            hdr.write_text(text)
+            hdr.write_text(text, newline="\n")
             say("wrote %s" % hdr.relative_to(ROOT))
     if check and not bad:
         say("%d shader headers match their sources" % len(comps))

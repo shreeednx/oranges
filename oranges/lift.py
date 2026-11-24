@@ -163,7 +163,7 @@ def run(exefs: str | os.PathLike, work: str | os.PathLike, skip: tuple[str, ...]
     t2 = time.monotonic()
     say("discover: %d functions (%.1f s)" % (len(lifter.funcs), t2 - t1))
 
-    with open(out / "functions.txt", "w") as f:
+    with open(out / "functions.txt", "w", newline="\n") as f:
         for entry in sorted(lifter.funcs):
             body, _ = lifter.funcs[entry]
             f.write("%08x %6d %-8s %s\n" % (entry, len(body), module_of(img, entry), img.names.get(entry, "")))
@@ -192,6 +192,6 @@ def run(exefs: str | os.PathLike, work: str | os.PathLike, skip: tuple[str, ...]
         report["seconds"]["emit"] = round(time.monotonic() - t3, 1)
         say("emit: %d files, %.0f MB of C (%.1f s)" % (report["emit"]["files"], report["emit"]["bytes"] / 1e6,
                                                      report["seconds"]["emit"]))
-    with open(out / "report.json", "w") as f:
+    with open(out / "report.json", "w", newline="\n") as f:
         json.dump(report, f, indent=1)
     return report

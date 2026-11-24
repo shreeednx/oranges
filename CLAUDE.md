@@ -35,6 +35,10 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/python -m oranges.mingw                 # the Windows build's libraries: ~/.local/opt/msys2-clang64 (~40 s)
 .venv/bin/oranges build --target windows          # work/build-windows/oranges.exe (+ DLLs, licenses/) with llvm-mingw
 WINEDEBUG=-all ORANGES_USER=Z:/abs/dir HOS_NO_WINDOW=1 wine work/build-windows/oranges.exe   # it, under wine
+.venv/bin/python -m oranges.wintools      # Windows' Python 3.14 + llvm-mingw's Windows release: ~/.local/opt/oranges-wintools
+#   the pipeline on them, under wine (LONGSHOT_MINGW: the kit's clang++ for a64emit.dll; Z: paths throughout):
+#   WINEDEBUG=-all LONGSHOT_MINGW='Z:\<home>\.local\opt\oranges-wintools\llvm-mingw' wine ~/.local/opt/oranges-wintools/python/python.exe -m oranges lift --write --work 'Z:\...\work\wine-lift' --exefs 'Z:\...\work\exefs'
+#   ... ORANGES_MINGW='Z:\...\llvm-mingw' ORANGES_MINGW_PREFIX='Z:\<home>\.local\opt\msys2-clang64' ... -m oranges build --work 'Z:\...\work\wine-lift'
 ./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
 HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
 HOS_CONTROL=ctl.fifo HOS_NO_WINDOW=1 ./work/build/oranges &   # drive it live: one line, or several, at a time:
@@ -157,7 +161,7 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   whole milliseconds; MinGW's `open` needs `O_BINARY`. `host/win/`: the Windows manifest (UTF-8 code page) and `.rc`.
   The Windows build (`oranges/build.py`'s docstring) links winpthreads and libc++ statically; its libraries come from
   `oranges/mingw.py`'s prefix (MSYS2 CLANG64's SDL3, Vulkan loader, opus; FFmpeg built from source with only the
-  movie's decoders), and the build copies the DLLs and their licence texts beside the exe. It runs under wine as on
+  movie's decoders), whose `.pc` files `oranges/pkgconf.py` reads (no pkg-config; the prefix may move), and the build copies the DLLs and their licence texts beside the exe. It runs under wine as on
   Linux (renderer, window, sound, movie): `HOS_CONTROL=name` is `\\.\pipe\name`, written with
   `wine cmd /c "type Z:\path\cmds.txt > \\.\pipe\name"`. The exe is a GUI subsystem one: its log goes to stderr when that leads
   somewhere (a terminal, wine's), else to the command prompt's console, else to `<user folder>\oranges.log`, and
