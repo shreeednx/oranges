@@ -471,79 +471,57 @@ camera's per-frame smoothing (a lerp factor per frame isn't linear in the step).
 in a stripped 66 MB binary, and a missed one shows only as something at double speed somewhere in a day of play. Not
 worth it. `HOS_PRESENT_INTERVAL` stays as a debugging switch.
 
-## 1. Faster loading
+## Done: faster loading (measured; the play-report poll, AES-NI, a renderer lock)
 
-The boot to the title screen and the title screen to the island (~30 s here) are long, and every scene change (a
-building, the airport) waits too. Only what oranges adds can be cut without changing the game, so first find where the
-time goes.
+The boot to the title took ~21 s (the iris; "Press A" ~5 s later), now ~14 s. Measured on the day-1 save, headless,
+with `HOS_LOG_TIME=1` and screenshots every 0.5-1 s (repeated runs agree within ~0.3 s), per-thread CPU from `/proc`,
+`HOS_SAMPLE`, `HOS_PROFILE` and `HOS_LOG_SLEEPS` (now also waits whose timeout ran out). Most of the time is the game's
+own; what was cut:
 
-- [x] Measure (2026-11-24, the day-1 save, headless, `HOS_LOG_TIME=1` with screenshots every 0.5-1 s; repeated runs
-      agree within ~0.3 s). Boot: first frame 1.0 s, the title's iris opens at ~21 s, "Press A" at ~26 s. Title to
-      island: ~3 s after A (the island is loaded during the boot: the title screen is drawn on it). A door (the tent):
-      the door opens ~2.5 s after A (the game's animation), then ~2.8 s of black with the loading icon, in and out.
-- [x] Where the boot's time goes (per-thread CPU from `/proc`, `HOS_SAMPLE` dumps, `HOS_PROFILE`, `HOS_LOG_SLEEPS`):
-  - 0-1 s: setup and ~1,200 files (~3 cores busy). 1-5.8 s: SaveProc decodes the save (~2 s of one core, its AES-CTR
-    ~0.3 s of that) and ~700 more files; nifm and bcat at ~5 s.
-  - 5.8-13.6 s (7 s): **the game's play-report poll.** At each step of its save load SaveProc queues a play report,
-    then waits until the PlayReporter thread has sent it (`0xbe26e50`: while bit 0 of `[[obj+8]+0x120]` is set,
-    `SleepThread(tick frequency / 2)`, i.e. 0.5 s, 5 s timeout). The reporter sends it within ~30 ms (at the next
-    frame), but the check comes right after the push, so every step sleeps one full 0.5 s: 14 steps. The console runs
-    the same sequence, so it pays this too. It also costs 0.5 s at each save step later (seen once after the morning
-    announcement). The process is otherwise idle (~0.6 cores).
-  - 14-17.5 s: the island loads (~1,000 files, up to ~5.5 cores).
-  - 17.5-21 s: nothing loads, the world runs at 30 fps behind the loading icon, then the iris opens. A clock-based
-    wait in the game: it also takes ~4 s unpaced (`HOS_NO_PACING`, ~260 fps), and no sleep of 1 ms or more is new
-    in it. Not found yet.
-  - Unpaced the title comes at ~17 s instead of ~21 s: the rest is frame-paced loading at 30 fps (the game's).
-- [x] What is ours:
-  - Texture and sampler registrations took the renderer's `big_lock`, which a submit holds through its whole replay
-    and GPU wait. The game registers ~500-650 textures a second, all the time (not only while loading), from its
-    loaders and MainThread, under a lock of its own (`0xb7fc8e0`, around the `nvnTexturePoolRegisterTexture` call),
-    so MainThread waited for our replays: 42% of its time at 17-20 s, 24% in play. The registrations have their own
-    lock now (`vk_texture.cpp`); MainThread only waits in the present (the 30 fps pacing). The boot isn't shorter (the
-    waits that set it are the game's), but the frame loop no longer waits for the renderer.
-  - Memory pools: 4,245 imported by 22 s, 0.56 s in `pool_created`; 1,270 of them replace an older pool, each with a
-    `vkDeviceWaitIdle` (`vk_memory.cpp` `drop`), on the loader threads.
-  - Program translation: 679 ms for the 201 programs by the island (`vk: N programs made` now logs the total), on the
-    submitting thread under `big_lock`.
-  - Other `big_lock` waits from game threads (flushes, pool creation): ~0.3 s over the boot.
-  - File reads, our HLE and the sound: nothing that shows.
-- [x] The play-report poll, patched (the user's choice): `oranges/patches.py` makes it poll every 3.9 ms
-      (`asr x21, x9, #8` at `0xbe26ecc`). The island now loads at 9-10 s instead of 14-17 s; a save written with it
-      (after the morning announcement) loads again, to the title and onto the island.
-- [x] AES on AES-NI: suyu's C did AESE/AESD/AESMC/AESIMC a byte and a bit at a time, and the game's save goes through
-      nn::crypto's AES-CTR: ~1.5 s of SaveProc for each save it writes or loads (30% of its time in the load of a save
-      made mid-day), ~0.3 s at the boot. `oranges/insn.py` emits them as AES-NI builtins (chunks built with `-maes`;
-      Unicorn agrees, 532 sites). The mid-day save's title-to-island load is ~2 s shorter.
-- Where it stands (the same runs): the boot's title iris at ~14 s (was ~21 s), "Press A" ~5 s later (the logo's
-  animation). Title to island ~3 s on a save made at the start of a day, ~12 s on one made mid-day (a ~9 s loading
-  screen: the save written again, then the island loaded).
-- [x] The wait between the island's load and the title's iris (~4.5 s, now ~10-14.3 s): frame-counted, the game's
-      own. The title scene is up at ~9.3 s (`System_Title.bfevfl`, the title layouts); its flow has
-      `EventFlowActionWaitFrame` and fades by speed. ~140 frames both paced (30 fps) and unpaced (only ~66 fps there,
-      CPU-bound, which made it look clock-based at first). No sleep, timeout or tick comparison ends it: CNTPCT reads
-      counted by caller (a temporary hook) changed at the iris only in one loading state machine (`0xad2d2a4`), and
-      no wait with a timeout of 100 ms or more ran out (`HOS_LOG_SLEEPS` logs those too now). Left as it is.
-  - Found on the way: the loading screen stays at least 3 s (`0xad29f0c`: 3000 ms since a tick stored at
-    `[obj+0x358]` / `+0x360`). With it at ~0 (tried) the boot's title came ~0.5 s sooner and the mid-day save's load
-    not at all, so it isn't patched (it would only shorten something the player sees).
-- [ ] Cut what is ours: translation and ASTC decoding off the game's thread (or ahead of the draw that needs them), a
-      dropped pool freed after the submits that may use it rather than behind `vkDeviceWaitIdle`. (A shader cache on
-      disk: under "Future ideas", for stutter on weaker hardware.)
-- [ ] The door's 2.8 s of black: files load from +0.7 s to +2.1 s, one present gap of 0.42 s at the end of the load.
-      Profile it (CPU per thread) to split the game's fixed fades from the loading work.
+- **The play-report poll** (patched, the user's choice: `oranges/patches.py`, `0xbe26ecc`). At each step of loading or
+  writing its save, SaveProc queues a play report, then polls every 0.5 s (`0xbe26e50`) until the PlayReporter thread
+  has sent it; the reporter takes ~30 ms, but the first check comes right after the push, so each step slept 0.5 s:
+  14 steps, 7 s of the boot (the console pays the same). Now every 3.9 ms. A save written with it loads again.
+- **AES on AES-NI** (`oranges/insn.py`, chunks built with `-maes`). suyu's C did AESE/AESD/AESMC/AESIMC a byte and a
+  bit at a time; the save goes through nn::crypto's AES-CTR: ~1.5 s of SaveProc for each save written or loaded,
+  ~0.3 s at the boot. A save made mid-day now loads onto the island ~2 s sooner.
+- **Texture registrations off `big_lock`** (`vk_texture.cpp`). The game registers ~500-650 textures a second, always,
+  under a lock of its own around `nvnTexturePoolRegisterTexture` (`0xb7fc8e0`), and our registration waited for each
+  submit's replay and GPU wait, so MainThread did too (42% of its time before the title, 24% in play). Not a shorter
+  load (the game's waits set those), but the frame loop no longer waits for the renderer.
 
-Why first: felt on every start and every door, and its first step is only measuring; the work off the game's thread is
-also renderer performance (task 3).
+Where the time goes now:
 
-## 2. Saves in the user's data folder
+- Boot: setup and ~1,900 files to ~4.5 s (SaveProc decodes the save, ~1.5 s of one core); the island loads ~8-9.5 s;
+  the title scene is up at ~9.3 s, and its event flow (`System_Title.bfevfl`: `EventFlowActionWaitFrame`, fades by
+  speed) holds ~140 frames behind the loading icon before the iris at ~14.3 s. Frame-counted (the same frame count
+  unpaced, where only ~66 fps run there), so left as it is.
+- Title to island: ~3 s on a save made at the start of a day (the island is loaded at boot: the title is drawn on it),
+  ~12 s on one made mid-day (a ~9 s loading screen: the save written again, then the island loaded).
+- A door (the tent): the door's animation ~2.5 s after A, then ~2.7 s of black. The loading in it (~1.7 s) is the
+  game's pipeline: no loader is more than ~50% busy (ResLoad1 waits for work 79% of the time, SceneLoad polls with
+  1 ms sleeps at `0xa807b4c` and waits on light events); file reads are instant, our renderer isn't in its way.
+- The loading screen stays at least 3 s (`0xad29f0c`: 3000 ms since a tick at `[obj+0x358]` / `+0x360`). At ~0
+  (tried) it saved ~0.5 s at boot and nothing on the mid-day load: not patched (it is something the player sees).
+- Ours that is left (none of it on a load's critical path, now under task 2's performance): program translation
+  (679 ms for the 201 programs by the island, on the submitting thread under `big_lock`), memory pool imports (4,245
+  by the title, 0.56 s on the loader threads, every pool but one GPU-visible; 1,270 replace an older one behind a
+  `vkDeviceWaitIdle`), other `big_lock` waits from game threads (~0.3 s over the boot).
+
+Left over from it:
+
+- [ ] Lifted code's own speed is what's left in the CPU-bound parts (the save's decoding, the island's load across
+      ~6 threads): the chunks are built at `-O1`. Try `-O2` on the hot chunks if loads matter again.
+- [ ] A shader cache on disk, if weaker hardware stutters: under "Future ideas".
+
+## 1. Saves in the user's data folder
 
 Saves go to `<work>/user/save/device` today, beside the build (`hos_main.c`: `work/build/oranges` -> `work/user`;
 `ORANGES_USER` overrides). A save should outlive the build folder and sit where other games keep theirs, as the settings
 file already does (`hos_options.c`: `$XDG_CONFIG_HOME/oranges/`, else `~/.config/oranges/`).
 
 - [ ] The default user folder: `$XDG_DATA_HOME/oranges/`, else `~/.local/share/oranges/` on Linux; `%APPDATA%\oranges\`
-      once there is a Windows build (task 4). Saves under a folder named by the title id
+      once there is a Windows build (task 3). Saves under a folder named by the title id
       (`.../saves/01006F8002326000/device/`), so a second build or game would not mix with this one. Made at the first
       write, as the options file's folder is. `ORANGES_USER` still overrides (runs on a copy of a save use it).
 - [ ] Moving over: when the new folder has no save and `work/user/save` has one, copy it once (never move it or
@@ -554,18 +532,22 @@ file already does (`hos_options.c`: `$XDG_CONFIG_HOME/oranges/`, else `~/.config
       screenshots (`nn::album`, a leftover above) in the data folder.
 - [ ] CLAUDE.md: the new default and `ORANGES_USER`.
 
-Why second: small and felt by anyone who rebuilds or moves the build folder, but nothing is lost today as long as `work/`
+Why first: small and felt by anyone who rebuilds or moves the build folder, but nothing is lost today as long as `work/`
 stays.
 
-## 3. The renderer's gaps
+## 2. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
 
+- [ ] From "Done: faster loading": program translation and ASTC decoding off the game's submitting thread (or ahead
+      of the draw that needs them); a dropped memory pool freed after the submits that may use it rather than behind
+      `vkDeviceWaitIdle`.
+
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 4. Clean-ups and checks
+## 3. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -586,7 +568,7 @@ Not planned yet. Each needs a look at what the game allows first.
   shader objects the first time a draw uses it, on the game's submitting thread under `big_lock`: ~1.5-6 ms each,
   679 ms for the 201 programs by the island on this machine (an RTX 5080, a fast CPU), where it doesn't show. On a
   slower CPU, a frame that meets several new programs (a new area, a menu) would miss its 33 ms.
-  - The cache: each program's translated SPIR-V written to `$XDG_CACHE_HOME/oranges/` (task 2's rules), keyed by the
+  - The cache: each program's translated SPIR-V written to `$XDG_CACHE_HOME/oranges/` (task 1's rules), keyed by the
     program's hash and everything the translation asked about (the bound textures' types, `vk_replay.cpp:197`; the
     previous stage; c1), and read back instead of translating; optionally loaded and made into shader objects on a
     background thread at boot.
