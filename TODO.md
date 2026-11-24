@@ -462,7 +462,7 @@ time and halving the step, as Longshot did for its game (`host/oot_high_fps.h` t
       the stick), so compare by screenshots or fix `find` first.
 
 Why first: the bigger visible win left (smoothness, all the time), but a research task with a real chance of a no; the
-renderer needs headroom for it too (task 3). Frame generation is no way around it here (see "Looked at and ruled out").
+renderer needs headroom for it too (task 4). Frame generation is no way around it here (see "Looked at and ruled out").
 
 ## 2. Faster loading
 
@@ -484,9 +484,30 @@ time goes.
       waits would shorten at 60 fps only with the step halved: leave those alone.)
 
 Why second: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
-game's thread are also renderer performance (task 3), which task 1 needs.
+game's thread are also renderer performance (task 4), which task 1 needs.
 
-## 3. The renderer's gaps
+## 3. Saves in the user's data folder
+
+Saves go to `<work>/user/save/device` today, beside the build (`hos_main.c`: `work/build/oranges` -> `work/user`;
+`ORANGES_USER` overrides). A save should outlive the build folder and sit where other games keep theirs, as the settings
+file already does (`hos_options.c`: `$XDG_CONFIG_HOME/oranges/`, else `~/.config/oranges/`).
+
+- [ ] The default user folder: `$XDG_DATA_HOME/oranges/`, else `~/.local/share/oranges/` on Linux; `%APPDATA%\oranges\`
+      once there is a Windows build (task 5). Saves under a folder named by the title id
+      (`.../saves/01006F8002326000/device/`), so a second build or game would not mix with this one. Made at the first
+      write, as the options file's folder is. `ORANGES_USER` still overrides (runs on a copy of a save use it).
+- [ ] Moving over: when the new folder has no save and `work/user/save` has one, copy it once (never move it or
+      overwrite a save that is there) and log both paths. The save there now has been played past day 1;
+      `work/user/save_day1` stays where it is (a test fixture, not a player's save).
+- [ ] The log names the save folder at boot, so a player can find it.
+- [ ] Other user files by the same rules: a shader cache on disk (task 2) in `$XDG_CACHE_HOME/oranges/`, screenshots
+      (`nn::album`, a leftover above) in the data folder.
+- [ ] CLAUDE.md: the new default and `ORANGES_USER`.
+
+Why third: small and felt by anyone who rebuilds or moves the build folder, but nothing is lost today as long as `work/`
+stays.
+
+## 4. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
@@ -495,7 +516,7 @@ Why here: nothing unreplayed has turned up yet (each is logged once when it does
 as soon as one of those logs or a wrong picture shows. Its performance part comes first if task 1 goes ahead: at a
 forced 60 fps the game held 55-60 fps headless here, with no headroom.
 
-## 4. Clean-ups and checks
+## 5. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
