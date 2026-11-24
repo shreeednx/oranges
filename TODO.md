@@ -630,7 +630,8 @@ The differences live in `host/hos_port.h` / `hos_port.c`:
       NVIDIA's and AMD's Windows drivers
 - [x] The Python side on Windows, under wine (2026-11-24): `python -m oranges.wintools` (new) fetches the embeddable
       Python 3.14.10 (with lz4's wheel) and llvm-mingw's Windows release (LLVM 23.1.6), SHA-256s pinned, into
-      `~/.local/opt/oranges-wintools` (955 MB), with a `.pth` naming this checkout. With them, under wine:
+      `~/.local/opt/oranges-wintools` (955 MB; on Windows `%LOCALAPPDATA%\oranges\wintools`, as the library
+      prefix is `%LOCALAPPDATA%\oranges\msys2-clang64` there), with a `.pth` naming this checkout. With them, under wine:
       `oranges lift --write` (94 s; the kit builds `a64emit.dll` with that clang++, static) writes the same C as the
       Linux lift, byte for byte (oranges' own generated files are written with `\n` now; the kit's `functions.txt`
       and `image.json` stay CRLF on Windows), and `oranges build` with that clang (the chunks ~12 min under wine,

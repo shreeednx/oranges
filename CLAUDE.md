@@ -32,10 +32,12 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
 .venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
 .venv/bin/oranges build                           # compile work/gen + rt + host/ (+ vk, eden), link work/build/oranges
-.venv/bin/python -m oranges.mingw                 # the Windows build's libraries: ~/.local/opt/msys2-clang64 (~40 s)
+.venv/bin/python -m oranges.mingw                 # the Windows build's libraries: ~/.local/opt/msys2-clang64 (~40 s; Windows: %LOCALAPPDATA%\oranges\...)
 .venv/bin/oranges build --target windows          # work/build-windows/oranges.exe (+ DLLs, licenses/) with llvm-mingw
 WINEDEBUG=-all ORANGES_USER=Z:/abs/dir HOS_NO_WINDOW=1 wine work/build-windows/oranges.exe   # it, under wine
 .venv/bin/python -m oranges.wintools      # Windows' Python 3.14 + llvm-mingw's Windows release: ~/.local/opt/oranges-wintools
+#   (on Windows %LOCALAPPDATA%\oranges\wintools; under wine the build's default prefix is wine's
+#   %LOCALAPPDATA%\oranges\msys2-clang64, so the recipe below names ORANGES_MINGW_PREFIX)
 #   the pipeline on them, under wine (LONGSHOT_MINGW: the kit's clang++ for a64emit.dll; Z: paths throughout):
 #   WINEDEBUG=-all LONGSHOT_MINGW='Z:\<home>\.local\opt\oranges-wintools\llvm-mingw' wine ~/.local/opt/oranges-wintools/python/python.exe -m oranges lift --write --work 'Z:\...\work\wine-lift' --exefs 'Z:\...\work\exefs'
 #   ... ORANGES_MINGW='Z:\...\llvm-mingw' ORANGES_MINGW_PREFIX='Z:\<home>\.local\opt\msys2-clang64' ... -m oranges build --work 'Z:\...\work\wine-lift'

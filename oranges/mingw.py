@@ -4,8 +4,8 @@ MSYS2's clang64 repository builds its packages with clang, libc++ and UCRT, as l
 the libraries share one C and C++ runtime. This reads the repository's database (packages, their files' SHA-256s,
 dependencies), takes the dependency closure of what is asked for, downloads each package, checks its SHA-256 against
 the database and unpacks its clang64/ tree into the prefix. oranges/build.py then finds them with
-ORANGES_MINGW_PREFIX=<prefix> (pkg-config --define-prefix on <prefix>/lib/pkgconfig), or in the default prefix
-without it.
+ORANGES_MINGW_PREFIX=<prefix> (oranges.pkgconf reads <prefix>/lib/pkgconfig), or in the default prefix without it:
+~/.local/opt/msys2-clang64, on Windows %LOCALAPPDATA%\\oranges\\msys2-clang64.
 
 FFmpeg is not MSYS2's: theirs pulls in 124 packages (Python, llama.cpp, x265, ...), and the movie player needs three
 decoders. It is built from FFmpeg's release with llvm-mingw (ORANGES_MINGW, default /opt/llvm-mingw): libavcodec and
@@ -33,9 +33,11 @@ import urllib.request
 from compression import zstd
 from pathlib import Path
 
+from . import tools_dir
+
 REPO = "https://repo.msys2.org/mingw/clang64/"
 PREFIX = "mingw-w64-clang-x86_64-"
-DEFAULT_DIR = Path.home() / ".local" / "opt" / "msys2-clang64"
+DEFAULT_DIR = tools_dir("msys2-clang64")   # (Windows: %LOCALAPPDATA%\oranges\msys2-clang64)
 # (SDL3: the window, input and sound; the Vulkan loader; libopus: the Opus decoder; FFmpeg: the opening movie)
 LIBRARIES = ("sdl3", "vulkan-loader", "vulkan-headers", "opus")
 SOURCES = {   # (url, SHA-256)

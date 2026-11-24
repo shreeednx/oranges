@@ -4,10 +4,11 @@ what the Windows release will bundle (TODO.md task 2). Here it lets the pipeline
 
     python -m oranges.wintools [--dir DIR] [--source REPO]
 
-DIR (default ~/.local/opt/oranges-wintools) gets python/ (python.exe, with lz4 in Lib/site-packages) and llvm-mingw/
-(bin/clang.exe ...). The embeddable Python reads only its python314._pth (no PYTHONPATH, no site by default): this
-turns on `import site`, adds Lib/site-packages, and puts a .pth there naming REPO (default this checkout, as Windows
-sees it: under wine Z: + its path), so `python -m oranges` runs this tree, as `pip install -e` would. Under wine:
+DIR (default ~/.local/opt/oranges-wintools; on Windows %LOCALAPPDATA%\\oranges\\wintools) gets python/ (python.exe,
+with lz4 in Lib/site-packages) and llvm-mingw/ (bin/clang.exe ...). The embeddable Python reads only its
+python314._pth (no PYTHONPATH, no site by default): this turns on `import site`, adds Lib/site-packages, and puts a
+.pth there naming REPO (default this checkout, as Windows sees it: under wine Z: + its path), so `python -m oranges`
+runs this tree, as `pip install -e` would. Under wine:
 
     LONGSHOT_MINGW='Z:<DIR>/llvm-mingw' wine <DIR>/python/python.exe -m oranges lift --write --work <a work folder>
 
@@ -28,7 +29,9 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-DEFAULT_DIR = Path.home() / ".local" / "opt" / "oranges-wintools"
+from . import tools_dir
+
+DEFAULT_DIR = tools_dir("oranges-wintools" if os.name != "nt" else "wintools")
 PYTHON = ("https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip",
           "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159")
 WHEELS = (   # (oranges' dependencies, pyproject.toml's: built for CPython 3.14 on 64-bit Windows)

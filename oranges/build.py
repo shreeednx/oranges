@@ -13,7 +13,8 @@ are FP-exact (-ffp-contract=off) and LoopRotate is capped, which a64-kit measure
 The Windows build is cross-compiled with llvm-mingw (MinGW-w64 on clang, UCRT): x86_64-w64-mingw32-clang from PATH,
 else from ORANGES_MINGW (default /opt/llvm-mingw). It goes to <work>/build-windows/oranges.exe, with its own objects.
 Its libraries (SDL3, the Vulkan loader, libopus, FFmpeg) come from a MinGW prefix: ORANGES_MINGW_PREFIX, else
-~/.local/opt/msys2-clang64 when it exists (`python -m oranges.mingw` makes it), whose lib/pkgconfig files
+~/.local/opt/msys2-clang64 (on Windows %LOCALAPPDATA%\\oranges\\msys2-clang64) when it exists (`python -m
+oranges.mingw` makes it), whose lib/pkgconfig files
 oranges.pkgconf reads (no pkg-config needed, and the prefix may have moved); else pkg-config: MSYS2's own on Windows,
 x86_64-w64-mingw32-pkg-config across. Without them it builds headless (the null back end). winpthreads and libc++
 are linked in statically, so the program needs only those libraries' DLLs beside it.
@@ -31,7 +32,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from . import kit, pkgconf
+from . import kit, pkgconf, tools_dir
 
 import toolchain  # noqa: E402,I001  (the kit's)
 
@@ -42,7 +43,7 @@ RT = Path(kit.KIT) / "rt"
 
 TARGETS = ("linux", "windows")
 MINGW_TRIPLE = "x86_64-w64-mingw32"
-MINGW_PREFIX = Path.home() / ".local" / "opt" / "msys2-clang64"   # (python -m oranges.mingw's default)
+MINGW_PREFIX = tools_dir("msys2-clang64")   # (python -m oranges.mingw's default)
 
 
 def target() -> str:
