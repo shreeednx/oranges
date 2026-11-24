@@ -314,9 +314,9 @@ alone (22-29 s of the prologue), no clipping; the day-1 save loads to the island
 
 Left over from it:
 
-- [ ] Listen to it with the window (checked by level only: `HOS_AUDIO_DUMP`). The other sub mixes that were silent
-      play now too (6 and 8 send 0.125 / 0.25 to a bus and the final mix, the look of reverb sends): check that the
-      island's mix sounds right
+- [x] Listen to it with the window: the villagers' talking is heard and works (checked by the user, 2026-11-24)
+- [ ] The other sub mixes that were silent play now too (6 and 8 send 0.125 / 0.25 to a bus and the final mix, the
+      look of reverb sends): check by ear that the island's mix sounds right (too much reverb, doubled sounds)
 - [ ] A splitter destination's biquad filters apply to voices only, not to a sub mix sent through it (unknown
       whether the console's do; the game hasn't set one there so far)
 
