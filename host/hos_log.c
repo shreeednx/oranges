@@ -18,10 +18,17 @@ int64_t hos_now_ns(void) {
     return b ? ns - b : 0;
 }
 
+/* HOS_LOG_TIME=1: each line carries the seconds since the start ("[hos 12.345]"), for timing loads from the log */
 void hos_log(const char *fmt, ...) {
+    static int timed = -1;
+    if (timed < 0) {
+        const char *e = getenv("HOS_LOG_TIME");
+        timed = e && *e && strcmp(e, "0");
+    }
     va_list ap;
     va_start(ap, fmt);
-    fputs("[hos] ", stderr);
+    if (timed) fprintf(stderr, "[hos %8.3f] ", hos_now_ns() / 1e9);
+    else fputs("[hos] ", stderr);
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);

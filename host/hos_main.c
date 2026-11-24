@@ -103,6 +103,7 @@ static void boot_call(Ctx *c, uint64_t sp, uint64_t addr, const char *what) {
 static void boot(void);
 
 int main(int argc, char **argv) {
+    hos_now_ns();   /* (the clock's zero: HOS_LOG_TIME counts from here) */
     const char *t = getenv("HOS_TRACE");
     hos_trace = t && *t && strcmp(t, "0");
     char path[PATH_MAX];

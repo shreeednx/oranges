@@ -477,17 +477,47 @@ The boot to the title screen and the title screen to the island (~30 s here) are
 building, the airport) waits too. Only what oranges adds can be cut without changing the game, so first find where the
 time goes.
 
-- [ ] Measure: time the boot, the title to the island, and a door (into the tent and out) on the day-1 save, from the
-      log (`HOS_FS_LOG` shows what loads when). Several runs each: the numbers move with the disk cache.
-- [ ] Profile the loading threads while it loads (`HOS_PROFILE <s> <thread>`, `HOS_SAMPLE`): file reads and
-      decompression (`nn_fs.c`, the game's own zstd / zlib), shader translation (eden, on the game's submitting
-      thread, `vk_shader.cpp`), texture deswizzling and ASTC decoding (`vk_texture.cpp`), the whole-storage texture
-      hashing, our GPU waits at each submit.
+- [x] Measure (2026-11-24, the day-1 save, headless, `HOS_LOG_TIME=1` with screenshots every 0.5-1 s; repeated runs
+      agree within ~0.3 s). Boot: first frame 1.0 s, the title's iris opens at ~21 s, "Press A" at ~26 s. Title to
+      island: ~3 s after A (the island is loaded during the boot: the title screen is drawn on it). A door (the tent):
+      the door opens ~2.5 s after A (the game's animation), then ~2.8 s of black with the loading icon, in and out.
+- [x] Where the boot's time goes (per-thread CPU from `/proc`, `HOS_SAMPLE` dumps, `HOS_PROFILE`, `HOS_LOG_SLEEPS`):
+  - 0-1 s: setup and ~1,200 files (~3 cores busy). 1-5.8 s: SaveProc decodes the save (~2 s of one core, its AES-CTR
+    ~0.3 s of that) and ~700 more files; nifm and bcat at ~5 s.
+  - 5.8-13.6 s (7 s): **the game's play-report poll.** At each step of its save load SaveProc queues a play report,
+    then waits until the PlayReporter thread has sent it (`0xbe26e50`: while bit 0 of `[[obj+8]+0x120]` is set,
+    `SleepThread(tick frequency / 2)`, i.e. 0.5 s, 5 s timeout). The reporter sends it within ~30 ms (at the next
+    frame), but the check comes right after the push, so every step sleeps one full 0.5 s: 14 steps. The console runs
+    the same sequence, so it pays this too. It also costs 0.5 s at each save step later (seen once after the morning
+    announcement). The process is otherwise idle (~0.6 cores).
+  - 14-17.5 s: the island loads (~1,000 files, up to ~5.5 cores).
+  - 17.5-21 s: nothing loads, the world runs at 30 fps behind the loading icon, then the iris opens. A clock-based
+    wait in the game: it also takes ~4 s unpaced (`HOS_NO_PACING`, ~260 fps), and no sleep of 1 ms or more is new
+    in it. Not found yet.
+  - Unpaced the title comes at ~17 s instead of ~21 s: the rest is frame-paced loading at 30 fps (the game's).
+- [x] What is ours:
+  - Texture and sampler registrations took the renderer's `big_lock`, which a submit holds through its whole replay
+    and GPU wait. The game registers ~500-650 textures a second, all the time (not only while loading), from its
+    loaders and MainThread, under a lock of its own (`0xb7fc8e0`, around the `nvnTexturePoolRegisterTexture` call),
+    so MainThread waited for our replays: 42% of its time at 17-20 s, 24% in play. The registrations have their own
+    lock now (`vk_texture.cpp`); MainThread only waits in the present (the 30 fps pacing). The boot isn't shorter (the
+    waits that set it are the game's), but the frame loop no longer waits for the renderer.
+  - Memory pools: 4,245 imported by 22 s, 0.56 s in `pool_created`; 1,270 of them replace an older pool, each with a
+    `vkDeviceWaitIdle` (`vk_memory.cpp` `drop`), on the loader threads.
+  - Program translation: 679 ms for the 201 programs by the island (`vk: N programs made` now logs the total), on the
+    submitting thread under `big_lock`.
+  - Other `big_lock` waits from game threads (flushes, pool creation): ~0.3 s over the boot.
+  - File reads, our HLE and the sound: nothing that shows.
+- [ ] The play-report poll (7 s of the boot, 0.5 s per save step later): only a patch to the game can cut it
+      (`oranges/patches.py`, e.g. `asr x21, x9, #1` at `0xbe26ecc` -> a few ms per poll). It changes nothing the player
+      sees, but it is the game's own code: decide first.
+- [ ] Find the 17.5-21 s wait (tick-based: `GetSystemTick` comparisons in the title's or the loading icon's logic).
 - [ ] Cut what is ours: a shader cache on disk (translated SPIR-V by program hash, so a second run translates
-      nothing), translation and ASTC decoding off the game's thread (or ahead of the draw that needs them), texture
-      uploads batched rather than one submit each.
-- [ ] The game's own pacing (fixed waits, frame-counted fades, loads it spreads over frames at 30 fps) stays as it is;
-      write down how much of the time it is, so it is clear what is left.
+      nothing: ~0.7 s by the island, and the hitches of first draws), translation and ASTC decoding off the game's
+      thread (or ahead of the draw that needs them), a dropped pool freed after the submits that may use it rather
+      than behind `vkDeviceWaitIdle`.
+- [ ] The door's 2.8 s of black: files load from +0.7 s to +2.1 s, one present gap of 0.42 s at the end of the load.
+      Profile it (CPU per thread) to split the game's fixed fades from the loading work.
 
 Why first: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
 game's thread are also renderer performance (task 3).

@@ -499,8 +499,10 @@ Program* program_for(const State& s, const PipelineInputs& in, bool compute) {
         }
     p->ok = true;
     static int n;
+    static int64_t total;   // (translation and shader creation, on the submitting thread: a cost of every load)
+    total += hos_now_ns() - t0;
     if (++n % 100 == 1)
-        hos_log("vk: %d programs made (the last in %.1f ms)", n, (hos_now_ns() - t0) / 1e6);
+        hos_log("vk: %d programs made (the last in %.1f ms, %.0f ms in all)", n, (hos_now_ns() - t0) / 1e6, total / 1e6);
     Program* raw = p.get();
     programs[key] = std::move(p);
     return raw;
@@ -1650,16 +1652,13 @@ void rx_nvn_present(const nvn_tex* t, const int crop[4]) {
 }
 
 void rx_nvn_register_texture(int id, const nvn_tex* t, const nvn_view* v) {
-    std::lock_guard lk(big_lock);
-    register_texture(id, t, v);
+    register_texture(id, t, v);   // (reg_lock: vk_texture.cpp)
 }
 void rx_nvn_register_sampler(int id, const nvn_samp_par* p) {
-    std::lock_guard lk(big_lock);
     register_sampler(id, p);
 }
 void rx_nvn_set_texture_pool_size(int) {}
 void rx_nvn_texture_released(const nvn_tex* t) {
-    std::lock_guard lk(big_lock);
     texture_released(t);
 }
 void rx_nvn_texture_created(const nvn_tex*) {}

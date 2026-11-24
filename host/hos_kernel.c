@@ -48,6 +48,7 @@ typedef struct KThread {
     int ideal_core, core;           /* the ideal core (or IDEAL_CORE_DONT_CARE), and the core it runs on */
     uint64_t affinity;              /* the cores it may run on */
     pthread_t host;
+    int tid;                        /* the host thread's id (its /proc/<pid>/task entry), for HOS_SAMPLE */
     /* what the thread waits for, if anything */
     enum { W_NONE, W_MUTEX, W_CONDVAR, W_ARBITER } wait;
     uint64_t wait_addr, wait_key;   /* the mutex word; the condition variable's key */
@@ -170,6 +171,7 @@ static int mutex_take_or_queue(KThread *t, uint64_t addr) {
 static void *thread_main(void *p) {
     KThread *t = p;
     self = t;
+    t->tid = gettid();
     hos_current = &t->ctx;
     Ctx *c = &t->ctx;
     c->x[0] = t->arg;
@@ -217,6 +219,7 @@ Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority) {
     KThread *t = thread_new(0, 0, stack_top, priority, hos_main_core);
     t->started = 1;
     t->host = pthread_self();
+    t->tid = gettid();
     t->ctx.x[31] = stack_top & ~15ULL;
     self = t;
     hos_current = &t->ctx;
@@ -329,8 +332,11 @@ void hos_kernel_dump(const char *why) {
         else if (svc) snprintf(what, sizeof what, "in svc %#x (x0 %#llx x1 %#llx)", svc - 1,
                                (unsigned long long)t->ctx.x[0], (unsigned long long)t->ctx.x[1]);
         else snprintf(what, sizeof what, "runs");
-        hos_log("  thread %#x \"%s\" priority %d core %d: %s", t->handle, thread_name(t, name, sizeof name), t->priority,
-                t->core, what);
+        clockid_t clk;   /* (the host thread's CPU time so far: which threads are busy) */
+        struct timespec cpu = {0, 0};
+        if (!pthread_getcpuclockid(t->host, &clk)) clock_gettime(clk, &cpu);
+        hos_log("  thread %#x \"%s\" priority %d core %d, tid %d cpu %.2f s: %s", t->handle,
+                thread_name(t, name, sizeof name), t->priority, t->core, t->tid, cpu.tv_sec + cpu.tv_nsec / 1e9, what);
         thread_backtrace(t);
     }
 }
@@ -379,6 +385,15 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
         pthread_exit(NULL);
     case 0x0B: {   /* SleepThread(ns): 0, -1 and -2 are yields */
         const int64_t ns = (int64_t)c->x[0];
+        static int64_t log_ns = -1;   /* HOS_LOG_SLEEPS=<ms>: log each sleep that long or longer, with its caller */
+        if (log_ns < 0) {
+            const char *e = getenv("HOS_LOG_SLEEPS");
+            log_ns = e && atof(e) > 0 ? (int64_t)(atof(e) * 1e6) : INT64_MAX;
+        }
+        if (ns >= log_ns) {
+            hos_log("thread %#x: sleeps %.3f s, from:", self ? self->handle : 0, ns / 1e9);
+            hos_backtrace(c);
+        }
         if (ns > 0) {
             struct timespec ts = {ns / 1000000000, ns % 1000000000};
             while (nanosleep(&ts, &ts) && errno == EINTR) {}

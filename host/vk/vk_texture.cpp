@@ -579,15 +579,20 @@ struct TexReg {
     nvn_view v{};
     bool has_view = false, ok = false, released = false;
 };
+// The pools' registrations have a lock of their own, not big_lock: the game registers ~20 textures a frame from its
+// loaders and MainThread (under a lock of its own, which MainThread then waits for), and big_lock is held through a
+// whole submit's replay and GPU wait. Readers (the replay, under big_lock) take reg_lock inside it, only to copy.
+std::mutex reg_lock;
 std::vector<TexReg> tex_regs;
 std::vector<nvn_samp_par> samp_regs;
 std::vector<bool> samp_ok;
-std::unordered_map<uint64_t, VkSampler> samplers;
+std::unordered_map<uint64_t, VkSampler> samplers;   // (big_lock)
 std::unordered_map<uint64_t, std::vector<int>> regs_by_serial;
 }  // namespace
 
 void register_texture(int id, const nvn_tex* t, const nvn_view* v) {
     if (id < 0 || id >= (1 << 20) || !t) return;
+    std::lock_guard lk(reg_lock);
     if ((size_t)id >= tex_regs.size()) tex_regs.resize(id + 1024);
     TexReg& r = tex_regs[id];
     r.t = *t, r.ok = true, r.released = false;
@@ -597,6 +602,7 @@ void register_texture(int id, const nvn_tex* t, const nvn_view* v) {
 }
 
 void texture_released(const nvn_tex* t) {
+    std::lock_guard lk(reg_lock);
     auto it = regs_by_serial.find(t->serial);
     if (it == regs_by_serial.end()) return;
     for (int id : it->second)
@@ -606,27 +612,37 @@ void texture_released(const nvn_tex* t) {
 
 void register_sampler(int id, const nvn_samp_par* p) {
     if (id < 0 || id >= (1 << 12) || !p) return;
+    std::lock_guard lk(reg_lock);
     if ((size_t)id >= samp_regs.size()) samp_regs.resize(id + 256), samp_ok.resize(id + 256);
     samp_regs[id] = *p;
     samp_ok[id] = true;
 }
 
 bool texture_of(int id, nvn_tex* t, nvn_view* v, bool* has_view) {
-    if (id < 0 || (size_t)id >= tex_regs.size() || !tex_regs[id].ok) return false;
-    const TexReg& r = tex_regs[id];
-    *t = r.t, *v = r.v, *has_view = r.has_view;
+    bool released;
+    {
+        std::lock_guard lk(reg_lock);
+        if (id < 0 || (size_t)id >= tex_regs.size() || !tex_regs[id].ok) return false;
+        const TexReg& r = tex_regs[id];
+        *t = r.t, *v = r.v, *has_view = r.has_view, released = r.released;
+    }
     // (the game re-initialises transient targets at the same storage without registering them again)
-    if (r.released) {
+    if (released) {
         nvn_tex live;
-        if (nvn_tex_live_at(r.t.gpu, &live)) *t = live;
+        if (nvn_tex_live_at(t->gpu, &live)) *t = live;
     }
     return true;
 }
 
 VkSampler sampler_of(int id) {
     nvn_samp_par p{};
-    if (id >= 0 && (size_t)id < samp_regs.size() && samp_ok[id]) p = samp_regs[id];
-    else p.minf = 1, p.magf = 1, p.lod_max = 1000.0f;
+    bool known;
+    {
+        std::lock_guard lk(reg_lock);
+        known = id >= 0 && (size_t)id < samp_regs.size() && samp_ok[id];
+        if (known) p = samp_regs[id];
+    }
+    if (!known) p.minf = 1, p.magf = 1, p.lod_max = 1000.0f;
     const uint64_t key = hash_bytes(&p, sizeof p);
     auto it = samplers.find(key);
     if (it != samplers.end()) return it->second;

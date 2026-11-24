@@ -2517,6 +2517,12 @@ NV(nvnQueuePresentTexture) {
     static uint64_t at;
     const int64_t now = hos_now_ns();
     if (n == 1) hos_log("nvn: the first frame is presented");
+    static int64_t last;
+    static int gaps = -1;
+    if (gaps < 0) gaps = env_on("HOS_LOG_TIME");
+    if (gaps && last && now - last >= 250000000LL)   /* (with HOS_LOG_TIME: a load shows as a gap between presents) */
+        hos_log("nvn: no present for %.2f s (frame %llu)", (now - last) / 1e9, (unsigned long long)n);
+    last = now;
     if (now - since >= 10000000000LL) {   /* (every 10 s: the frame rate) */
         if (since) hos_log("nvn: %llu frames presented, %.1f fps", (unsigned long long)n, (n - at) * 1e9 / (now - since));
         since = now, at = n;
