@@ -73,7 +73,8 @@ def emit_key() -> str:
 
 def sha256sums(folder: Path) -> str:
     lines = []
-    for f in sorted(p for p in folder.rglob("*") if p.is_file() and not p.is_symlink()):
+    for f in sorted(p for p in folder.rglob("*") if p.is_file() and not p.is_symlink()
+                    and "__pycache__" not in p.parts):   # (bytecode: Python's, rewritten as it runs)
         rel = f.relative_to(folder).as_posix()
         if rel == "SHA256SUMS":
             continue
@@ -104,7 +105,9 @@ def verify(folder: Path) -> list[str]:
 
 
 def _copytree(src: Path, dst: Path, ignore=None) -> None:
-    shutil.copytree(src, dst, symlinks=True, ignore=ignore, dirs_exist_ok=True)
+    def skip(d, names):
+        return [n for n in names if n == "__pycache__"] + (list(ignore(d, names)) if ignore else [])
+    shutil.copytree(src, dst, symlinks=True, ignore=skip, dirs_exist_ok=True)
 
 
 def finish(dest: Path, version: str, platform: str, say=print) -> None:
@@ -187,17 +190,18 @@ def windows(dest: Path, version: str, wintools: Path, prefix: Path, say=print) -
 
 
 def archive(dest: Path, say=print) -> Path:
+    """the release's archive beside its folder (without the bytecode Python writes when it runs from there)"""
     if (dest / "release.json").is_file() and "windows" in json.loads((dest / "release.json").read_text())["platform"]:
         out = dest.with_suffix(".zip")
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             for f in sorted(dest.rglob("*")):
-                if f.is_file():
+                if f.is_file() and "__pycache__" not in f.parts:
                     z.write(f, (Path(dest.name) / f.relative_to(dest)).as_posix())
     else:
         from compression import zstd
         out = dest.with_name(dest.name + ".tar.zst")
         with zstd.open(out, "wb", level=12) as f, tarfile.open(fileobj=f, mode="w") as tar:
-            tar.add(dest, arcname=dest.name)
+            tar.add(dest, arcname=dest.name, filter=lambda t: None if "__pycache__" in t.name.split("/") else t)
     say("archive: %s (%.0f MB)" % (out, out.stat().st_size / 1e6))
     return out
 
