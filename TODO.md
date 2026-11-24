@@ -549,7 +549,80 @@ uses them (logged once), then performance and memory.
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
 
-## 2. Clean-ups and checks
+## 2. A Windows build (MinGW)
+
+Linux only today. The target is a Windows x64 build of the same program, built with MinGW-w64 so that most of the
+POSIX code stays as it is: winpthreads for the ~17 host files that use pthreads, MinGW's `dirent.h`, `clock_gettime`
+and `nanosleep`. clang stays the compiler, since the chunks' flags (`-mllvm -rotation-max-header-size=0`) and
+`-mcx16` / `-maes` are clang's. Use llvm-mingw (`x86_64-w64-mingw32-clang`, UCRT) or MSYS2's CLANG64 environment, which
+also packages pkg-config, SDL3, the Vulkan loader, libopus and FFmpeg.
+
+- [ ] Toolchain first: `oranges build` with `CC`/`CXX` as MinGW clang and a target triple (cross-compiling from Linux
+      as well as on Windows under MSYS2), `.exe` output, `-lpthread` from winpthreads, pkg-config through MSYS2's or a
+      cross sysroot's `.pc` files. eden and the Vulkan back end in C++20 under MinGW's libc++.
+- [ ] What MinGW does not cover, with a `_WIN32` branch for each (a64-kit's `rt/a64_rt.c` already has its own):
+  - the guest window: `hos_mem.c` reserves 4 GB at a fixed host address (`mmap` with `MAP_FIXED_NOREPLACE`), and
+    `load_image` maps the image. Use `VirtualAlloc` (reserve, then commit) and `VirtualProtect` for the page
+    permissions, as Longshot does on Windows;
+  - native crashes (`hos_crash_init`: `sigaction` on SIGSEGV/SIGILL/SIGBUS/SIGFPE with the guest registers and
+    backtrace): use `AddVectoredExceptionHandler`;
+  - `/proc`: the executable's path (`hos_main.c`: `GetModuleFileNameW`) and per-thread CPU time for `HOS_SAMPLE` /
+    `HOS_PROFILE` (`hos_kernel.c`: `GetThreadTimes`);
+  - `nn_fs.c`: `pread` / `pwrite` (MinGW has neither: `ReadFile` / `WriteFile` with an `OVERLAPPED` offset),
+    one-argument `mkdir`, `rename` over an existing file or empty folder (`MoveFileExW`,
+    `MOVEFILE_REPLACE_EXISTING`: the options file's tmp+rename and the save move use it);
+  - paths in UTF-8: a user folder under `%APPDATA%` can hold any character, so either the UTF-8 code page in the
+    executable's manifest (Windows 10 1903+) or wide-character calls at the few places that open files;
+  - `HOS_CONTROL`'s FIFO (`mkfifo`): a named pipe (`\\.\pipe\...`);
+  - signals the host uses elsewhere (`nn_audio.c`, `nvn_native.c`, `vk_replay.cpp` and others include `signal.h`):
+    check each one.
+- [ ] LLP64: `long` is 32 bits on Windows. Look through host/ for `long` used as a 64-bit type and for `%ld` / `%lx`
+      formats (`-Wformat` finds the formats once warnings are on, a task 4 item).
+- [ ] The Python side on Windows: Python 3.14 (for `compression.zstd`), the kit's `build_emit.py` already makes
+      `a64emit.dll`, and `oranges build`'s job count reads the memory size (check how it does that on Windows).
+- [ ] Run it: boot the day-1 save to the island with the window, sound, a gamepad and the F1 menu, with the save in
+      `%APPDATA%\oranges\saves\01006F8002326000\device` ("Done: saves in the user's data folder" has the branch).
+      `VK_EXT_external_memory_host` is on NVIDIA's and AMD's Windows drivers.
+- [ ] Shipping: the `.exe` and the DLLs it needs beside it (SDL3, libopus, FFmpeg's, winpthread, libc++ / libunwind),
+      their licence texts with them.
+
+Why here: a native Windows program is half of the project's goal ("Windows/Linux"), and the graphical setup (task 3)
+needs it for its Windows half.
+
+## 3. A graphical setup (build the game without a terminal)
+
+Today a player needs a terminal and a developer's toolchain: a Python 3.14 venv, clang, pkg-config and the libraries,
+then `oranges check`, `oranges extract --only romfs`, `oranges lift --write`, `oranges build`, and then
+`./work/build/oranges`. That is ~12.5 GB on disk (RomFS 10 GB, generated C 1.4 GB, objects 0.8 GB) and about 2.5 GB of
+memory per compile job. Longshot ships a launcher instead (Windows installer or portable zip, Linux AppImage): it finds
+the `.nup` (Downloads, Desktop, Documents) or takes the `romfs` and `exefs` folders, checks the copy while it downloads
+the builder, asks where the game goes (`~/Games/Longshot`, `Games\Longshot`) and for the options, builds with progress,
+then offers Play, shortcuts and updates. Its builder is a separate download with its own compiler and libraries,
+checked against the release's signed checksums, so the player installs nothing else.
+
+- [ ] Decide what it is made of: a small native program on SDL3 and Dear ImGui (both already in the tree) that looks
+      like the F1 menu and runs the Python pipeline as a child process, or a Python GUI (Tk ships with Python) in the
+      same process as the pipeline. The first is the likelier choice: no extra dependency, and the game's look.
+- [ ] The steps, one screen each: choose the game (search the usual folders for `.nup` files; `game.check` says
+      "supported" or which build the copy is), choose the install folder (with a free-space check), the options (build
+      jobs from the memory size, Console mode and other F1 settings as defaults), Build, Play.
+- [ ] The build with progress: each stage (verify, extract, lift, compile chunk N of 57, link) as a bar with a time
+      estimate and the log underneath; cancel and resume (the build already caches objects per chunk: a resumed build
+      only compiles what is missing). Errors in words a player understands (no space, out of memory, wrong build),
+      with the log kept for a report.
+- [ ] The toolchain: the hard part. A player has no clang, Python or pkg-config libraries. Like Longshot's builder: a
+      self-contained bundle (Python, clang / llvm-mingw, SDL3, libopus, FFmpeg, the Vulkan loader) downloaded once and
+      checked against signed checksums. This needs somewhere to host releases, which there is not yet.
+- [ ] Shortcuts (a `.desktop` entry on Linux, a Start menu entry on Windows) and an "Open the save folder" button.
+- [ ] Smaller: read the RomFS from the `.nup` in place rather than extracting 10 GB (`Nup` streams files; check
+      whether random access into them is cheap enough for `nn_fs.c`).
+- [ ] Never: download or upload anything from the game. The setup reads the player's own copy only (CLAUDE.md's game
+      data rules).
+
+Why here: worth it once the game is something to hand to a player, and the Windows half needs task 2. The CLI stays,
+for development and for the GUI to drive.
+
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -558,7 +631,6 @@ as soon as one of those logs or a wrong picture shows.
       its own host thread), if a wall turns out to depend on it (the Resource Memory crash did not: other cores)
 - [ ] Tests for the host side where they can run without the game (NVN object layouts, the audio mixer's buffer
       release, the `nn::time` calendar conversions)
-- [ ] Windows build (POSIX-only today: pthreads, `mmap`, signals)
 
 Why last: none of these blocks the game; take them on when one starts to matter (memory on long runs first).
 
@@ -571,9 +643,9 @@ Not planned yet. Each needs a look at what the game allows first.
   679 ms for the 201 programs by the island on this machine (an RTX 5080, a fast CPU), where it doesn't show. On a
   slower CPU, a frame that meets several new programs (a new area, a menu) would miss its 33 ms.
   - The cache: each program's translated SPIR-V written to `$XDG_CACHE_HOME/oranges/` (the user folders' rules),
-    keyed by the program's hash and everything the translation asked about (the bound textures' types, `vk_replay.cpp:197`; the
-    previous stage; c1), and read back instead of translating; optionally loaded and made into shader objects on a
-    background thread at boot.
+    keyed by the program's hash and everything the translation asked about (the bound textures' types,
+    `vk_replay.cpp:197`; the previous stage; c1), and read back instead of translating; optionally loaded and made
+    into shader objects on a background thread at boot.
   - Not ahead-of-time precompiling from the RomFS: a translation depends on draw-time state the files don't hold, so
     a guess would draw wrong. One play fills the cache instead.
   - First step: measure where a program's time goes, eden's translation or the driver's `vkCreateShadersEXT` (the
