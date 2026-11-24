@@ -638,38 +638,59 @@ The differences live in `host/hos_port.h` / `hos_port.c`:
 - [ ] Small things: `HOS_CONTROL MEM`'s sparse file isn't sparse on NTFS (4 GB written); a guest stack overflow on
       Windows has no guard to log it from; the waitable timer of each thread that sleeps is never closed
 
-## 2. A graphical setup (build the game without a terminal)
+## 2. A downloadable oranges with a graphical setup (build the port without a terminal)
 
-Today a player needs a terminal and a developer's toolchain: a Python 3.14 venv, clang, pkg-config and the libraries,
-then `oranges check`, `oranges extract --only romfs`, `oranges lift --write`, `oranges build`, and then
-`./work/build/oranges`. That is ~12.5 GB on disk (RomFS 10 GB, generated C 1.4 GB, objects 0.8 GB) and about 2.5 GB of
-memory per compile job. Longshot ships a launcher instead (Windows installer or portable zip, Linux AppImage): it finds
-the `.nup` (Downloads, Desktop, Documents) or takes the `romfs` and `exefs` folders, checks the copy while it downloads
-the builder, asks where the game goes (`~/Games/Longshot`, `Games\Longshot`) and for the options, builds with progress,
-then offers Play, shortcuts and updates. Its builder is a separate download with its own compiler and libraries,
-checked against the release's signed checksums, so the player installs nothing else.
+What oranges is for, as Longshot is: a player downloads an oranges release, runs its GUI (`oranges.exe` on Windows,
+an executable on Linux), points it at their own `.nup` (the exact supported build for now: `game.check`), and gets
+their own PC port of the game built on their machine. The release comes with everything the build needs: the player
+installs no toolchain, no Python, no libraries, and needs no terminal. The release holds nothing from the game; the
+game's code and data only ever come from the player's own copy (CLAUDE.md's game data rules).
 
-- [ ] Decide what it is made of: a small native program on SDL3 and Dear ImGui (both already in the tree) that looks
-      like the F1 menu and runs the Python pipeline as a child process, or a Python GUI (Tk ships with Python) in the
-      same process as the pipeline. The first is the likelier choice: no extra dependency, and the game's look.
-- [ ] The steps, one screen each: choose the game (search the usual folders for `.nup` files; `game.check` says
-      "supported" or which build the copy is), choose the install folder (with a free-space check), the options (build
-      jobs from the memory size, Console mode and other F1 settings as defaults), Build, Play.
+Today the same build takes a developer's setup: a Python 3.14 venv, clang (llvm-mingw for Windows), pkg-config and the
+libraries (`python -m oranges.mingw` for Windows), then `oranges check`, `oranges extract --only romfs`,
+`oranges lift --write`, `oranges build`, and running `work/build/oranges`. That is ~12.5 GB on disk (RomFS 10 GB,
+generated C 1.4 GB, objects 0.8 GB) and ~2.5 GB of memory per compile job.
+
+- [ ] The release, one per platform (Windows x64 zip or installer, Linux x64 AppImage or tarball), self-contained:
+  - the GUI (below);
+  - a Python 3.14 runtime with oranges and the vendored a64-kit (Windows: the embeddable Python; Linux: a standalone
+    build such as python-build-standalone), run by the GUI as a child process: the CLI stays the one pipeline;
+  - the a64-kit translator library prebuilt (`liba64emit.so` / `a64emit.dll`: today the first lift builds it with
+    the system's clang++);
+  - a clang toolchain that builds the port for the platform it runs on: llvm-mingw's Windows-hosted release on
+    Windows (UCRT, what the Windows build uses now), an LLVM / clang build with a sysroot on Linux (the port must run
+    on the player's distribution: build against an old enough glibc, or ship the libraries it links);
+  - the port's libraries, headers and import libraries: SDL3, libopus, FFmpeg (the movie's decoders only, as
+    `oranges.mingw` builds it), the Vulkan headers and loader import library; their DLLs / .so files copied beside
+    the built port with their licence texts, as `bundle_dlls` does for Windows now;
+  - prebuilt or source-only parts as fits: eden, Dear ImGui and the host are compiled on the player's machine with the
+    lifted C (no game code in the release), or prebuilt as objects to save time (they hold no game code either).
+  - Versioned as one unit: a release's toolchain, libraries and oranges are known to build together. Checksums
+    signed for each release (the GUI or a first-run check verifies its own files).
+- [ ] Decide what the GUI is made of: a small native program on SDL3 and Dear ImGui (both already in the tree, the F1
+      menu's look) that runs the bundled Python pipeline as a child process, or a Python GUI (Tk) in the bundled
+      Python. The first is the likelier choice: no extra dependency, the game's look, and it starts without Python.
+- [ ] The steps, one screen each: choose the game (search Downloads, Desktop, Documents for `.nup` files, or browse;
+      `game.check` says "supported" or which build the copy is and that it isn't), choose the install folder (with a
+      free-space check: ~12.5 GB while building, less after), the options (build jobs from the memory size, Console
+      mode and other F1 settings as defaults), Build, Play.
 - [ ] The build with progress: each stage (verify, extract, lift, compile chunk N of 57, link) as a bar with a time
       estimate and the log underneath; cancel and resume (the build already caches objects per chunk: a resumed build
       only compiles what is missing). Errors in words a player understands (no space, out of memory, wrong build),
-      with the log kept for a report.
-- [ ] The toolchain: the hard part. A player has no clang, Python or pkg-config libraries. Like Longshot's builder: a
-      self-contained bundle (Python, clang / llvm-mingw, SDL3, libopus, FFmpeg, the Vulkan loader) downloaded once and
-      checked against signed checksums. This needs somewhere to host releases, which there is not yet.
-- [ ] Shortcuts (a `.desktop` entry on Linux, a Start menu entry on Windows) and an "Open the save folder" button.
+      with the log kept for a report. Afterwards, offer to delete what only the build needed (the generated C, the
+      objects).
+- [ ] After the build: Play, shortcuts (a `.desktop` entry on Linux, a Start menu entry on Windows), "Open the save
+      folder", and rebuilding when a new oranges release comes (the player's install keeps its saves and options).
+- [ ] Where releases are published and how the GUI learns of a new one (none yet). Updating oranges never downloads
+      anything of the game.
 - [ ] Smaller: read the RomFS from the `.nup` in place rather than extracting 10 GB (`Nup` streams files; check
       whether random access into them is cheap enough for `nn_fs.c`).
-- [ ] Never: download or upload anything from the game. The setup reads the player's own copy only (CLAUDE.md's game
-      data rules).
+- [ ] Never: the release or the GUI downloads or uploads anything from the game. The setup reads the player's own copy
+      only.
 
-Why here: worth it once the game is something to hand to a player, and the Windows half needs task 1. The CLI stays,
-for development and for the GUI to drive.
+Why here: it is what oranges is meant to be (a player builds their own port, as with Longshot), and it needs task 1
+for its Windows half: the Windows build itself (done under wine), and next the toolchain and libraries as files to
+ship rather than this machine's `/opt/llvm-mingw` and `~/.local/opt/msys2-clang64`.
 
 ## 3. Clean-ups and checks
 

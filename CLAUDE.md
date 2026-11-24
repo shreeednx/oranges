@@ -9,6 +9,11 @@ modeled on **Longshot** (https://git.magicbean.dev/MagicBeanDev/Longshot.git), w
 title. The goal is to have no emulator at runtime: the game's AArch64 code is lifted to C and compiled natively,
 graphics run on Vulkan, and the console's system software (Horizon OS services and syscalls) is reimplemented.
 
+What a player gets, as with Longshot: a downloadable oranges release (a GUI, `oranges.exe` on Windows or a Linux
+executable) that comes with everything the build needs (Python, the clang toolchain, the libraries), so the player
+installs nothing else, points it at their own `.nup` (the exact supported build), and builds their own PC port on their
+machine. The release itself contains nothing from the game (TODO.md task 2).
+
 ## Commands
 
 The Python environment is `.venv/` (Python ≥3.14, because `compression.zstd` is in the stdlib from 3.14).
