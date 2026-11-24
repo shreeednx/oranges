@@ -1,6 +1,7 @@
 /* Guest memory: the 4 GB window, the record of what is mapped (for svcQueryMemory), the system region and the heap.
 
-   The whole window is reserved at start (PROT_NONE) and ranges are committed read-write as the guest maps them. Guest
+   The whole window is reserved at start (inaccessible) and ranges are committed read-write as the guest maps them
+   (hos_port.c: mmap and mprotect, VirtualAlloc on Windows). Guest
    permissions are only recorded: lifted code never executes guest memory, and host-side protection would only turn
    the guest's own bugs into host crashes in other places. */
 #include "hos.h"
@@ -9,9 +10,6 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #define PAGE 0x1000ULL
 
@@ -66,13 +64,13 @@ static void insert_range(uint64_t start, uint64_t size, int state, int perm) {
 
 void hos_mem_init(void) {
     void *want = A64_PTR(0);
-    void *p = mmap(want, HOS_WINDOW, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
-    if (p != want) hos_fatal(NULL, "cannot reserve the 4 GB guest window at %p (%s)", want, strerror(errno));
+    if (hos_vm_reserve(want, HOS_WINDOW) != want)
+        hos_fatal(NULL, "cannot reserve the 4 GB guest window at %p (%s)", want, strerror(errno));
 }
 
 int hos_map(uint64_t addr, uint64_t size, int state, int perm) {
     if ((addr | size) & (PAGE - 1) || !size || addr + size > HOS_WINDOW || addr + size < addr) return -1;
-    if (mprotect(GP(addr), size, PROT_READ | PROT_WRITE)) return -1;
+    if (hos_vm_commit(GP(addr), size)) return -1;
     pthread_mutex_lock(&lock);
     insert_range(addr, size, state, perm);
     pthread_mutex_unlock(&lock);
@@ -81,8 +79,7 @@ int hos_map(uint64_t addr, uint64_t size, int state, int perm) {
 
 int hos_unmap(uint64_t addr, uint64_t size) {
     if ((addr | size) & (PAGE - 1) || !size || addr + size > HOS_WINDOW) return -1;
-    madvise(GP(addr), size, MADV_DONTNEED);   /* (the pages read as zeros when mapped again) */
-    mprotect(GP(addr), size, PROT_NONE);
+    hos_vm_decommit(GP(addr), size);   /* (the pages read as zeros when mapped again) */
     pthread_mutex_lock(&lock);
     remove_span(addr, addr + size);
     pthread_mutex_unlock(&lock);
@@ -161,7 +158,7 @@ int64_t hos_mem_dump(const char *path) {
     const int n = nranges;
     memcpy(copy, ranges, sizeof *copy * (size_t)n);
     pthread_mutex_unlock(&lock);
-    const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd < 0) return free(copy), -1;
     static const uint8_t zero[PAGE];
     int64_t written = 0;
@@ -172,16 +169,16 @@ int64_t hos_mem_dump(const char *path) {
         if (!(r->perm & HOS_PERM_W) || r->state == HOS_MEM_IO) continue;
         const size_t pages = r->size / PAGE;
         if (pages > core_cap) core = realloc(core, core_cap = pages);
-        if (mincore(GP(r->start), r->size, core)) memset(core, 1, pages);
+        if (hos_vm_resident(GP(r->start), r->size, core)) memset(core, 1, pages);
         for (size_t p = 0; p < pages; p++) {
             if (!(core[p] & 1)) continue;
             const uint64_t a = r->start + p * PAGE;
             if (!memcmp(GP(a), zero, PAGE)) continue;
-            if (pwrite(fd, GP(a), PAGE, (off_t)a) != (ssize_t)PAGE) { written = -1; goto out; }
+            if (hos_pwrite(fd, GP(a), PAGE, (int64_t)a) != (int64_t)PAGE) { written = -1; goto out; }
             written += PAGE;
         }
     }
-    if (ftruncate(fd, HOS_WINDOW)) written = -1;
+    if (hos_ftruncate(fd, HOS_WINDOW)) written = -1;
 out:
     close(fd);
     free(core);

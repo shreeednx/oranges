@@ -69,10 +69,7 @@ static uint64_t wait_seq;
 static __thread KThread *self;
 
 void hos_kernel_init(void) {
-    pthread_condattr_t a;
-    pthread_condattr_init(&a);
-    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
-    pthread_cond_init(&kwake, &a);
+    hos_cond_init_monotonic(&kwake);
 }
 
 /* ---- handles */
@@ -122,7 +119,7 @@ static int deadline_of(int64_t ns, struct timespec *ts) {
 
 /* wait for a broadcast: 0, or ETIMEDOUT once the deadline passed */
 static int kwait(int timed, const struct timespec *ts) {
-    return timed ? pthread_cond_timedwait(&kwake, &klock, ts) : pthread_cond_wait(&kwake, &klock);
+    return timed ? hos_cond_wait_until(&kwake, &klock, ts) : pthread_cond_wait(&kwake, &klock);
 }
 
 static KThread *best_waiter(int kind, uint64_t addr) {   /* highest priority (lowest number), then the earliest */
@@ -171,7 +168,7 @@ static int mutex_take_or_queue(KThread *t, uint64_t addr) {
 static void *thread_main(void *p) {
     KThread *t = p;
     self = t;
-    t->tid = gettid();
+    t->tid = hos_thread_id();
     hos_current = &t->ctx;
     Ctx *c = &t->ctx;
     c->x[0] = t->arg;
@@ -219,7 +216,7 @@ Ctx *hos_kernel_main_thread(uint64_t stack_top, int priority) {
     KThread *t = thread_new(0, 0, stack_top, priority, hos_main_core);
     t->started = 1;
     t->host = pthread_self();
-    t->tid = gettid();
+    t->tid = hos_thread_id();
     t->ctx.x[31] = stack_top & ~15ULL;
     self = t;
     hos_current = &t->ctx;
@@ -399,12 +396,7 @@ int hos_kernel_svc(Ctx *A64_NOESC c, uint32_t imm) {
     case 0x0B: {   /* SleepThread(ns): 0, -1 and -2 are yields */
         const int64_t ns = (int64_t)c->x[0];
         log_long_wait(c, "sleeps", ns);
-        if (ns > 0) {
-            struct timespec ts = {ns / 1000000000, ns % 1000000000};
-            while (nanosleep(&ts, &ts) && errno == EINTR) {}
-        } else {
-            sched_yield();
-        }
+        hos_sleep_ns(ns);
         return 1;
     }
     case 0x0C: {   /* GetThreadPriority(-, handle) -> priority */
@@ -719,8 +711,7 @@ static void profile(double seconds, const char *want) {
         const uint32_t svc = t->svc;
         if (svc && svc - 1 < 0x80) in_svc[svc - 1]++;
         samples++;
-        struct timespec ts = {0, 1000000};
-        nanosleep(&ts, NULL);
+        hos_sleep_ns(1000000);
     }
     qsort(prof, PROF_SLOTS, sizeof prof[0], prof_cmp);
     hos_log("profile: %llu samples; return addresses by samples (inclusive, leaf):", (unsigned long long)samples);
@@ -742,8 +733,7 @@ static void *sampler_main(void *p) {
     uint64_t frames = 0;
     int fired = 0;
     for (;;) {
-        struct timespec ts = {0, 100000000};
-        nanosleep(&ts, NULL);
+        hos_sleep_ns(100000000);
         const int64_t now = hos_now_ns();
         const uint64_t f = __atomic_load_n(&hos_present_count, __ATOMIC_RELAXED);
         if (f != frames) frames = f, last_frame = now, fired = 0;

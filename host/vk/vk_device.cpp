@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../hos_menu.h"
+#include "../hos_port.h"
 #include "vk.h"
 
 namespace ovk {
@@ -223,7 +224,7 @@ void write_bmp(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
         fwrite(line.data(), 1, row, f);
     }
     fclose(f);
-    rename(part.c_str(), path);
+    hos_rename(part.c_str(), path);
     hos_log("vk: screenshot %s (%ux%u)", path, w, h);
 }
 

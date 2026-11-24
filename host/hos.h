@@ -17,6 +17,7 @@
 #ifndef HOS_H
 #define HOS_H
 #include "a64.h"
+#include "hos_port.h"
 
 #include <stdarg.h>
 #include <stddef.h>

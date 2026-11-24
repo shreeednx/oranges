@@ -984,9 +984,7 @@ static void audio_out_mix(int16_t *pcm);
 
 static void sleep_until(int64_t t) {
     const int64_t d = t - hos_now_ns();
-    if (d <= 0) return;
-    struct timespec ts = {(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
-    while (nanosleep(&ts, &ts)) {}
+    if (d > 0) hos_sleep_ns(d);
 }
 static void *renderer_main(void *p) {
     (void)p;

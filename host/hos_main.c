@@ -14,18 +14,16 @@
 #include "hos.h"
 
 #include <errno.h>
-#include <fcntl.h>
-#include <libgen.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static void load_image(const char *path) {
-    const int fd = open(path, O_RDONLY);
+    const int fd = open(path, O_RDONLY | O_BINARY);
     if (fd < 0) hos_fatal(NULL, "cannot open %s (%s): run `oranges lift` first", path, strerror(errno));
     struct stat st;
     fstat(fd, &st);
@@ -33,8 +31,6 @@ static void load_image(const char *path) {
     if ((uint64_t)st.st_size != want)
         hos_fatal(NULL, "%s is %lld bytes, this build's image is %llu: lift and build again", path,
                   (long long)st.st_size, (unsigned long long)want);
-    const uint8_t *file = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (file == MAP_FAILED) hos_fatal(NULL, "cannot map %s (%s)", path, strerror(errno));
     for (int i = 0; i < hos_segment_count; i++) {
         const uint64_t addr = hos_segment[i][0], size = hos_segment[i][1];
         const int perm = (int)hos_segment[i][2];
@@ -42,9 +38,12 @@ static void load_image(const char *path) {
         if (hos_map(addr, size, state, perm))
             hos_fatal(NULL, "cannot map the image segment at %#llx", (unsigned long long)addr);
         const uint64_t have = addr + size <= hos_image_end ? size : hos_image_end - addr;
-        memcpy(GP(addr), file + (addr - hos_image_base), have);
+        for (uint64_t done = 0; done < have;) {   /* (read straight into the segment's pages) */
+            const int64_t n = hos_pread(fd, GP(addr + done), have - done, (int64_t)(addr - hos_image_base + done));
+            if (n <= 0) hos_fatal(NULL, "cannot read %s (%s)", path, n ? strerror(errno) : "too short");
+            done += (uint64_t)n;
+        }
     }
-    munmap((void *)file, st.st_size);
     close(fd);
     hos_log("image: %llu MB at %#llx, %d segments, %u lifted functions, main build %s",
             (unsigned long long)(want >> 20), (unsigned long long)hos_image_base, hos_segment_count, a64_fn_count,
@@ -121,20 +120,15 @@ int main(int argc, char **argv) {
     hos_now_ns();   /* (the clock's zero: HOS_LOG_TIME counts from here) */
     const char *t = getenv("HOS_TRACE");
     hos_trace = t && *t && strcmp(t, "0");
-    char path[PATH_MAX];
-    if (argc > 1) {
-        snprintf(path, sizeof path, "%s", argv[1]);
-    } else {
-        char exe[PATH_MAX];
-        const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-        exe[n > 0 ? n : 0] = 0;
-        snprintf(path, sizeof path, "%s/../image/image.bin", dirname(exe));
-    }
+    hos_port_init();
+    char path[PATH_MAX], exe[PATH_MAX];
+    if (hos_exe_path(exe, sizeof exe)) snprintf(exe, sizeof exe, "%s", argv[0]);
+    hos_dirname(exe);   /* (work/build: work/build-windows for the Windows build) */
+    if (argc > 1) snprintf(path, sizeof path, "%s", argv[1]);
+    else snprintf(path, sizeof path, "%s/../image/image.bin", exe);
     {   /* the RomFS and user folders: beside the image's work folder unless the environment says otherwise */
-        char exe[PATH_MAX];
-        const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-        exe[n > 0 ? n : 0] = 0;
-        const char *work = dirname(dirname(exe));   /* (work/build/oranges -> work) */
+        hos_dirname(exe);
+        const char *work = exe;   /* (work/build/oranges -> work) */
         const char *romfs = getenv("ORANGES_ROMFS"), *user = getenv("ORANGES_USER");
         if (romfs) snprintf(hos_romfs_dir, sizeof hos_romfs_dir, "%s", romfs);
         else snprintf(hos_romfs_dir, sizeof hos_romfs_dir, "%s/romfs", work);

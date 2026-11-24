@@ -2488,10 +2488,7 @@ static void pace(int interval) {
     const int64_t period = 16666667LL * interval, now = hos_now_ns();
     int64_t due = __atomic_load_n(&next, __ATOMIC_RELAXED);
     if (due > now + 4 * period) due = now;   /* (a stop in the debugger: no catching up) */
-    if (due > now) {
-        struct timespec ts = {(time_t)((due - now) / 1000000000LL), (long)((due - now) % 1000000000LL)};
-        while (nanosleep(&ts, &ts)) {}
-    }
+    if (due > now) hos_sleep_ns(due - now);
     __atomic_store_n(&next, (due > now ? due : now) + period, __ATOMIC_RELAXED);
 }
 NV(nvnWindowAcquireTexture) {

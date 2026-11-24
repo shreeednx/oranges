@@ -138,10 +138,7 @@ static const ScriptStep *script_now(void) {
 /* the script's QUIT, on time whether or not the game reads input */
 static void *script_quit(void *p) {
     const int64_t at = *(const int64_t *)p;
-    for (int64_t left; (left = at - hos_now_ns()) > 0;) {
-        struct timespec ts = {(time_t)(left / 1000000000LL), (long)(left % 1000000000LL)};
-        nanosleep(&ts, NULL);
-    }
+    for (int64_t left; (left = at - hos_now_ns()) > 0;) hos_sleep_ns(left);
     hos_log("input: the script ends the program");
     hos_exit(0);
 }
@@ -171,9 +168,7 @@ void hos_control_shot_done(void) {
 }
 
 static void control_sleep(double seconds) {
-    if (seconds <= 0) return;
-    struct timespec ts = {(time_t)seconds, (long)((seconds - (double)(time_t)seconds) * 1e9)};
-    nanosleep(&ts, NULL);
+    if (seconds > 0) hos_sleep_ns((int64_t)(seconds * 1e9));
 }
 
 /* HOS_CONTROL's MENU <what> [name] */
@@ -302,7 +297,7 @@ static void control_line(char *line) {
         if (!f) return;
         fwrite(p, 1, n, f);
         fclose(f);
-        rename(tmp, path);
+        hos_rename(tmp, path);
         return;
     }
     char *end;
@@ -330,7 +325,7 @@ static void *control_thread(void *p) {
     const char *path = p;
     char line[1024];
     for (;;) {
-        FILE *f = fopen(path, "r");   /* (a FIFO: blocks until a writer opens it, read to its end, open again) */
+        FILE *f = hos_control_open(path);   /* (blocks until a writer comes; read to its end, open again) */
         if (!f) {
             hos_log("control: %s cannot be opened", path);
             return NULL;
@@ -343,12 +338,12 @@ static void *control_thread(void *p) {
 static void control_start(void) {
     const char *path = getenv("HOS_CONTROL");
     if (!path || !*path) return;
-    struct stat st;
-    if (stat(path, &st) && mkfifo(path, 0600)) hos_fatal(NULL, "HOS_CONTROL: %s cannot be made", path);
+    char shown[512];
+    if (hos_control_make(path, shown, sizeof shown)) hos_fatal(NULL, "HOS_CONTROL: %s cannot be made", path);
     pthread_t t;
     pthread_create(&t, NULL, control_thread, (void *)path);
     pthread_detach(t);
-    hos_log("control: reading %s", path);
+    hos_log("control: reading %s", shown);
 }
 
 /* stick directions as buttons, as the console sets them (past half way) */

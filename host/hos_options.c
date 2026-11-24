@@ -13,6 +13,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "hos_port.h"
+
 #include "hos_options.h"
 
 void hos_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -30,8 +32,17 @@ static char *dup_str(const char *s) {
     return d;
 }
 
+/* HOS_OPTIONS_FILE, else $XDG_CONFIG_HOME/oranges/, else ~/.config/oranges/; on Windows %APPDATA%\oranges\, the
+   folder the saves are in (hos_main.c's data_dir) */
 static void choose_path(void) {
     const char *own = getenv("HOS_OPTIONS_FILE"), *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+#ifdef _WIN32
+    const char *appdata = getenv("APPDATA");
+    if (!(own && *own) && appdata && *appdata) {
+        snprintf(path, sizeof path, "%s\\oranges\\oranges_options.ini", appdata);
+        return;
+    }
+#endif
     if (own && *own) snprintf(path, sizeof path, "%s", own);
     else if (xdg && *xdg) snprintf(path, sizeof path, "%s/oranges/oranges_options.ini", xdg);
     else if (home && *home) snprintf(path, sizeof path, "%s/.config/oranges/oranges_options.ini", home);
@@ -111,10 +122,11 @@ static void make_parent(const char *file) {
     char dir[1024];
     snprintf(dir, sizeof dir, "%s", file);
     for (char *p = dir + 1; *p; p++)
-        if (*p == '/') {
+        if (*p == '/' || *p == '\\') {
+            const char sep = *p;
             *p = 0;
-            if (mkdir(dir, 0755) && errno != EEXIST) return;
-            *p = '/';
+            if (p[-1] != ':' && hos_mkdir(dir) && errno != EEXIST) return;   /* (not "C:") */
+            *p = sep;
         }
 }
 
@@ -131,7 +143,7 @@ static void write_locked(void) {
     for (int i = 0; i < nlines; i++) fprintf(f, "%s\n", lines[i]);
     const int bad = fflush(f) != 0;
     fclose(f);
-    if (bad || rename(tmp, path)) hos_log("options: %s cannot be written", path);
+    if (bad || hos_rename(tmp, path)) hos_log("options: %s cannot be written", path);
 }
 
 void hos_option_set(const char *key, const char *value) {

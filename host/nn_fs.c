@@ -3,7 +3,7 @@
      MountDeviceSaveData(name) <hos_user_dir>/saves/<program id>/device (hos_fs_init: the folder, moving an old save)
      MountAddOnContent         no add-on content: "target not found"
    A path is "<mount>:/<path>". FileHandle and DirectoryHandle (one pointer each, passed in a register) are indexes
-   into the tables here, plus one. Reads and writes are positional (pread/pwrite), so threads may share a file. Results
+   into the tables here, plus one. Reads and writes are positional (hos_pread/hos_pwrite), so threads may share a file. Results
    are nn::fs's (module 2). Writes go straight to the host files, so Commit has nothing left to do.
    HOS_FS_LOG=1 logs every path the game asks for. */
 #include "hos.h"
@@ -51,12 +51,13 @@ static int mkdirs(const char *path) {
     char p[PATH_CAP];
     snprintf(p, sizeof p, "%s", path);
     for (char *s = p + 1; *s; s++)
-        if (*s == '/') {
+        if (*s == '/' || *s == '\\') {   /* (Windows paths: either separator, and no "C:" to make) */
+            const char sep = *s;
             *s = 0;
-            if (mkdir(p, 0755) && errno != EEXIST) return -1;
-            *s = '/';
+            if (s[-1] != ':' && hos_mkdir(p) && errno != EEXIST) return -1;
+            *s = sep;
         }
-    return mkdir(p, 0755) == 0 || errno == EEXIST ? 0 : -1;
+    return hos_mkdir(p) == 0 || errno == EEXIST ? 0 : -1;
 }
 
 static uint32_t add_mount(const char *name, const char *host, int writable) {
@@ -146,7 +147,7 @@ static int copy_tree(const char *from, const char *to) {
     struct stat st;
     if (lstat(from, &st)) return -1;
     if (S_ISDIR(st.st_mode)) {
-        if (mkdir(to, 0755)) return -1;
+        if (hos_mkdir(to)) return -1;
         DIR *d = opendir(from);
         if (!d) return -1;
         struct dirent *e;
@@ -162,7 +163,8 @@ static int copy_tree(const char *from, const char *to) {
         return r;
     }
     if (!S_ISREG(st.st_mode)) return 0;   /* (a save holds files and folders only) */
-    const int in = open(from, O_RDONLY), out = in < 0 ? -1 : open(to, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    const int in = open(from, O_RDONLY | O_BINARY);
+    const int out = in < 0 ? -1 : open(to, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0644);
     int r = in < 0 || out < 0 ? -1 : 0;
     static char buf[1 << 16];
     for (ssize_t n; !r && (n = read(in, buf, sizeof buf)) != 0;)
@@ -191,7 +193,7 @@ void hos_fs_init(void) {
         char parent[PATH_CAP];
         snprintf(parent, sizeof parent, "%s", save_dir);
         *strrchr(parent, '/') = 0;
-        if (mkdirs(parent) || copy_tree(old, part) || (rmdir(save_dir) && errno != ENOENT) || rename(part, save_dir)) {
+        if (mkdirs(parent) || copy_tree(old, part) || (rmdir(save_dir) && errno != ENOENT) || hos_rename(part, save_dir)) {
             const int e = errno;
             remove_tree(part, 0);
             /* (not a new game in its place: once that is saved, the old save would never be moved over) */
@@ -251,7 +253,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {   /* (FileHandle *out, path, mo
         RET(R_PATH_NOT_FOUND);
         return;
     }
-    const int fd = open(path, mode & 2 ? O_RDWR : O_RDONLY);
+    const int fd = open(path, (mode & 2 ? O_RDWR : O_RDONLY) | O_BINARY);
     if (fd < 0) { RET(errno_result()); return; }
     pthread_mutex_lock(&lock);
     int i = 0;
@@ -277,7 +279,7 @@ static uint32_t read_file(uint64_t h, int64_t offset, uint64_t buf, uint64_t siz
     if (offset < 0 || offset > st.st_size) return R_OUT_OF_RANGE;
     uint64_t done = 0;
     while (done < size) {
-        const ssize_t n = pread(fd, GP(buf + done), size - done, offset + done);
+        const int64_t n = hos_pread(fd, GP(buf + done), size - done, offset + done);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) break;
         done += (uint64_t)n;
@@ -316,7 +318,7 @@ HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {   /* (hand
     if (fd < 0 || !writable) { RET(R_INVALID_ARGUMENT); return; }
     uint64_t done = 0;
     while (done < ARG(3)) {
-        const ssize_t n = pwrite(fd, GP(ARG(2) + done), ARG(3) - done, (off_t)ARG(1) + done);
+        const int64_t n = hos_pwrite(fd, GP(ARG(2) + done), ARG(3) - done, (int64_t)(ARG(1) + done));
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) { RET(errno_result()); return; }
         done += (uint64_t)n;
@@ -326,7 +328,7 @@ HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {   /* (hand
 HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
     int writable = 0;
     const int fd = file_fd(ARG(0), &writable);
-    RET(fd < 0 || !writable ? R_INVALID_ARGUMENT : ftruncate(fd, (off_t)ARG(1)) ? errno_result() : 0);
+    RET(fd < 0 || !writable ? R_INVALID_ARGUMENT : hos_ftruncate(fd, (int64_t)ARG(1)) ? errno_result() : 0);
 }
 HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { RET(0); }
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
@@ -351,9 +353,9 @@ HLE(_ZN2nn2fs10CreateFileEPKcl) {   /* (path, size) */
     char path[PATH_CAP];
     uint32_t r = writable_path(ARG(0), path);
     if (r) { RET(r); return; }
-    const int fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0644);
+    const int fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_BINARY, 0644);
     if (fd < 0) { RET(errno_result()); return; }
-    r = ftruncate(fd, (off_t)ARG(1)) ? errno_result() : 0;
+    r = hos_ftruncate(fd, (int64_t)ARG(1)) ? errno_result() : 0;
     close(fd);
     RET(r);
 }
@@ -365,7 +367,7 @@ HLE(_ZN2nn2fs10DeleteFileEPKc) {
 HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
     char path[PATH_CAP];
     const uint32_t r = writable_path(ARG(0), path);
-    RET(r ? r : mkdir(path, 0755) ? errno_result() : 0);
+    RET(r ? r : hos_mkdir(path) ? errno_result() : 0);
 }
 
 static int remove_tree(const char *path, int keep_top) {
@@ -401,7 +403,7 @@ HLE(_ZN2nn2fs15RenameDirectoryEPKcS2_) {
     if (!r) r = writable_path(ARG(1), to);
     if (!r) {
         struct stat st;
-        r = !stat(to, &st) ? R_PATH_ALREADY_EXISTS : rename(from, to) ? errno_result() : 0;
+        r = !stat(to, &st) ? R_PATH_ALREADY_EXISTS : hos_rename(from, to) ? errno_result() : 0;
     }
     RET(r);
 }

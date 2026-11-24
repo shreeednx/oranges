@@ -111,26 +111,52 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
     hos_exit(70);
 }
 
-/* ---- native crashes: a signal in lifted or host code. The guest registers are those of the context the thread runs
-   (hos_current), as last stored: lifted code keeps them in the context across calls. */
-#include <signal.h>
-#include <unistd.h>
-
+/* ---- native crashes: a signal (an exception on Windows) in lifted or host code. The guest registers are those of
+   the context the thread runs (hos_current), as last stored: lifted code keeps them in the context across calls. */
 __thread Ctx *hos_current;
 
-static void on_signal(int sig, siginfo_t *si, void *uc) {
-    (void)uc;
-    const uintptr_t a = (uintptr_t)si->si_addr, base = (uintptr_t)A64_PTR(0);
+static void crash_where(const char *what, uintptr_t a) {
+    const uintptr_t base = (uintptr_t)A64_PTR(0);
     if (a >= base && a < base + HOS_WINDOW)
-        hos_log("crash: signal %d at guest address %#llx (an unmapped page of the guest window)", sig,
+        hos_log("crash: %s at guest address %#llx (an unmapped page of the guest window)", what,
                 (unsigned long long)(a - base));
     else
-        hos_log("crash: signal %d at host address %p", sig, si->si_addr);
+        hos_log("crash: %s at host address %p", what, (void *)a);
     if (hos_current) {
         hos_dump(hos_current);
         hos_backtrace(hos_current);
     }
     fflush(stderr);
+}
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+/* (the unhandled-exception filter, not a vectored handler: that one would also see the exceptions GPU drivers and
+   C++ code raise and handle themselves) */
+static LONG WINAPI on_exception(EXCEPTION_POINTERS *e) {
+    const EXCEPTION_RECORD *r = e->ExceptionRecord;
+    char what[64];
+    snprintf(what, sizeof what, "exception %#lx", (unsigned long)r->ExceptionCode);
+    const int access = r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION || r->ExceptionCode == EXCEPTION_IN_PAGE_ERROR;
+    crash_where(what, access && r->NumberParameters >= 2 ? (uintptr_t)r->ExceptionInformation[1]
+                                                         : (uintptr_t)r->ExceptionAddress);
+    if (access) hos_log("crash: (the instruction at host address %p)", r->ExceptionAddress);
+    _exit(71);
+}
+
+void hos_crash_init(void) { SetUnhandledExceptionFilter(on_exception); }
+
+#else
+#include <signal.h>
+#include <unistd.h>
+
+static void on_signal(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    char what[32];
+    snprintf(what, sizeof what, "signal %d", sig);
+    crash_where(what, (uintptr_t)si->si_addr);
     _exit(71);
 }
 
@@ -144,6 +170,7 @@ void hos_crash_init(void) {
     for (int sig = SIGILL; sig <= SIGSEGV; sig++)
         if (sig == SIGILL || sig == SIGBUS || sig == SIGFPE || sig == SIGSEGV) sigaction(sig, &sa, NULL);
 }
+#endif
 
 /* rt/a64_rt.c's weak hook: a thread that cannot go on (a trap, a branch to an address with no function) */
 void a64_on_trap(Ctx *c, uint64_t pc, uint32_t insn, const char *why) {

@@ -27,6 +27,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # setup
 .venv/bin/oranges nso     work/exefs/main                       # same for an extracted NSO
 .venv/bin/oranges lift [--translate] [--write]   # image + discovery (~20 s); --write emits the C (+40 s, 1.4 GB)
 .venv/bin/oranges build                           # compile work/gen + rt + host/ (+ vk, eden), link work/build/oranges
+.venv/bin/oranges build --target windows          # work/build-windows/oranges.exe with llvm-mingw (/opt/llvm-mingw)
+WINEDEBUG=-all ORANGES_USER=Z:/abs/dir HOS_NO_WINDOW=1 wine work/build-windows/oranges.exe   # it, under wine
 ./work/build/oranges [image.bin]                  # boot (default image: work/image/image.bin); HOS_TRACE=1 logs every SVC
 HOS_NO_WINDOW=1 HOS_INPUT_SCRIPT=script.txt ./work/build/oranges   # headless, scripted input ("8 A", "8.2", "60 QUIT")
 HOS_CONTROL=ctl.fifo HOS_NO_WINDOW=1 ./work/build/oranges &   # drive it live: one line, or several, at a time:
@@ -143,6 +145,12 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   (`PROVENANCE.md`); `third_party/khronos/`: the Vulkan and SPIR-V C headers (the system has none);
   `third_party/fidelityfx-fsr1/`: AMD's FSR 1 GPU headers (FidelityFX SDK v1.1.4, MIT, `PROVENANCE.md`). Don't edit
   them.
+- `host/hos_port.h` / `hos_port.c`: what Linux and Windows do differently (guest window pages, sleeps and monotonic
+  timed waits, positional file I/O, renames, the exe's path, time zones, the `HOS_CONTROL` FIFO or named pipe). Call
+  these rather than the POSIX ones in host code: winpthreads can't wait on CLOCK_MONOTONIC and its `nanosleep` sleeps
+  whole milliseconds; MinGW's `open` needs `O_BINARY`. `host/win/`: the Windows manifest (UTF-8 code page) and `.rc`.
+  The Windows build (`oranges/build.py`'s docstring) links winpthreads and libc++ statically; its libraries come from
+  `x86_64-w64-mingw32-pkg-config` or `ORANGES_MINGW_PREFIX`.
 - `host/` (C): the Horizon OS layer, modeled on Longshot's `host/` but with `nn::os` run lifted over real SVCs.
   `hos.h` has the API and the guest address map (4 GB window: system region, image at 0x08000000, heap, alias and
   stack regions). `hos_main.c` loads `image.bin` and boots: `_init_libc0`, `nnosInitialize`, `_init_libc1`,

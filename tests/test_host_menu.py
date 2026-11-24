@@ -17,7 +17,7 @@ def test_menu_bindings_and_options_file(tmp_path):
     exe = tmp_path / "host_menu_test"
     subprocess.run([CC, "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Werror", "-I" + str(HOST),
                     str(ROOT / "tests" / "host_menu_test.c"), str(HOST / "hos_options.c"), str(HOST / "hos_controls.c"),
-                    str(HOST / "hos_menu.c"), "-lpthread", "-o", str(exe)], check=True)
+                    str(HOST / "hos_menu.c"), str(HOST / "hos_port.c"), "-lpthread", "-o", str(exe)], check=True)
     ini = tmp_path / "options" / "oranges_options.ini"   # (its folder made at the first write)
     for step in ("first", "again"):
         r = subprocess.run([str(exe), str(ini), step], capture_output=True, text=True)

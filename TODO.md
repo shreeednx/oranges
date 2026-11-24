@@ -584,43 +584,45 @@ Left over from it:
 
 ## 1. A Windows build (MinGW)
 
-Linux only today. The target is a Windows x64 build of the same program, built with MinGW-w64 so that most of the
-POSIX code stays as it is: winpthreads for the ~17 host files that use pthreads, MinGW's `dirent.h`, `clock_gettime`
-and `nanosleep`. clang stays the compiler, since the chunks' flags (`-mllvm -rotation-max-header-size=0`) and
-`-mcx16` / `-maes` are clang's. Use llvm-mingw (`x86_64-w64-mingw32-clang`, UCRT) or MSYS2's CLANG64 environment, which
-also packages pkg-config, SDL3, the Vulkan loader, libopus and FFmpeg.
+The target is a Windows x64 build of the same program, built with MinGW-w64 so that most of the POSIX code stays as it
+is. clang stays the compiler, since the chunks' flags (`-mllvm -rotation-max-header-size=0`) and `-mcx16` / `-maes`
+are clang's: llvm-mingw (`x86_64-w64-mingw32-clang`, UCRT) cross from Linux, or MSYS2's CLANG64 on Windows.
 
-- [ ] Toolchain first: `oranges build` with `CC`/`CXX` as MinGW clang and a target triple (cross-compiling from Linux
-      as well as on Windows under MSYS2), `.exe` output, `-lpthread` from winpthreads, pkg-config through MSYS2's or a
-      cross sysroot's `.pc` files. eden and the Vulkan back end in C++20 under MinGW's libc++.
-- [ ] What MinGW does not cover, with a `_WIN32` branch for each (a64-kit's `rt/a64_rt.c` already has its own):
-  - the guest window: `hos_mem.c` reserves 4 GB at a fixed host address (`mmap` with `MAP_FIXED_NOREPLACE`), and
-    `load_image` maps the image. Use `VirtualAlloc` (reserve, then commit) and `VirtualProtect` for the page
-    permissions, as Longshot does on Windows;
-  - native crashes (`hos_crash_init`: `sigaction` on SIGSEGV/SIGILL/SIGBUS/SIGFPE with the guest registers and
-    backtrace): use `AddVectoredExceptionHandler`;
-  - `/proc`: the executable's path (`hos_main.c`: `GetModuleFileNameW`) and per-thread CPU time for `HOS_SAMPLE` /
-    `HOS_PROFILE` (`hos_kernel.c`: `GetThreadTimes`);
-  - `nn_fs.c`: `pread` / `pwrite` (MinGW has neither: `ReadFile` / `WriteFile` with an `OVERLAPPED` offset),
-    one-argument `mkdir`, `rename` over an existing file or empty folder (`MoveFileExW`,
-    `MOVEFILE_REPLACE_EXISTING`: the options file's tmp+rename and the save move use it);
-  - paths in UTF-8: a user folder under `%APPDATA%` can hold any character, so either the UTF-8 code page in the
-    executable's manifest (Windows 10 1903+) or wide-character calls at the few places that open files;
-  - `HOS_CONTROL`'s FIFO (`mkfifo`): a named pipe (`\\.\pipe\...`);
-  - signals the host uses elsewhere (`nn_audio.c`, `nvn_native.c`, `vk_replay.cpp` and others include `signal.h`):
-    check each one.
-- [ ] LLP64: `long` is 32 bits on Windows. Look through host/ for `long` used as a 64-bit type and for `%ld` / `%lx`
-      formats (`-Wformat` finds the formats once warnings are on, a task 3 item).
-- [ ] The Python side on Windows: Python 3.14 (for `compression.zstd`), the kit's `build_emit.py` already makes
-      `a64emit.dll`, and `oranges build`'s job count reads the memory size (check how it does that on Windows).
-- [ ] Run it: boot the day-1 save to the island with the window, sound, a gamepad and the F1 menu, with the save in
-      `%APPDATA%\oranges\saves\01006F8002326000\device` ("Done: saves in the user's data folder" has the branch).
-      `VK_EXT_external_memory_host` is on NVIDIA's and AMD's Windows drivers.
-- [ ] Shipping: the `.exe` and the DLLs it needs beside it (SDL3, libopus, FFmpeg's, winpthread, libc++ / libunwind),
-      their licence texts with them.
+Where it is (2026-11-24): `oranges build --target windows` cross-compiles `work/build-windows/oranges.exe` with
+llvm-mingw (`/opt/llvm-mingw`, LLVM 23.1), and it boots the day-1 save headless under wine 11.22 at 30 fps for a
+minute, as the Linux build does (the null back end: no libraries yet). It imports only system DLLs (UCRT, kernel32,
+winmm): winpthreads and libc++ are linked in. The differences live in `host/hos_port.h` / `hos_port.c`:
 
-Why here: a native Windows program is half of the project's goal ("Windows/Linux"), and the graphical setup (task 2)
-needs it for its Windows half.
+- the guest window: `VirtualAlloc` reserve at the fixed address, commit / decommit per mapping (Linux: `mmap`,
+  `mprotect`, `madvise`); the image is read into its segments (no `mmap` of the file);
+- winpthreads gaps the kernel would have hit: `pthread_condattr_setclock(CLOCK_MONOTONIC)` fails and a timed wait
+  takes its deadline as wall-clock time (every timed kernel wait would have timed out at once: probed under wine), and
+  `nanosleep` sleeps whole milliseconds (0.2 ms: none). `hos_cond_wait_until` turns the monotonic deadline into the
+  time left; `hos_sleep_ns` is a high-resolution waitable timer; `timeBeginPeriod(1)` at start (Sleep and
+  winpthreads' waits tick at 15.6 ms otherwise). Every `nanosleep` in host/ is `hos_sleep_ns` now;
+- files: `hos_pread` / `hos_pwrite` (`ReadFile` / `WriteFile` with an offset), `O_BINARY` on every `open`,
+  `hos_rename` (`MoveFileEx`, replacing), `hos_mkdir`, `hos_ftruncate`, `-D_FILE_OFFSET_BITS=64` (MinGW's `off_t`
+  and `st_size` are 32 bits otherwise), `hos_exe_path` (`GetModuleFileNameW`), both path separators in `mkdirs`;
+- time: `localtime_s` / `gmtime_s` / `_mkgmtime`; the zone's name is its offset ("+01": Windows names zones in words);
+- native crashes: `SetUnhandledExceptionFilter` (not a vectored handler: that sees the exceptions GPU drivers and C++
+  raise and handle themselves) with the same guest registers and backtrace;
+- `HOS_CONTROL`: a named pipe `\\.\pipe\<the path's last name>` (Linux: the FIFO);
+- `host/win/oranges.manifest` (compiled in by `oranges.rc`): UTF-8 as the code page (paths, `getenv`, `argv`), long
+  paths. The options file is `%APPDATA%\oranges\oranges_options.ini`, beside the saves.
+- LLP64: the host C has no bare `long` used as 64 bits and no `-Wformat` warnings under MinGW.
+
+- [ ] The libraries for MinGW (the user installs them): SDL3, the Vulkan loader, libopus, FFmpeg, found through
+      `x86_64-w64-mingw32-pkg-config` or `ORANGES_MINGW_PREFIX`. Then the C++ (eden, Dear ImGui, host/vk) under
+      MinGW's libc++, and a run under wine with the window, sound and the renderer (winevulkan)
+- [ ] Run it on Windows itself: boot the day-1 save to the island with the window, sound, a gamepad and the F1 menu,
+      with the save in `%APPDATA%\oranges\saves\01006F8002326000\device`. `VK_EXT_external_memory_host` is on
+      NVIDIA's and AMD's Windows drivers. The build on Windows (MSYS2 CLANG64: `clang`, `pkg-config`, `windres`; the
+      target defaults to windows there) is written but untried
+- [ ] The Python side on Windows: Python 3.14, the kit's `build_emit.py` makes `a64emit.dll`; `oranges lift` there
+- [ ] Shipping: the `.exe` and the DLLs it needs beside it, their licence texts with them; the console subsystem
+      today (the log goes to a console window): a GUI subsystem build with the log in a file, for players
+- [ ] Small things: `HOS_CONTROL MEM`'s sparse file isn't sparse on NTFS (4 GB written); a guest stack overflow on
+      Windows has no guard to log it from; the waitable timer of each thread that sleeps is never closed
 
 ## 2. A graphical setup (build the game without a terminal)
 

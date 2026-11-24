@@ -53,10 +53,11 @@ static uint64_t ret_calendar(CalendarTime c) {
 }
 /* (calendar, additional info) of a POSIX time in local time (local: the device's zone) or UTC */
 static void to_calendar(int64_t posix, int local, uint64_t cal, uint64_t info) {
-    const time_t tt = (time_t)posix;
     struct tm t;
-    if (local) localtime_r(&tt, &t);
-    else gmtime_r(&tt, &t);
+    int32_t gmtoff = 0;
+    char zone[8] = "UTC";
+    if (local) hos_localtime((time_t)posix, &t, &gmtoff, zone);
+    else hos_gmtime((time_t)posix, &t);
     if (cal) {
         const CalendarTime c = calendar_of(&t);
         memcpy(GP(cal), &c, 8);
@@ -64,10 +65,10 @@ static void to_calendar(int64_t posix, int local, uint64_t cal, uint64_t info) {
     if (info) {
         uint8_t *p = GP(info);
         memset(p, 0, 0x18);
-        const int32_t dow = t.tm_wday, doy = t.tm_yday, off = local ? (int32_t)t.tm_gmtoff : 0;
+        const int32_t dow = t.tm_wday, doy = t.tm_yday, off = gmtoff;
         memcpy(p, &dow, 4);
         memcpy(p + 4, &doy, 4);
-        strncpy((char *)p + 8, local && t.tm_zone ? t.tm_zone : "UTC", 7);
+        strncpy((char *)p + 8, zone, 7);
         p[0x10] = local && t.tm_isdst > 0;
         memcpy(p + 0x14, &off, 4);
     }
@@ -85,7 +86,7 @@ HLE(_ZN2nn4time11IsValidDateEiii) { RET(valid_date((int)ARG(0), (int)ARG(1), (in
 HLE(_ZN2nn4time12GetDayOfWeekEiii) {
     struct tm t = {0};
     t.tm_year = (int)ARG(0) - 1900, t.tm_mon = (int)ARG(1) - 1, t.tm_mday = (int)ARG(2), t.tm_hour = 12;
-    timegm(&t);
+    hos_timegm(&t);
     RET(t.tm_wday);
 }
 static void current_time(Ctx *c) {
@@ -107,16 +108,15 @@ HLE(_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInf
     RET(0);
 }
 HLE(_ZN2nn4time19ToCalendarTimeInUtcERKNS0_9PosixTimeE) {
-    const time_t tt = (time_t)(int64_t)G64(ARG(0));
     struct tm t;
-    gmtime_r(&tt, &t);
+    hos_gmtime((time_t)(int64_t)G64(ARG(0)), &t);
     RET(ret_calendar(calendar_of(&t)));
 }
 HLE(_ZN2nn4time18ToPosixTimeFromUtcERKNS0_12CalendarTimeE) {
     CalendarTime cal;
     memcpy(&cal, GP(ARG(0)), 8);
     struct tm t = tm_of(&cal);
-    RET((uint64_t)(int64_t)timegm(&t));
+    RET((uint64_t)(int64_t)hos_timegm(&t));
 }
 /* ToPosixTime(int* count, PosixTime* out, int capacity, CalendarTime const&, TimeZoneRule const&): local time */
 HLE(_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE) {
@@ -150,7 +150,7 @@ HLE(_ZN2nn4timemiERKNS0_12CalendarTimeES3_) {
     memcpy(&x, GP(ARG(0)), 8);
     memcpy(&y, GP(ARG(1)), 8);
     struct tm a = tm_of(&x), b = tm_of(&y);
-    RET((uint64_t)(((int64_t)timegm(&a) - (int64_t)timegm(&b)) * 1000000000LL));
+    RET((uint64_t)(((int64_t)hos_timegm(&a) - (int64_t)hos_timegm(&b)) * 1000000000LL));
 }
 /* the steady clock: seconds since the program started, from one source (a fixed id) */
 static const uint8_t steady_source[16] = {0x6f, 0x72, 0x61, 0x6e, 0x67, 0x65, 0x73, 0x2d,
@@ -318,8 +318,7 @@ static void *vsync_main(void *p) {
         next += 16666667;
         const int64_t d = next - hos_now_ns();
         if (d > 0) {
-            struct timespec ts = {(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
-            while (nanosleep(&ts, &ts)) {}
+            hos_sleep_ns(d);
         } else if (d < -1000000000LL) {
             next = hos_now_ns();   /* (a stop in the debugger: no catching up) */
         }

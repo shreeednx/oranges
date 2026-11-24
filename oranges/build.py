@@ -8,6 +8,15 @@ are FP-exact (-ffp-contract=off) and LoopRotate is capped, which a64-kit measure
     ORANGES_MARCH  CPU level for every object (default x86-64-v3)
     ORANGES_OPT    optimization level of the lifted chunks (default O1)
     ORANGES_VULKAN 0: without the Vulkan back end (host/vk and eden's recompiler, ~160 C++ files)
+    ORANGES_TARGET windows: the Windows build (or `oranges build --target windows`), see below
+
+The Windows build is cross-compiled with llvm-mingw (MinGW-w64 on clang, UCRT): x86_64-w64-mingw32-clang from PATH,
+else from ORANGES_MINGW (default /opt/llvm-mingw). It goes to <work>/build-windows/oranges.exe, with its own objects.
+Its libraries (SDL3, the Vulkan loader, libopus, FFmpeg) come from a MinGW prefix: ORANGES_MINGW_PREFIX (an unpacked
+MSYS2 CLANG64 tree, say), whose lib/pkgconfig is searched with pkg-config's --define-prefix, or
+x86_64-w64-mingw32-pkg-config when that is on PATH. With neither, it builds without them (headless, the null back
+end). winpthreads and libc++ are linked in statically, so the program needs only those libraries' DLLs beside it.
+Run on Windows itself (MSYS2's CLANG64 shell), the target is windows and its own clang, pkg-config and windres are used.
 """
 
 import functools
@@ -28,18 +37,68 @@ HOST = ROOT / "host"
 RT = Path(kit.KIT) / "rt"
 
 
-def cc() -> str:
-    path = shutil.which(os.environ.get("CC", "clang"))
+TARGETS = ("linux", "windows")
+MINGW_TRIPLE = "x86_64-w64-mingw32"
+
+
+def target() -> str:
+    """the system the program is built for: ORANGES_TARGET (build() sets it from --target), else the one this runs
+    on"""
+    t = os.environ.get("ORANGES_TARGET", "windows" if os.name == "nt" else "linux")
+    if t not in TARGETS:
+        raise SystemExit("ORANGES_TARGET is %r: one of %s" % (t, ", ".join(TARGETS)))
+    return t
+
+
+def windows() -> bool:
+    return target() == "windows"
+
+
+def _tool(name: str) -> str:
+    """a compiler: from PATH, and for the Windows build also from ORANGES_MINGW's bin (default /opt/llvm-mingw)"""
+    path = shutil.which(name)
+    if not path and windows():
+        path = shutil.which(name, path=str(Path(os.environ.get("ORANGES_MINGW", "/opt/llvm-mingw")) / "bin"))
     if not path:
-        raise SystemExit("clang not found (set CC)")
+        raise SystemExit("%s not found (set %s%s)" % (
+            name, "CXX" if "++" in name else "CC", ", or ORANGES_MINGW to llvm-mingw's folder" if windows() else ""))
     return path
+
+
+def _cross() -> bool:
+    """whether the build is a cross build (the Windows program built on Linux)"""
+    return windows() and os.name != "nt"
+
+
+def cc() -> str:   # (on Windows, MSYS2's CLANG64 clang targets MinGW itself)
+    return _tool(os.environ.get("CC", MINGW_TRIPLE + "-clang" if _cross() else "clang"))
 
 
 def cxx() -> str:
-    path = shutil.which(os.environ.get("CXX", "clang++"))
-    if not path:
-        raise SystemExit("clang++ not found (set CXX)")
-    return path
+    return _tool(os.environ.get("CXX", MINGW_TRIPLE + "-clang++" if _cross() else "clang++"))
+
+
+def out_dir(work: Path) -> Path:
+    """where the objects and the program go: <work>/build, <work>/build-windows for the Windows build"""
+    return work / ("build-windows" if windows() else "build")
+
+
+def exe_name() -> str:
+    return "oranges.exe" if windows() else "oranges"
+
+
+def _pkg_config() -> tuple[list[str], dict] | None:
+    """the pkg-config command line and environment for the target's libraries, or None: none to be had"""
+    if not _cross():   # (on Windows: MSYS2's own pkg-config knows its CLANG64 libraries)
+        return ["pkg-config"], dict(os.environ)
+    if shutil.which(MINGW_TRIPLE + "-pkg-config"):
+        return [MINGW_TRIPLE + "-pkg-config"], dict(os.environ)
+    prefix = os.environ.get("ORANGES_MINGW_PREFIX")
+    if not prefix:
+        return None
+    env = dict(os.environ, PKG_CONFIG_LIBDIR=str(Path(prefix) / "lib" / "pkgconfig"))
+    env.pop("PKG_CONFIG_PATH", None)
+    return ["pkg-config", "--define-prefix"], env
 
 
 def vulkan() -> bool:
@@ -57,12 +116,23 @@ def cxx_flags(gen: Path) -> list[str]:
             "-I" + str(RT)]
 
 
-@functools.cache
 def optional_library(name: str) -> tuple[list[str], list[str]]:
-    """(compile flags, link flags) of a system library pkg-config knows, or ([], []): the host builds without it"""
+    """(compile flags, link flags) of a library pkg-config knows for the target, or ([], []): the host builds
+    without it"""
+    return _optional_library(name, target())
+
+
+@functools.cache
+def _optional_library(name: str, _target: str) -> tuple[list[str], list[str]]:
+    pc = _pkg_config()
+    if pc is None:
+        return [], []
+    cmd, env = pc
     try:
-        cflags = subprocess.run(["pkg-config", "--cflags", name], capture_output=True, text=True, check=True).stdout
-        libs = subprocess.run(["pkg-config", "--libs", name], capture_output=True, text=True, check=True).stdout
+        cflags = subprocess.run(cmd + ["--cflags"] + name.split(), capture_output=True, text=True, check=True,
+                                env=env).stdout
+        libs = subprocess.run(cmd + ["--libs"] + name.split(), capture_output=True, text=True, check=True,
+                              env=env).stdout
     except (OSError, subprocess.CalledProcessError):
         return [], []
     return cflags.split(), libs.split()
@@ -113,6 +183,7 @@ def sources(gen: Path) -> list[tuple[Path, list[str]]]:
                                          "hos_symbols.c")
             if (gen / n).exists()]
     host = (["-I" + str(HOST)] + support + ["-g"]   # (debug info for the OS layer: cheap, and gdb can read its state)
+            + (["-D_FILE_OFFSET_BITS=64"] if windows() else [])   # (64-bit off_t and st_size: MinGW's are 32)
             + host_libraries()[0])
     out += [(RT / "a64_rt.c", support)] + [(c, host) for c in sorted(HOST.glob("*.c"))]
     if vulkan():   # (C++: eden's recompiler, Dear ImGui and the back end; the back end with debug info, as host/)
@@ -161,9 +232,21 @@ def _obj(src: Path, obj_dir: Path) -> Path:
     return obj_dir / (src.stem + (".rt" if src.parent in (RT, HOST) else "") + ".o")
 
 
-def build(work: str | os.PathLike, jobs: int | None = None, say=print) -> Path:
+def link_flags() -> list[str]:
+    """the system libraries and linker options after the objects"""
+    if not windows():
+        return ["-lm", "-lpthread"]
+    # (winpthreads and libc++ / libunwind linked in, so they need no DLL; a 64 MB stack reserve for the process's
+    # main thread, which runs the game without a window; the console subsystem: the log goes to it)
+    return ["-Wl,-Bstatic", "-lpthread", "-Wl,-Bdynamic", "-static-libstdc++", "-static-libgcc",
+            "-lwinmm", "-Wl,--stack,0x4000000"]
+
+
+def build(work: str | os.PathLike, jobs: int | None = None, say=print, target_name: str | None = None) -> Path:
+    if target_name:
+        os.environ["ORANGES_TARGET"] = target_name
     work = Path(work)
-    gen, obj_dir = work / "gen", work / "build" / "obj"
+    gen, obj_dir = work / "gen", out_dir(work) / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
     todo, objs = [], []
     for src, flags in sources(gen):
@@ -200,10 +283,19 @@ def build(work: str | os.PathLike, jobs: int | None = None, say=print) -> Path:
             done += 1
             say("  [%d/%d] %s %.0f s (%.0f s elapsed)" % (done, len(todo), name, secs, time.monotonic() - t0))
 
-    exe = work / "build" / "oranges"
+    if windows():   # (the manifest: UTF-8 as the code page)
+        res = (obj_dir / "oranges.res.o").resolve()
+        windres = _tool(MINGW_TRIPLE + "-windres" if _cross() else "windres")
+        env = dict(os.environ, PATH=os.path.dirname(windres) + os.pathsep + os.environ.get("PATH", ""))
+        r = subprocess.run([windres, str(HOST / "win" / "oranges.rc"), "-O", "coff", "-o", str(res)],
+                           capture_output=True, text=True, cwd=HOST / "win", env=env)   # (llvm-rc beside it)
+        if r.returncode:
+            raise RuntimeError("oranges.rc failed:\n%s" % r.stderr[-4000:])
+        objs.append(res)
+    exe = out_dir(work) / exe_name()
     say("link: %s" % exe)
     t1 = time.monotonic()
-    libs = host_libraries()[1] + ["-lm", "-lpthread"]
+    libs = host_libraries()[1] + link_flags()
     linker = compiler_cxx if any(o.name.startswith(("eden.", "vk.")) for o in objs) else compiler
     r = subprocess.run([linker, "-fuse-ld=lld", "-o", str(exe)] + [str(o) for o in objs] + libs,
                        capture_output=True, text=True)

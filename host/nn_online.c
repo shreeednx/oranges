@@ -273,8 +273,7 @@ HLE(_ZN2nn6socket4PollEP6pollfdmi) {
         for (uint64_t i = 0; i < n; i++) *(uint16_t *)GP(fds + 8 * i + 6) = 0;   /* revents */
     if (timeout) {
         const int64_t ms = timeout < 0 || timeout > 50 ? 50 : timeout;
-        struct timespec ts = {0, (long)(ms * 1000000)};
-        while (nanosleep(&ts, &ts)) {}
+        hos_sleep_ns(ms * 1000000);
     }
     RET(0);
 }

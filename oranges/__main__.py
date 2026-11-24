@@ -153,7 +153,7 @@ def cmd_lift(args) -> int:
 
 def cmd_build(args) -> int:
     from . import build
-    build.build(args.work, args.jobs)
+    build.build(args.work, args.jobs, target_name=args.target)
     return 0
 
 
@@ -190,6 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(run=cmd_lift)
     s = sub.add_parser("build", help="compile <work>/gen with the runtime and host, link <work>/build/oranges")
     s.add_argument("--work", default="work")
+    s.add_argument("--target", choices=("linux", "windows"),
+                   help="linux, or windows: <work>/build-windows/oranges.exe with llvm-mingw (default: ORANGES_TARGET, "
+                        "else linux)")
     s.add_argument("--jobs", type=int, help="parallel compiles (default: what fits in memory, or ORANGES_JOBS)")
     s.set_defaults(run=cmd_build)
     args = ap.parse_args(argv)

@@ -1,0 +1,4 @@
+// The Windows program's resources (oranges/build.py compiles them with llvm-windres): its manifest.
+#include <winuser.h>
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "oranges.manifest"
