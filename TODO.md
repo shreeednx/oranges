@@ -293,8 +293,9 @@ the game: the memory search found both at once.
 
 Left over from it:
 
-- [ ] `python -m oranges.drive find` itself has only run on synthetic dumps (tests); the session's scratch version of
-      each piece ran on the game. Run it once on the game.
+- [x] `python -m oranges.drive find` ran on the game (the day-1 save at the plaza, 2026-11-24): it found the player's
+      body and the item layer, and `pos` followed the stick. The body is the player model's matrix, which the game
+      copies from the actor's own (actor +0x278: "Done: 60 fps researched")
 - [x] Touch: a tap on the island-name keyboard typed nothing (the touch state's layout: "Done: the Graphics tab")
 - [ ] The first save's time is the host clock (night here): the morning tutorial ran at 9 PM. Fine, but a
       `HOS_TIME` offset would let runs see daytime.
@@ -442,29 +443,35 @@ Left over from it:
 - [ ] Its GPU cost was not measured (two compute passes over the window's pixels, between full barriers, every present).
 - [ ] The 16-bit (half) paths of EASU / RCAS are unused: the 32-bit ones run everywhere.
 
-## 1. 60 fps: the game's own time step (research first)
+## Done: 60 fps researched (no: the world steps per frame, system by system)
 
 The game's loop runs faster when let (`HOS_NO_PACING=1`: ~120 fps; `HOS_PRESENT_INTERVAL=1`: 55-60 fps, the picture
-right), but its world steps once per frame: in 2 s of walking right at 60 fps the player went about twice as far as at
-30 fps (screenshots of the day-1 save: past the next tent, to the river). So 60 fps means finding how the game steps
-time and halving the step, as Longshot did for its game (`host/oot_high_fps.h` there).
+right), but its world steps once per frame: at 60 fps the player walks twice as far in a second. The question was
+whether the game has one time step to halve, as Longshot's game has (`host/oot_high_fps.h` there: TotK already steps
+by the frame's time, so only the places that assume a whole 60 fps step needed fixing). The game has none:
 
-- [ ] Find the step: what the frame loop (`0x86ba430` is its end) hands its systems each frame. A sead-style framework
-      usually has one frame-rate or delta value that game objects scale by; look for 30.0 / 1/30 constants and the
-      readers of the frame counter. Watch movement speed, animation (Havok and NintendoWare), timers, the sound
-      system's frame-counted work, effects (Vfx2) and the UI's frame-counted fades.
-- [ ] Go / no-go after that: one global step (patch it: doable) or steps spread over many systems (likely not worth
-      it). Write down what was found either way.
-- [ ] If it goes ahead: a Frame rate setting (30 / 60) that sets the present interval and the step together; check a
-      day of play (walking, running, talking, the shop, fishing and catching bugs, the museum, villagers' schedules)
-      for things that run at double speed.
-- [ ] Measurement note: `python -m oranges.drive find` picked a wrong body at 60 and 120 fps (its moves did not follow
-      the stick), so compare by screenshots or fix `find` first.
+- The frame loop is sead's `GameFrameworkNx` (vtable `0xca63678`; `procFrame_` `0xb7b8c24`: draw, calc `0xb7b90f4`,
+  then the present wait `0xb7b94d0`), on MainThread; "Presentation Thread" only runs the NVN presents. The calc gets
+  no time argument. The vblank interval (framework +0xa0: 2) comes from the window setup (`0xb7c24d0`, the byte at
+  +0x48 of its argument). `calcFps` (vtable +0xa8) is the measured rate (tick frequency over the last frame's ticks).
+  The framework can drop to 20 fps by itself (+0x245: the window's interval 2 -> 3 after slow frames), but the game
+  never changes the interval (none in the log).
+- The player's movement (`0xa211ea0`, under the calc's job scheduler): the position (actor +0x278, last frame's at
+  +0x284) moves by the move speed along the facing, times the actor's scale (+0x1608: not a time scale, `0x960b950`
+  sets it, at least 0.001). A distance per update, with no time in it. Found with gdb watchpoints from the model's
+  matrix (`0x863c15c` copies the actor's matrix into its model) back to the actor's position.
+- Where the game uses time, 30 Hz is a constant in the code: 1/30 at 21 sites (e.g. `x += v * (1/30)` at `0x96548e0`,
+  a choice of 0.1 or 1/30 at `0x8604828`, `{1/30, count}` handed to a system every frame at `0x86ba000`), 1/60 at 7,
+  30.0 at 271 (seconds to frames and back). Integer frame counters (timers, fades, waits) don't show up in such a
+  count at all.
 
-Why first: the bigger visible win left (smoothness, all the time), but a research task with a real chance of a no; the
-renderer needs headroom for it too (task 4). Frame generation is no way around it here (see "Looked at and ruled out").
+So 60 fps would mean halving every actor's movement, every animation's frame step, every frame-counted timer (an
+integer can't be halved: it would have to tick every other frame), the effects (Vfx2), the UI's animations and the
+camera's per-frame smoothing (a lerp factor per frame isn't linear in the step). Each would have to be found one by one
+in a stripped 66 MB binary, and a missed one shows only as something at double speed somewhere in a day of play. Not
+worth it. `HOS_PRESENT_INTERVAL` stays as a debugging switch.
 
-## 2. Faster loading
+## 1. Faster loading
 
 The boot to the title screen and the title screen to the island (~30 s here) are long, and every scene change (a
 building, the airport) waits too. Only what oranges adds can be cut without changing the game, so first find where the
@@ -480,43 +487,41 @@ time goes.
       nothing), translation and ASTC decoding off the game's thread (or ahead of the draw that needs them), texture
       uploads batched rather than one submit each.
 - [ ] The game's own pacing (fixed waits, frame-counted fades, loads it spreads over frames at 30 fps) stays as it is;
-      write down how much of the time it is, so it is clear what is left. (If task 1 finds the time step, frame-counted
-      waits would shorten at 60 fps only with the step halved: leave those alone.)
+      write down how much of the time it is, so it is clear what is left.
 
-Why second: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
-game's thread are also renderer performance (task 4), which task 1 needs.
+Why first: felt on every start and every door, and its first step is only measuring; the shader cache and work off the
+game's thread are also renderer performance (task 3).
 
-## 3. Saves in the user's data folder
+## 2. Saves in the user's data folder
 
 Saves go to `<work>/user/save/device` today, beside the build (`hos_main.c`: `work/build/oranges` -> `work/user`;
 `ORANGES_USER` overrides). A save should outlive the build folder and sit where other games keep theirs, as the settings
 file already does (`hos_options.c`: `$XDG_CONFIG_HOME/oranges/`, else `~/.config/oranges/`).
 
 - [ ] The default user folder: `$XDG_DATA_HOME/oranges/`, else `~/.local/share/oranges/` on Linux; `%APPDATA%\oranges\`
-      once there is a Windows build (task 5). Saves under a folder named by the title id
+      once there is a Windows build (task 4). Saves under a folder named by the title id
       (`.../saves/01006F8002326000/device/`), so a second build or game would not mix with this one. Made at the first
       write, as the options file's folder is. `ORANGES_USER` still overrides (runs on a copy of a save use it).
 - [ ] Moving over: when the new folder has no save and `work/user/save` has one, copy it once (never move it or
       overwrite a save that is there) and log both paths. The save there now has been played past day 1;
       `work/user/save_day1` stays where it is (a test fixture, not a player's save).
 - [ ] The log names the save folder at boot, so a player can find it.
-- [ ] Other user files by the same rules: a shader cache on disk (task 2) in `$XDG_CACHE_HOME/oranges/`, screenshots
+- [ ] Other user files by the same rules: a shader cache on disk (task 1) in `$XDG_CACHE_HOME/oranges/`, screenshots
       (`nn::album`, a leftover above) in the data folder.
 - [ ] CLAUDE.md: the new default and `ORANGES_USER`.
 
-Why third: small and felt by anyone who rebuilds or moves the build folder, but nothing is lost today as long as `work/`
+Why second: small and felt by anyone who rebuilds or moves the build folder, but nothing is lost today as long as `work/`
 stays.
 
-## 4. The renderer's gaps
+## 3. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance and memory.
 
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
-as soon as one of those logs or a wrong picture shows. Its performance part comes first if task 1 goes ahead: at a
-forced 60 fps the game held 55-60 fps headless here, with no headroom.
+as soon as one of those logs or a wrong picture shows.
 
-## 5. Clean-ups and checks
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -555,6 +560,8 @@ Not planned yet. Each needs a look at what the game allows first.
 
 ## Looked at and ruled out
 
+- **60 fps game logic**, researched 2026-11-24: the world steps once per frame, with 30 Hz assumed system by system
+  and no shared time step to halve ("Done: 60 fps researched").
 - **FSR 3.1 (temporal upscaling and frame generation)**, checked 2026-11-24 on a frame of the day-1 save
   (`HOS_VK_LOG`): the game draws no motion vectors and has no temporal anti-aliasing (so no camera jitter). The scene is
   one R11G11B10F target with a D32F depth (a depth pre-pass, then the colour pass with EQUAL depth: 800-950 draws each,

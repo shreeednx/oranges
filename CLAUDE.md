@@ -37,7 +37,7 @@ HOS_OPTIONS_FILE=opts.ini ./work/build/oranges   # the menu's settings file (def
 HOS_SAMPLE=20 ./work/build/oranges        # every thread's name, wait and guest backtrace every 20 s (HOS_WATCHDOG: no frame)
 HOS_PROFILE=15 ./work/build/oranges       # MainThread's call chains sampled for 15 s (",<thread name>" for another)
 HOS_FS_LOG=1 ./work/build/oranges         # every path the game opens (what it loads shows where it is)
-HOS_PRESENT_INTERVAL=1 ./work/build/oranges   # 60 fps instead of the game's 30 (its world then runs ~2x fast: TODO 1)
+HOS_PRESENT_INTERVAL=1 ./work/build/oranges   # 60 fps instead of the game's 30 (its world runs ~2x fast: it steps per frame)
 HOS_AUDIO=1 HOS_NO_WINDOW=1 ./work/build/oranges   # sound without a window (headless runs are quiet by default)
 HOS_NO_WINDOW=1 HOS_SCREENSHOT=shot.bmp,40 ./work/build/oranges   # the presented picture at 40 s (headless draws too)
 HOS_VK_SHOTS=dir,5 ./work/build/oranges   # a screenshot every 5 s; HOS_VK=0: the null back end (nothing drawn)
@@ -260,6 +260,9 @@ and attribution notices, and note the source file in a comment.
   An HLE object's fields the SDK writes are part of its API. The game also sends sub mixes into splitters (its talking
   voices' sub mix among them): a sub mix's buffers are then the splitter's source channels.
 - Next: the prologue's villagers, campfire and first save; the renderer's gaps (TODO.md).
+- The frame loop is sead's `GameFrameworkNx` (`procFrame_` `0xb7b8c24`, calc `0xb7b90f4` on MainThread; "Presentation
+  Thread" only presents). The world steps per frame, with 30 Hz constants spread over the code and no shared time
+  step, so 60 fps is ruled out (TODO.md, "Done: 60 fps researched"). The player actor's position is at +0x278.
 - Memory: svcGetInfo reports the console's application pool (3285 MB); the game's heap is 3174 MB and its framework
   carves a 2015 MB AppStaticHeap from it, so the total matters.
 - Host HLE helpers: `hos_guest_call` calls lifted functions from an HLE (e.g. SDK exports found with
