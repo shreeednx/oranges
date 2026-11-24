@@ -181,7 +181,8 @@ Left over from it:
 - [ ] Not replayed yet: indirect draws, texel buffers, alpha test, line widths,
       multisample resolves, depth-stencil fills from memory. None seen in the prologue so far (logged once if they are)
 - [ ] Performance: every submit waits for the GPU, every pass ends with a full barrier, the driver banks are rebuilt
-      for each draw, programs are translated on the game's thread. Profile once more of the game draws
+      for each draw. Programs are made on maker threads now, render conditions don't wait ("Done: the renderer's time
+      measured", with the per-draw breakdown)
 - [ ] Memory: images and views are never freed (the game's transient targets alias one virtual pool region; each
       size/format there is its own image)
 - [ ] Frames are paced by `nvn_native.c`'s clock; mailbox/immediate presents. Pace by the display (the menu's V-Sync
@@ -510,6 +511,8 @@ Where the time goes now:
 
 Left over from it:
 
+- [x] Program translation and ASTC off the submitting thread, pools freed without `vkDeviceWaitIdle`: "Done: the
+      renderer's time measured"
 - [ ] Lifted code's own speed is what's left in the CPU-bound parts (the save's decoding, the island's load across
       ~6 threads): the chunks are built at `-O1`. Try `-O2` on the hot chunks if loads matter again.
 - [ ] A shader cache on disk, if weaker hardware stutters: under "Future ideas".
@@ -537,14 +540,52 @@ Left over from it:
 - [ ] Deleting `work/user/save` once the moved save has been played on is the player's call (nothing reads it again
       while the new folder holds a save).
 
+## Done: the renderer's time measured, and its waits cut
+
+`HOS_VK_STATS=<s>` (new) shows where the back end's time goes (translation, shader creation, fills, ASTC, pool imports,
+draws, descriptors, GPU waits) every few seconds, and logs each frame whose back-end work took 10 ms or more. Measured
+headless on the day-1 save (boot, title, the island), an RTX 5080:
+
+- **Render conditions without GPU round trips.** The UI tests ~100 `SetRenderEnableConditional` a frame, and each
+  flushed the recorded work and waited for the GPU (98 submits and waits a frame). Their counters are the game's CPU
+  writes, or counter reports queued just before, whose values are ours. Now the replay tracks the guest memory the
+  unrun work writes (buffer copies, updates, fills, written storage buffers; a texture-to-buffer copy counts as
+  "anywhere"), flushes only when that overlaps the counters, and applies the queued reports and events to its read as
+  `cpu_ops` will. 0 waits a frame now. `HOS_VK_COND_CHECK=1` flushes anyway and compares: no difference in 160k
+  conditions. Island frames: back-end time 19 → 17.5 ms, GPU waits 8.5 → 6.2 ms.
+- **Programs made ahead, on maker threads.** Each submit is scanned first (state ops only, on a copy of the state), and
+  each program a draw or dispatch will need that is new goes to maker threads (`HOS_VK_MAKERS`, default a third of the
+  cores, at most 6) with a copy of its draw's state. The replay takes a program when its draw comes: ready, or wait for
+  the maker at it, or make it itself if none started it. Shader creation is ~4x eden's translation (~2 ms vs ~0.5 ms a
+  program; the driver doesn't cache it across runs). The frame the title scene loads on (~90 programs): 345 → ~165 ms
+  of back-end work, and the frames after it (50-100 ms each, more programs) are normal now. The scan costs ~0.15 ms a
+  frame. The character creator's compute programs go through it too.
+- **ASTC on several threads**: a 2D level over 128x128 is decoded in bands of block rows (~50 ns a pixel on one
+  thread: a 774x496 UI texture 19 → 3.8 ms).
+- **Memory pools**: the import (pinning the pages, ~0.1 ms each, ~4,250 by the island) runs outside `big_lock`, so the
+  game's submits don't wait behind it; an overlapped pool is freed without `vkDeviceWaitIdle` (no GPU work is in flight
+  outside `big_lock`: every submit and present runs to completion under it).
+- Checked: the title, the island with the manager's announcement and the airport prologue drawn right, 4 runs at once at
+  29.9 fps with no crash, the character creator's dispatches.
+
+Left over from it:
+
+- [ ] Per-draw CPU cost, now the bulk on the island (~2,700 draws, ~11 ms a frame): descriptors ~4.5 ms (each texture
+      ~0.15 µs: `texture_of`'s mutex, a byte-wise hash of the sampler's parameters for each `sampler_of`, the view's
+      key; the uniform buffers and c0/c2 ~0.45 µs a draw), and every dynamic state set again for every draw. Rebuilding
+      the c0/c2 banks directly (not word by word) was tried and saved nothing measurable. Set only the state that
+      changed, cache samplers by pool id, if a slower machine needs it.
+- [ ] Each submit still waits for its GPU work (~6 ms a frame on the island). The design depends on it (fences reached
+      at once, CPU-visible results written after it, pools dropped without a wait): overlapping CPU and GPU means
+      fences and a retire list.
+- [ ] The program key is the code and the inputs, not the texture types the translation asked about: a program is
+      translated for its first draw's textures (the views follow the program's types, so the picture stays
+      consistent). A cache on disk would need those answers in its key.
+
 ## 1. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
-uses them (logged once), then performance and memory.
-
-- [ ] From "Done: faster loading": program translation and ASTC decoding off the game's submitting thread (or ahead
-      of the draw that needs them); a dropped memory pool freed after the submits that may use it rather than behind
-      `vkDeviceWaitIdle`.
+uses them (logged once), then performance ("Done: the renderer's time measured": the per-draw cost) and memory.
 
 Why here: nothing unreplayed has turned up yet (each is logged once when it does), and 30 fps holds so far. It moves up
 as soon as one of those logs or a wrong picture shows.
@@ -648,9 +689,11 @@ Not planned yet. Each needs a look at what the game allows first.
     into shader objects on a background thread at boot.
   - Not ahead-of-time precompiling from the RomFS: a translation depends on draw-time state the files don't hold, so
     a guess would draw wrong. One play fills the cache instead.
-  - First step: measure where a program's time goes, eden's translation or the driver's `vkCreateShadersEXT` (the
-    driver may already cache its half on disk), and how many distinct programs a long session uses. If the driver's
-    half dominates, moving translation off the submitting thread helps more than a cache.
+  - Measured (2026-11-24): the driver's `vkCreateShadersEXT` is ~4x eden's translation (~2 ms vs ~0.5 ms a program)
+    and the driver doesn't cache it across runs. Both now run on maker threads ahead of the draw ("Done: the
+    renderer's time measured"). A cache would keep the driver's binaries (`vkGetShaderBinaryDataEXT`, with
+    `VK_EXT_shader_object`'s compatibility UUID) besides the SPIR-V. Still to measure: how many distinct programs a
+    long session uses.
 
 - **DLSS (and FSR 3.1) with motion vectors we make ourselves.** DLSS Super Resolution is temporal: NVIDIA's API needs
   per-pixel motion vectors, depth and camera jitter, and there is no single-frame mode. Zero motion vectors would smear

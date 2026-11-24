@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -297,6 +298,30 @@ uint64_t fingerprint(const Image* im) {
     return h;
 }
 
+/// ASTC blocks (deswizzled) to RGBA8 by suyu's decoder; a 2D level of more than 128x128 pixels in bands of block rows on
+/// several threads (the blocks are independent; ~50 ns a pixel on one: a 774x496 UI texture took 19 ms, 3.8 ms on five)
+void decode_astc(const uint8_t* blocks, uint32_t w, uint32_t h, uint32_t depth, uint32_t bw, uint32_t bh, uint8_t* out) {
+    const uint32_t cols = (w + bw - 1) / bw, rows = (h + bh - 1) / bh;
+    static const uint32_t cores = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
+    const uint32_t bands = depth == 1 ? std::min(cores, (uint32_t)((uint64_t)w * h / (128 * 128))) : 1;
+    if (bands <= 1) {
+        Tegra::Texture::ASTC::DecompressSerial(std::span<const uint8_t>(blocks, (size_t)cols * rows * depth * 16), w, h, depth,
+                                               bw, bh, std::span<uint8_t>(out, (size_t)w * h * depth * 4));
+        return;
+    }
+    auto band = [&](uint32_t i) {
+        const uint32_t r0 = rows * i / bands, r1 = rows * (i + 1) / bands;
+        const uint32_t y0 = r0 * bh, y1 = std::min(h, r1 * bh);
+        if (y0 >= y1) return;
+        Tegra::Texture::ASTC::DecompressSerial(std::span<const uint8_t>(blocks + (size_t)r0 * cols * 16, (size_t)(r1 - r0) * cols * 16),
+                                               w, y1 - y0, 1, bw, bh, std::span<uint8_t>(out + (size_t)y0 * w * 4, (size_t)(y1 - y0) * w * 4));
+    };
+    std::vector<std::thread> threads;
+    for (uint32_t i = 1; i < bands; i++) threads.emplace_back(band, i);
+    band(0);
+    for (auto& th : threads) th.join();
+}
+
 // (staging for fills: kept, grown as needed; the fill's command buffer is run before the next fill reuses it)
 std::vector<HostBuffer> staging_used;
 HostBuffer staging(uint64_t size) {
@@ -306,6 +331,7 @@ HostBuffer staging(uint64_t size) {
 }
 
 void fill(VkCommandBuffer cb, Image* im) {
+    StatTimer timer{kStatFill};
     im->filled = true;
     const nvn_texdesc& d = im->d;
     if (im->samples != VK_SAMPLE_COUNT_1_BIT || !im->L.size) return;
@@ -348,8 +374,8 @@ void fill(VkCommandBuffer cb, Image* im) {
             unsigned th = 0, td = 0;
             nvn_tex_level_tiles(&d, p.level, &th, &td);
             deswizzle(src + base, im->L.size - base, blocks.data(), row, rows, p.depth, th, td);
-            Tegra::Texture::ASTC::DecompressSerial(std::span<const uint8_t>(blocks), p.w, p.h, p.depth, (uint32_t)bw,
-                                                   (uint32_t)bh, std::span<uint8_t>(out, (size_t)p.w * p.h * p.depth * 4));
+            StatTimer at{kStatAstc};
+            decode_astc(blocks.data(), p.w, p.h, p.depth, (uint32_t)bw, (uint32_t)bh, out);
         } else {
             const uint32_t row = (p.w + bw - 1) / bw * bpb, rows = (p.h + bh - 1) / bh;
             if (nvn_tex_is_linear(&d)) {

@@ -11,6 +11,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +26,59 @@ namespace ovk {
 
 Gpu g;
 std::recursive_mutex big_lock;
+
+// ---- HOS_VK_STATS
+bool stats_on = [] {
+    const char* s = getenv("HOS_VK_STATS");
+    return s && atof(s) > 0;
+}();
+namespace {
+const char* const kStatNames[kStatCount] = {"translate", "shaders", "fill", "astc", "pool import", "pool drop",
+                                            "submit", "gpu wait", "draw", "program", "program wait",
+                                            "descriptors"};
+struct StatSum {
+    std::atomic<int64_t> ns{0}, n{0}, max{0};
+};
+StatSum stat_total[kStatCount], stat_frame[kStatCount];
+}  // namespace
+
+void stat_add(Stat s, int64_t ns) {
+    for (StatSum* t : {&stat_total[s], &stat_frame[s]}) {
+        t->ns += ns, t->n++;
+        int64_t m = t->max.load();
+        while (ns > m && !t->max.compare_exchange_weak(m, ns)) {}
+    }
+}
+
+void stats_frame_end() {
+    if (!stats_on) return;
+    static const double every = atof(getenv("HOS_VK_STATS")) * 1e9;
+    static int64_t last = hos_now_ns(), frames = 0, last_frame = hos_now_ns();
+    const int64_t now = hos_now_ns();
+    frames++;
+    // (a frame whose back-end work took 10 ms or more: what it was)
+    if (stat_frame[kStatSubmit].ns >= 10'000'000) {
+        char line[512];
+        int at = snprintf(line, sizeof line, "vk stats: frame %lld (%.1f ms since the last):", (long long)frames,
+                          (now - last_frame) / 1e6);
+        for (int i = 0; i < kStatCount; i++)
+            if (stat_frame[i].n)
+                at += snprintf(line + at, sizeof line - std::min<size_t>(at, sizeof line), " %s %.1f ms (%lld)",
+                               kStatNames[i], stat_frame[i].ns / 1e6, (long long)stat_frame[i].n.load());
+        hos_log("%s", line);
+    }
+    for (StatSum& t : stat_frame) t.ns = 0, t.n = 0, t.max = 0;
+    last_frame = now;
+    if (now - last < every) return;
+    hos_log("vk stats: %lld frames in %.1f s", (long long)frames, (now - last) / 1e9);
+    for (int i = 0; i < kStatCount; i++) {
+        StatSum& t = stat_total[i];
+        if (t.n) hos_log("vk stats:   %-12s %8.1f ms  %6lld times  max %.2f ms", kStatNames[i], t.ns / 1e6,
+                         (long long)t.n.load(), t.max / 1e6);
+        t.ns = 0, t.n = 0, t.max = 0;
+    }
+    last = now, frames = 0;
+}
 
 namespace {
 
@@ -369,8 +424,13 @@ void end_and_wait(VkCommandBuffer cb) {
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
     const VkResult r = vkQueueSubmit(g.queue, 1, &si, fence);
+    VkResult w = VK_SUCCESS;
+    if (r == VK_SUCCESS) {
+        StatTimer t{kStatGpuWait};
+        w = vkWaitForFences(g.dev, 1, &fence, VK_TRUE, 10'000'000'000ull);
+    }
     if (r != VK_SUCCESS) hos_log("vk: vkQueueSubmit: %d", (int)r);
-    else if (const VkResult w = vkWaitForFences(g.dev, 1, &fence, VK_TRUE, 10'000'000'000ull); w != VK_SUCCESS) {
+    else if (w != VK_SUCCESS) {
         hos_log("vk: a submit did not finish (%d): the device is lost or hung", (int)w);
         abort();
     }

@@ -8,14 +8,22 @@
 // dynamic rendering, begun at the first draw or clear after the targets change and ended before any transfer.
 // What the CPU sees of the GPU's work (events, counters) is written when the submit has finished, in order.
 //
-// Not yet: compute dispatches, indirect draws, texel buffers and images (storage), queries' sample counts, conditional
-// rendering, quads (drawn as triangles fans: wrong past one quad), alpha test.
+// Programs are made ahead of their draws on maker threads (Makers); a render condition waits for the GPU only when the
+// work before it may write its counters (render_cond).
+//
+// Not yet: indirect draws, texel buffers, queries' sample counts, quads (drawn as triangles fans: wrong past one quad),
+// alpha test.
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -275,8 +283,12 @@ struct Bind {
     uint32_t index = 0, offset = 0, shift = 0, sec_index = 0, sec_offset = 0, sec_shift = 0, size_shift = 3;
     bool has_secondary = false;
     int tex_type = 0;     // (Shader::TextureType)
+    bool written = false; // (a storage buffer the program writes)
 };
 struct Program {
+    // (made by the submitting thread, or ahead of its draw by a maker thread: claimed by whichever starts it; ready once
+    // made, ok or not)
+    std::atomic<bool> claimed{false}, ready{false};
     bool ok = false;
     std::string why;
     std::vector<std::shared_ptr<const StageCode>> codes;
@@ -329,7 +341,7 @@ void make_binds(Program& p, const Translated& t) {
         for (const auto& d : in.storage_buffers_descriptors) {
             if (!d.count) continue;
             Bind b{kSsbo, s.nvn_stage, binding, d.count};
-            b.index = d.cbuf_index, b.offset = d.cbuf_offset;
+            b.index = d.cbuf_index, b.offset = d.cbuf_offset, b.written = d.is_written;
             p.binds.push_back(b);
             add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, d.count, vs);
             binding += 1;
@@ -406,38 +418,50 @@ std::unordered_map<uint32_t, std::pair<int, uint32_t>> spirv_bindings(const std:
     return out;
 }
 
-Program* program_for(const State& s, const PipelineInputs& in, bool compute) {
-    std::vector<std::shared_ptr<const StageCode>> codes;
-    uint64_t key = hash_bytes(&in, sizeof in);
+/// the inputs' fields (not the struct's bytes: its padding is not set)
+uint64_t inputs_hash(const PipelineInputs& in) {
+    uint64_t h = hash_bytes(in.attributes.data(), sizeof in.attributes);
+    h = hash_bytes(in.color_outputs.data(), sizeof in.color_outputs, h);
+    return hash_bytes(&in.convert_depth, sizeof in.convert_depth, h);
+}
+
+/// the bound program's stages (graphics or compute) and its key, for these inputs; 0 when it has none to run
+uint64_t program_key(const State& s, const PipelineInputs& in, bool compute, std::vector<std::shared_ptr<const StageCode>>& codes) {
+    codes.clear();
+    uint64_t key = inputs_hash(in);
     for (uint32_t i = 0; i < s.prog.nstage && i < 6; i++) {
         auto c = stage_code(s.prog.sd[i]);
-        if (!c || !c->ok) return nullptr;
+        if (!c || !c->ok) return 0;
         if ((c->nvn_stage == 5) != compute) continue;
         codes.push_back(c);
     }
-    if (codes.empty()) return nullptr;
+    if (codes.empty()) return 0;
     std::sort(codes.begin(), codes.end(), [](const auto& a, const auto& b) { return (int)a->stage < (int)b->stage; });
     for (const auto& c : codes) key = key * 31 + c->key;
-    auto it = programs.find(key);
-    if (it != programs.end()) return it->second->ok ? it->second.get() : nullptr;
-    auto p = std::make_unique<Program>();
-    p->codes = codes;
-    p->key = key;
+    return key ? key : 1;
+}
+
+/// translates the program's stages (p.codes) with the state of its draw and makes its shaders: on the submitting thread
+/// or a maker thread
+void make_program(Program& p, const State& s, const PipelineInputs& in) {
+    const std::vector<std::shared_ptr<const StageCode>>& codes = p.codes;
     Query q{s};
     const int64_t t0 = hos_now_ns();
-    Translated t = translate(codes, in, q);
-    if (!t.ok) {
-        p->why = t.why;
-        vk_log_limited("translate", 32, "vk: a program does not translate: %s", t.why.c_str());
-        Program* raw = p.get();
-        programs[key] = std::move(p);
-        return raw->ok ? raw : nullptr;
+    Translated t;
+    {
+        StatTimer st{kStatTranslate};
+        t = translate(codes, in, q);
     }
-    make_binds(*p, t);
+    if (!t.ok) {
+        p.why = t.why;
+        vk_log_limited("translate", 32, "vk: a program does not translate: %s", t.why.c_str());
+        return;
+    }
+    make_binds(p, t);
     if (const char* dir = getenv("HOS_VK_SPV")) {   // (debugging: each program's SPIR-V, <dir>/<key>_<stage>.spv)
         for (const auto& st : t.stages) {
             char path[512];
-            snprintf(path, sizeof path, "%s/%016llx_%d.spv", dir, (unsigned long long)key, st.nvn_stage);
+            snprintf(path, sizeof path, "%s/%016llx_%d.spv", dir, (unsigned long long)p.key, st.nvn_stage);
             if (FILE* f = fopen(path, "wb")) fwrite(st.spirv.data(), 4, st.spirv.size(), f), fclose(f);
         }
     }
@@ -445,7 +469,7 @@ Program* program_for(const State& s, const PipelineInputs& in, bool compute) {
         for (const auto& st : t.stages)
             for (const auto& [binding, d] : spirv_bindings(st.spirv)) {
                 const VkDescriptorSetLayoutBinding* lb = nullptr;
-                for (const auto& l : p->layout_bindings) if (l.binding == binding) lb = &l;
+                for (const auto& l : p.layout_bindings) if (l.binding == binding) lb = &l;
                 if (!lb || (int)lb->descriptorType != d.first || lb->descriptorCount != d.second)
                     vk_log_limited("bindcheck", 16, "vk: binding %u: the module declares type %d x%u, the layout has %d x%u",
                                    binding, d.first, d.second, lb ? (int)lb->descriptorType : -1, lb ? lb->descriptorCount : 0);
@@ -453,21 +477,20 @@ Program* program_for(const State& s, const PipelineInputs& in, bool compute) {
     }
     VkDescriptorSetLayoutCreateInfo dci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     dci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-    dci.bindingCount = (uint32_t)p->layout_bindings.size();
-    dci.pBindings = p->layout_bindings.data();
+    dci.bindingCount = (uint32_t)p.layout_bindings.size();
+    dci.pBindings = p.layout_bindings.data();
     uint32_t descriptors = 0;
-    for (const auto& b : p->layout_bindings) descriptors += b.descriptorCount;
+    for (const auto& b : p.layout_bindings) descriptors += b.descriptorCount;
     VkPushConstantRange pc{VK_SHADER_STAGE_ALL, 0, kPushBytes};
-    if (descriptors > 32 || vkCreateDescriptorSetLayout(g.dev, &dci, nullptr, &p->dsl) != VK_SUCCESS) {
-        p->why = "too many descriptors to push (" + std::to_string(descriptors) + ")";
+    if (descriptors > 32 || vkCreateDescriptorSetLayout(g.dev, &dci, nullptr, &p.dsl) != VK_SUCCESS) {
+        p.why = "too many descriptors to push (" + std::to_string(descriptors) + ")";
         vk_log_limited("translate", 32, "vk: a program has %u descriptors: more than can be pushed", descriptors);
-        programs[key] = std::move(p);
-        return nullptr;
+        return;
     }
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    pli.setLayoutCount = 1, pli.pSetLayouts = &p->dsl;
+    pli.setLayoutCount = 1, pli.pSetLayouts = &p.dsl;
     pli.pushConstantRangeCount = 1, pli.pPushConstantRanges = &pc;
-    vkCreatePipelineLayout(g.dev, &pli, nullptr, &p->layout);
+    vkCreatePipelineLayout(g.dev, &pli, nullptr, &p.layout);
     std::vector<VkShaderCreateInfoEXT> cis;
     for (size_t i = 0; i < t.stages.size(); i++) {
         VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
@@ -479,33 +502,117 @@ Program* program_for(const State& s, const PipelineInputs& in, bool compute) {
         ci.codeSize = t.stages[i].spirv.size() * 4;
         ci.pCode = t.stages[i].spirv.data();
         ci.pName = "main";
-        ci.setLayoutCount = 1, ci.pSetLayouts = &p->dsl;
+        ci.setLayoutCount = 1, ci.pSetLayouts = &p.dsl;
         ci.pushConstantRangeCount = 1, ci.pPushConstantRanges = &pc;
         cis.push_back(ci);
-        p->stages.push_back(ci.stage);
+        p.stages.push_back(ci.stage);
     }
-    p->shaders.resize(cis.size());
-    const VkResult r = g.x.vkCreateShadersEXT(g.dev, (uint32_t)cis.size(), cis.data(), nullptr, p->shaders.data());
+    p.shaders.resize(cis.size());
+    VkResult r;
+    {
+        StatTimer st{kStatShaders};
+        r = g.x.vkCreateShadersEXT(g.dev, (uint32_t)cis.size(), cis.data(), nullptr, p.shaders.data());
+    }
     if (r != VK_SUCCESS) {
-        p->why = "vkCreateShadersEXT " + std::to_string((int)r);
+        p.why = "vkCreateShadersEXT " + std::to_string((int)r);
         vk_log_limited("translate", 32, "vk: shaders not made: %d", (int)r);
-        programs[key] = std::move(p);
-        return nullptr;
+        return;
     }
     for (const auto& st : t.stages)
         if (st.stage == Shader::Stage::VertexB) {
-            p->loads_generic.resize(32);
-            for (int i = 0; i < 32; i++) p->loads_generic[i] = st.info.loads.Generic(i);
+            p.loads_generic.resize(32);
+            for (int i = 0; i < 32; i++) p.loads_generic[i] = st.info.loads.Generic(i);
         }
-    p->ok = true;
-    static int n;
-    static int64_t total;   // (translation and shader creation, on the submitting thread: a cost of every load)
+    p.ok = true;
+    static std::atomic<int> n;
+    static std::atomic<int64_t> total;   // (translation and shader creation: on maker threads, or the submitting thread's)
     total += hos_now_ns() - t0;
-    if (++n % 100 == 1)
-        hos_log("vk: %d programs made (the last in %.1f ms, %.0f ms in all)", n, (hos_now_ns() - t0) / 1e6, total / 1e6);
-    Program* raw = p.get();
-    programs[key] = std::move(p);
-    return raw;
+    if (const int k = ++n; k % 100 == 1)
+        hos_log("vk: %d programs made (the last in %.1f ms, %.0f ms in all)", k, (hos_now_ns() - t0) / 1e6, total / 1e6);
+}
+
+/// Programs made ahead: at each submit, before its replay, the recordings are read for the programs their draws and
+/// dispatches will need (the state followed as the replay follows it), and those not made yet are made by maker threads,
+/// with a copy of the state of the draw that needs them, several at once. The replay takes each when its draw comes,
+/// waiting for it if a maker is still at it, or makes it itself if none has started it. A program costs ~0.5 ms of
+/// translation and ~2 ms of the driver's shader creation; a new area meets dozens at once (~90 by the title screen).
+struct Job {
+    Program* p;
+    std::shared_ptr<const State> s;
+    PipelineInputs in;
+};
+struct Makers {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<Job> jobs;
+    int threads = -1;   // (-1: not started; 0: none, HOS_VK_MAKERS=0)
+    void run() {
+        for (;;) {
+            Job j;
+            {
+                std::unique_lock lk(mu);
+                cv.wait(lk, [&] { return !jobs.empty(); });
+                j = std::move(jobs.front());
+                jobs.pop_front();
+            }
+            if (j.p->claimed.exchange(true)) continue;   // (the replay came to it first)
+            make_program(*j.p, *j.s, j.in);
+            j.p->ready.store(true, std::memory_order_release);
+            j.p->ready.notify_all();
+        }
+    }
+    void start() {
+        const char* e = getenv("HOS_VK_MAKERS");
+        const int cores = (int)std::thread::hardware_concurrency();
+        threads = e ? std::clamp(atoi(e), 0, 32) : std::clamp(cores / 3, 1, 6);
+        for (int i = 0; i < threads; i++) std::thread([this] { run(); }).detach();
+        hos_log("vk: %d threads make programs ahead of their draws", threads);
+    }
+    void push(Job j) {
+        {
+            std::lock_guard lk(mu);
+            jobs.push_back(std::move(j));
+        }
+        cv.notify_one();
+    }
+} makers;
+
+/// the program for a draw or dispatch with state s (null when there is none to run)
+Program* program_for(const State& s, const PipelineInputs& in, bool compute) {
+    StatTimer timer{kStatProgram};
+    std::vector<std::shared_ptr<const StageCode>> codes;
+    const uint64_t key = program_key(s, in, compute, codes);
+    if (!key) return nullptr;
+    auto it = programs.find(key);
+    if (it == programs.end()) {
+        auto p = std::make_unique<Program>();
+        p->codes = std::move(codes);
+        p->key = key;
+        it = programs.emplace(key, std::move(p)).first;
+    }
+    Program& p = *it->second;
+    if (!p.ready.load(std::memory_order_acquire)) {
+        if (!p.claimed.exchange(true)) {
+            make_program(p, s, in);
+            p.ready.store(true, std::memory_order_release);
+        } else {
+            StatTimer wait{kStatProgramWait};
+            p.ready.wait(false, std::memory_order_acquire);
+        }
+    }
+    return p.ok ? &p : nullptr;
+}
+
+/// a program a draw or dispatch ahead will need, made by a maker thread if it is new
+void program_ahead(const State& s, const PipelineInputs& in, bool compute) {
+    std::vector<std::shared_ptr<const StageCode>> codes;
+    const uint64_t key = program_key(s, in, compute, codes);
+    if (!key || programs.count(key)) return;
+    auto p = std::make_unique<Program>();
+    p->codes = std::move(codes);
+    p->key = key;
+    makers.push({p.get(), std::make_shared<const State>(s), in});
+    programs.emplace(key, std::move(p));
 }
 
 // ---- the replay ----
@@ -525,9 +632,28 @@ struct Replay {
     bool color_integer[8]{}, color_sint[8]{};
     bool has_depth = false, has_stencil = false;
     std::vector<CpuOp> cpu;
+    // (guest memory the recorded GPU work not run yet writes, [begin, end); unknown: somewhere not tracked)
+    std::vector<std::pair<uint64_t, uint64_t>> writes;
+    bool writes_unknown = false;
+    bool scanning = false;   // (run() follows the state only, for the programs ahead: rx_nvn_submit_q)
     std::vector<Image*> stored;   // (the storage images of the draw or dispatch being pushed: written by the GPU)
     uint64_t draws = 0, skipped = 0, dispatches = 0;
 } rp;
+
+/// the recorded GPU work writes guest memory [gpu, gpu + size)
+void gpu_writes(uint64_t gpu, uint64_t size) {
+    if (!rp.writes.empty() && rp.writes.back().second == gpu) rp.writes.back().second = gpu + size;
+    else if (rp.writes.size() < 4096) rp.writes.push_back({gpu, gpu + size});
+    else rp.writes_unknown = true;
+}
+/// whether the GPU work recorded and not run yet may write guest memory [gpu, gpu + size) (its CPU side aside)
+bool gpu_may_write(uint64_t gpu, uint64_t size) {
+    if (rp.writes_unknown) return true;
+    const uint64_t end = gpu + size;
+    for (const auto& [a, b] : rp.writes)
+        if (a < end && gpu < b) return true;
+    return false;
+}
 
 void end_rendering() {
     if (!rp.rendering) return;
@@ -730,6 +856,7 @@ VkSampler default_sampler() {
 /// pushes the program's descriptors; false when the draw cannot be made
 bool trace_on = false;   // (the draw being pushed is traced)
 bool push_descriptors(const Program& p, VkPipelineBindPoint point) {
+    StatTimer timer{kStatDescriptors};
     const State& s = *rp.s;
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorBufferInfo> bufs;
@@ -777,6 +904,7 @@ bool push_descriptors(const Program& p, VkPipelineBindPoint point) {
             const uint64_t base = addr & ~(align - 1);
             BufRef r = addr ? buffer_at(base, 4) : BufRef{};
             if (r.buf) r.size = std::min<uint64_t>(r.size, size + (addr - base));
+            if (b.written && r.buf) gpu_writes(base, r.size);
             if (trace_on)
                 hos_log("vk trace:   storage binding %u: c%u+%#x -> %#llx size %u (%s)", b.binding, b.index, b.offset,
                         (unsigned long long)addr, size, r.buf ? "imported" : "none");
@@ -872,8 +1000,52 @@ BufRef quad_indices(uint32_t count, const uint8_t* src, int itype, uint32_t firs
     return ring.put(idx.data(), idx.size() * 4, 4);
 }
 
+/// a draw's program inputs: the vertex attributes' types and the render targets' kinds
+PipelineInputs draw_inputs(const State& s, int ncolor, const bool integer[8], const bool sint[8]) {
+    PipelineInputs in{};
+    for (int i = 0; i < 32; i++) in.attributes[i] = Shader::AttributeType::Disabled;
+    for (int i = 0; i < 16; i++) {
+        const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
+        if (a.fmt) in.attributes[i] = vertex_format((int)a.fmt).type;
+    }
+    for (int i = 0; i < 8; i++)
+        in.color_outputs[i] = i < ncolor && integer[i] ? (sint[i] ? Shader::AttributeType::SignedInt : Shader::AttributeType::UnsignedInt)
+                                                       : Shader::AttributeType::Float;
+    in.convert_depth = false;   // (the depth clip range is set to -1..1 dynamically instead)
+    return in;
+}
+PipelineInputs compute_inputs() {
+    PipelineInputs in{};
+    for (auto& a : in.attributes) a = Shader::AttributeType::Disabled;
+    return in;
+}
+
+/// (the scan ahead of a submit's replay) the program a draw will need, made ahead when it is new
+void draw_ahead(int prim, uint32_t count, uint32_t instances) {
+    const State& s = *rp.s;
+    bool ok_topology;
+    topology(prim, &ok_topology);
+    if (!s.render_enabled || !count || !instances || !ok_topology || !s.has_prog) return;
+    const int n = std::clamp(s.rt.n, 0, 8);
+    bool integer[8]{}, sint[8]{};
+    for (int i = 0; i < n; i++)
+        if (s.rt.color[i]) {
+            const FormatInfo f = format_info(s.rt.color[i]->d.format);
+            integer[i] = f.integer, sint[i] = f.sint;
+        }
+    const PipelineInputs in = draw_inputs(s, n, integer, sint);
+    // (most draws use the program the draw before used)
+    static nvn_prog last_prog;
+    static uint64_t last_in;
+    const uint64_t in_hash = inputs_hash(in);
+    if (!memcmp(&last_prog, &s.prog, sizeof s.prog) && last_in == in_hash) return;
+    last_prog = s.prog, last_in = in_hash;
+    program_ahead(s, in, false);
+}
+
 void draw(int prim, bool indexed, uint32_t count, uint32_t first, int32_t base_vertex, uint32_t base_instance,
           uint32_t instances, uint64_t ibuf, int itype) {
+    StatTimer timer{kStatDraw};
     State& s = *rp.s;
     if (!s.render_enabled || !s.cond_ok || !count || !instances) return;
     bool ok_topology;
@@ -883,21 +1055,11 @@ void draw(int prim, bool indexed, uint32_t count, uint32_t first, int32_t base_v
         return;
     }
     // the program, for these vertex attributes and render targets
-    PipelineInputs in{};
-    for (int i = 0; i < 32; i++) in.attributes[i] = Shader::AttributeType::Disabled;
-    for (int i = 0; i < 16; i++) {
-        const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
-        if (a.fmt) in.attributes[i] = vertex_format((int)a.fmt).type;
-    }
     if (!begin_rendering()) {
         rp.skipped++;
         return;
     }
-    for (int i = 0; i < 8; i++)
-        in.color_outputs[i] = i < rp.ncolor && rp.color_integer[i] ? (rp.color_sint[i] ? Shader::AttributeType::SignedInt
-                                                                                     : Shader::AttributeType::UnsignedInt)
-                                                                   : Shader::AttributeType::Float;
-    in.convert_depth = false;   // (the depth clip range is set to -1..1 dynamically instead)
+    const PipelineInputs in = draw_inputs(s, rp.ncolor, rp.color_integer, rp.color_sint);
     if (!s.has_prog) return;
     Program* p = program_for(s, in, false);
     if (!p) {
@@ -1120,6 +1282,21 @@ void draw(int prim, bool indexed, uint32_t count, uint32_t first, int32_t base_v
 // ---- compute ----
 /// a dispatch of the bound program's compute stage: x, y, z groups, or (indirect, when not 0) the three 32-bit counts
 /// there, which the GPU may have written earlier in this submit
+/// (the scan ahead) the program a dispatch will need
+void dispatch_ahead(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
+    State& s = *rp.s;
+    if (!s.has_prog) return;
+    if (indirect) {
+        uint32_t n[3]{};
+        nvn_gpu_read(indirect, n, sizeof n);
+        x = n[0], y = n[1], z = n[2];
+    } else if (!x || !y || !z) {
+        return;
+    }
+    s.grid[0] = x, s.grid[1] = y, s.grid[2] = z;
+    program_ahead(s, compute_inputs(), true);
+}
+
 void dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
     State& s = *rp.s;
     if (!s.has_prog) return;
@@ -1134,9 +1311,7 @@ void dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
     }
     end_rendering();
     s.grid[0] = x, s.grid[1] = y, s.grid[2] = z;
-    PipelineInputs in{};
-    for (auto& a : in.attributes) a = Shader::AttributeType::Disabled;
-    Program* p = program_for(s, in, true);
+    Program* p = program_for(s, compute_inputs(), true);
     if (!p) {
         rp.skipped++;
         return;
@@ -1194,6 +1369,7 @@ void copy_buffer_texture(const nvn_p_copy_bt& c, bool to_texture) {
     if (to_texture) {
         vkCmdCopyBufferToImage(rp.cb, r.buf, image_handle(im), VK_IMAGE_LAYOUT_GENERAL, 1, &bc);
     } else {
+        rp.writes_unknown = true;   // (rows, layers and blocks: not worth the exact extent)
         vkCmdCopyImageToBuffer(rp.cb, image_handle(im), VK_IMAGE_LAYOUT_GENERAL, r.buf, 1, &bc);
     }
     full_barrier(rp.cb);
@@ -1256,6 +1432,7 @@ void copy_b2b(const nvn_p_copy_bb& c) {
     if (s.buf && d.buf) {
         VkBufferCopy bc{s.offset, d.offset, c.size};
         vkCmdCopyBuffer(rp.cb, s.buf, d.buf, 1, &bc);
+        gpu_writes(c.dst, c.size);
         full_barrier(rp.cb);
     } else {
         vk_log_limited("b2b", 8, "vk: a buffer copy outside imported pools: done by the CPU, out of order");
@@ -1273,6 +1450,7 @@ void update_ub(const nvn_p_update_ub& u, const uint8_t* data) {
     }
     end_rendering();
     vkCmdUpdateBuffer(rp.cb, d.buf, d.offset, u.size, data);
+    gpu_writes(u.dst, u.size);
     full_barrier(rp.cb);
 }
 
@@ -1286,32 +1464,67 @@ void clear_buf(const nvn_p_clear_buf& c) {
     }
     end_rendering();
     vkCmdFillBuffer(rp.cb, d.buf, d.offset, c.size, c.value);
+    gpu_writes(c.dst, c.size);
     full_barrier(rp.cb);
 }
 
 // ---- the CPU's side, after the GPU ----
+/// what a CPU op writes: the bytes at *addr, and how many (0: nothing); for an event's add, bytes holds the old value
+size_t cpu_op_write(const CpuOp& o, uint64_t* addr, uint8_t* bytes, bool log) {
+    if (o.op == NOP_SIGNAL_EVENT) {
+        nvn_p_signal sg;
+        memcpy(&sg, o.bytes, sizeof sg);
+        uint32_t v = 0;
+        if (sg.mode == NVN_EVENT_SIGNAL_MODE_ADD) memcpy(&v, bytes, 4);
+        v = sg.mode == NVN_EVENT_SIGNAL_MODE_ADD ? v + sg.value : sg.value;
+        *addr = sg.gpu;
+        memcpy(bytes, &v, 4);
+        return 4;
+    }
+    nvn_p_counter r;
+    memcpy(&r, o.bytes, sizeof r);
+    NVNcounterData d = {0, 0};
+    const uint32_t type = (uint32_t)r.type;
+    if (static uint32_t seen; log && type < 32 && !(__atomic_fetch_or(&seen, 1u << type, __ATOMIC_RELAXED) & (1u << type)))
+        hos_log("vk: the game reports counter type %u (first at %.1f s)", type, hos_now_ns() / 1e9);
+    if (type == NVN_COUNTER_TYPE_TIMESTAMP || type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) d.timestamp = a64_cntpct_host();
+    if (r.type & NVN_COUNTER_WRITTEN) return 0;
+    *addr = r.addr;
+    memcpy(bytes, &d, sizeof d);
+    return sizeof d;
+}
+
 void cpu_ops() {
     for (const CpuOp& o : rp.cpu) {
+        uint64_t addr = 0;
+        uint8_t bytes[sizeof(NVNcounterData)];
+        if (o.op == NOP_SIGNAL_EVENT) {   // (an add reads the value first)
+            nvn_p_signal sg;
+            memcpy(&sg, o.bytes, sizeof sg);
+            nvn_gpu_read(sg.gpu, bytes, 4);
+        }
+        if (const size_t n = cpu_op_write(o, &addr, bytes, true)) nvn_gpu_write(addr, bytes, n);
+    }
+    rp.cpu.clear();
+}
+
+/// guest memory [gpu, gpu + size) as it will be once the CPU ops recorded so far are done
+void read_after_cpu_ops(uint64_t gpu, uint8_t* out, size_t size) {
+    nvn_gpu_read(gpu, out, size);
+    for (const CpuOp& o : rp.cpu) {
+        uint64_t addr = 0;
+        uint8_t bytes[sizeof(NVNcounterData)]{};
         if (o.op == NOP_SIGNAL_EVENT) {
             nvn_p_signal sg;
             memcpy(&sg, o.bytes, sizeof sg);
-            uint32_t v = 0;
-            if (sg.mode == NVN_EVENT_SIGNAL_MODE_ADD) nvn_gpu_read(sg.gpu, &v, 4);
-            v = sg.mode == NVN_EVENT_SIGNAL_MODE_ADD ? v + sg.value : sg.value;
-            nvn_gpu_write(sg.gpu, &v, 4);
-        } else if (o.op == NOP_REPORT_COUNTER) {
-            nvn_p_counter r;
-            memcpy(&r, o.bytes, sizeof r);
-            NVNcounterData d = {0, 0};
-            const uint32_t type = (uint32_t)r.type;
-            if (static uint32_t seen; type < 32 && !(__atomic_fetch_or(&seen, 1u << type, __ATOMIC_RELAXED) & (1u << type)))
-                hos_log("vk: the game reports counter type %u (first at %.1f s)", type, hos_now_ns() / 1e9);
-            if (type == NVN_COUNTER_TYPE_TIMESTAMP || type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) d.timestamp = a64_cntpct_host();
-            if (r.type & NVN_COUNTER_WRITTEN) continue;
-            nvn_gpu_write(r.addr, &d, sizeof d);
+            nvn_gpu_read(sg.gpu, bytes, 4);   // (the value it adds to: what the ops before it left in out)
+            for (uint64_t i = 0; i < 4; i++)
+                if (sg.gpu + i >= gpu && sg.gpu + i < gpu + size) bytes[i] = out[sg.gpu + i - gpu];
         }
+        const size_t n = cpu_op_write(o, &addr, bytes, false);
+        for (size_t i = 0; i < n; i++)
+            if (addr + i >= gpu && addr + i < gpu + size) out[addr + i - gpu] = bytes[i];
     }
-    rp.cpu.clear();
 }
 
 /// HOS_VK_PASSDUMP=<dir>@<seconds> (debugging): for one frame from that time on, each render pass's targets once it
@@ -1374,19 +1587,68 @@ void flush() {
     staging_release();
     ring.reset();
     cpu_ops();
+    rp.writes.clear(), rp.writes_unknown = false;
     rp.cb = begin_commands();
 }
 
 /// SetRenderEnableConditional: rendering (draws and clears) only while the counters at addr and addr + 16 are equal
 /// (mode 0) or differ (mode 1). Read when the GPU's work before it has run, as the GPU reads them at that point.
+///
+/// The work recorded before it is run first (a submit and a wait for the GPU) only when it may write them: the UI tests
+/// a condition for each layer, ~100 a frame, against counters the game's CPU writes or reports just before (the reports'
+/// values are ours, applied here as cpu_ops will apply them). HOS_VK_COND_CHECK=1 runs the work every time and logs
+/// where the two reads differ (none in 160k on the island).
 void render_cond(const nvn_p_render_cond& c) {
-    flush();
+    static const bool check = getenv("HOS_VK_COND_CHECK") && atoi(getenv("HOS_VK_COND_CHECK"));
     uint64_t a = 0, b = 0;
-    nvn_gpu_read(c.addr, &a, 8);
-    nvn_gpu_read(c.addr + 16, &b, 8);
+    if (gpu_may_write(c.addr, 24)) flush();
+    uint8_t v[24];
+    read_after_cpu_ops(c.addr, v, sizeof v);
+    memcpy(&a, v, 8);
+    memcpy(&b, v + 16, 8);
+    if (check) {   // (the GPU's work run after all, and read again)
+        flush();
+        uint64_t a1 = 0, b1 = 0;
+        nvn_gpu_read(c.addr, &a1, 8);
+        nvn_gpu_read(c.addr + 16, &b1, 8);
+        if (a1 != a || b1 != b)
+            hos_log("vk: HOS_VK_COND_CHECK: the condition at %#llx read %llu, %llu before the GPU's work and %llu, %llu after",
+                    (unsigned long long)c.addr, (unsigned long long)a, (unsigned long long)b, (unsigned long long)a1,
+                    (unsigned long long)b1);
+        a = a1, b = b1;
+    }
     rp.s->cond_ok = c.mode == 0 ? a == b : a != b;
     if (trace_left()) hos_log("vk trace: render if %s: %llu, %llu -> %s", c.mode ? "differ" : "equal", (unsigned long long)a,
                               (unsigned long long)b, rp.s->cond_ok ? "on" : "off");
+}
+
+/// (the scan ahead of a submit's replay) an op that is not only state: its program made ahead for a draw or dispatch,
+/// else skipped; false for the ops that only set state, which the scan follows as the replay does
+bool scan_op(State& s, uint32_t op, const uint8_t* a) {
+    switch (op) {
+    case NOP_SET_RT: memcpy(&s.rt, a, sizeof s.rt); return true;
+    case NOP_DRAW: {
+        const auto* d = reinterpret_cast<const nvn_p_draw*>(a);
+        draw_ahead(d->prim, (uint32_t)d->count, (uint32_t)d->instances);
+        return true;
+    }
+    case NOP_DRAW_IDX: {
+        const auto* d = reinterpret_cast<const nvn_p_draw_idx*>(a);
+        draw_ahead(d->prim, (uint32_t)d->count, (uint32_t)d->instances);
+        return true;
+    }
+    case NOP_DISPATCH: {
+        const auto* d = reinterpret_cast<const nvn_p_dispatch*>(a);
+        dispatch_ahead((uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z, 0);
+        return true;
+    }
+    case NOP_DISPATCH_INDIRECT: dispatch_ahead(0, 0, 0, reinterpret_cast<const nvn_p_dispatch_indirect*>(a)->addr); return true;
+    case NOP_SIGNAL_EVENT: case NOP_REPORT_COUNTER: case NOP_COPY_B2B: case NOP_UPDATE_UB: case NOP_CLEAR_BUF:
+    case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_RENDER_COND: case NOP_DRAW_INDIRECT: case NOP_WAIT_EVENT:
+    case NOP_BARRIER: case NOP_COPY_B2T: case NOP_COPY_T2B: case NOP_COPY_T2T: case NOP_CLEAR_TEX:
+        return true;
+    default: return false;
+    }
 }
 
 void run(const uint8_t* p) {
@@ -1395,6 +1657,10 @@ void run(const uint8_t* p) {
         nvn_op_hdr h;
         memcpy(&h, p, sizeof h);
         const uint8_t* a = p + 8;
+        if (rp.scanning && h.op != NOP_END && scan_op(s, h.op, a)) {
+            p += h.size;
+            continue;
+        }
         switch (h.op) {
         case NOP_END: return;
         case NOP_SIGNAL_EVENT: case NOP_REPORT_COUNTER: {
@@ -1606,10 +1872,18 @@ void rx_nvn_submit_q(const uint64_t* handles, int n, uint64_t queue) {
         return;
     }
     std::lock_guard lk(big_lock);
+    StatTimer timer{kStatSubmit};
     auto& st = states[queue];
     if (!st) {
         st = std::make_unique<State>();
         hos_log("vk: queue %#llx submits (%zu queues)", (unsigned long long)queue, states.size());
+    }
+    if (makers.threads < 0) makers.start();
+    if (makers.threads > 0) {   // (the programs ahead, on a copy of the state)
+        State ahead = *st;
+        rp.s = &ahead, rp.scanning = true;
+        for (int i = 0; i < n; i++) run(reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(handles[i])));
+        rp.scanning = false;
     }
     rp.s = st.get();
     rp.cb = begin_commands();
@@ -1620,6 +1894,7 @@ void rx_nvn_submit_q(const uint64_t* handles, int n, uint64_t queue) {
     staging_release();
     ring.reset();
     cpu_ops();
+    rp.writes.clear(), rp.writes_unknown = false;
     __atomic_add_fetch(&pushed, 1, __ATOMIC_RELEASE);
 }
 void rx_nvn_submit(const uint64_t* handles, int n) { rx_nvn_submit_q(handles, n, 0); }
@@ -1645,6 +1920,7 @@ void rx_nvn_present(const nvn_tex* t, const int crop[4]) {
         present_image(image_handle(im), image_format(im), w, h, crop);
     }
     textures_frame_end();
+    stats_frame_end();
     static uint64_t frames;
     if (++frames % 600 == 0) hos_log("vk: %llu frames; %llu draws, %llu dispatches, %llu skipped", (unsigned long long)frames,
                                      (unsigned long long)rp.draws, (unsigned long long)rp.dispatches,

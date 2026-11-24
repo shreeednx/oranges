@@ -122,4 +122,19 @@ VkSampler sampler_of(int id);
 bool texture_of(int id, nvn_tex* t, nvn_view* v, bool* has_view);
 void textures_frame_end();
 
+// ---- where the back end's time goes (vk_device.cpp; HOS_VK_STATS=<seconds>: a summary that often, and each frame
+// whose back-end work took 10 ms or more)
+enum Stat { kStatTranslate, kStatShaders, kStatFill, kStatAstc, kStatPoolImport, kStatPoolDrop, kStatSubmit, kStatGpuWait,
+            kStatDraw, kStatProgram, kStatProgramWait, kStatDescriptors, kStatCount };
+extern bool stats_on;
+void stat_add(Stat s, int64_t ns);
+void stats_frame_end();
+/// adds the time from its construction to its destruction to a Stat (when HOS_VK_STATS is on)
+struct StatTimer {
+    Stat s;
+    int64_t t0;
+    explicit StatTimer(Stat st) : s{st}, t0{stats_on ? hos_now_ns() : 0} {}
+    ~StatTimer() { if (stats_on) stat_add(s, hos_now_ns() - t0); }
+};
+
 }  // namespace ovk

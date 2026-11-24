@@ -47,6 +47,7 @@ HOS_NO_WINDOW=1 HOS_SCREENSHOT=shot.bmp,40 ./work/build/oranges   # the presente
 HOS_VK_SHOTS=dir,5 ./work/build/oranges   # a screenshot every 5 s; HOS_VK=0: the null back end (nothing drawn)
 HOS_VK_PASSDUMP=dir@57 ./work/build/oranges   # every render pass's targets (and depth) for one frame from 57 s on
 HOS_VK_LOG=2000@57 ./work/build/oranges   # trace targets, clears, draws (state, bindings, programs) from 57 s on
+HOS_VK_STATS=10 ./work/build/oranges      # the back end's time (draws, programs, fills, GPU waits) every 10 s, and each slow frame
 .venv/bin/python -m oranges.shaders [--check]     # host/vk/shaders/*.comp -> the checked-in *_spv.h (glslang)
 .venv/bin/python -m oranges.insncheck --game      # every instruction form the game uses vs Unicorn (~35 s)
 .venv/bin/python -m oranges.insncheck --words 4e20e000,ac000400   # specific encodings vs Unicorn (game-free)
@@ -111,7 +112,12 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   invariant (EQUAL depth pre-pass); `SetRenderEnableConditional` must be honoured (UI layers); the first stage's
   inputs need `previous_stage_stores` all set. Debugging: `HOS_VK_LOG`, `HOS_VK_PASSDUMP`, `HOS_VK_DUMP`,
   `HOS_VK_SHOTS`, `HOS_VK_SPV` (each program's SPIR-V, `<key>_<stage>.spv`), `HOS_VK_TEXDUMP=<gpu>,<path>` (a texture as drawn and as in
-  guest memory), `HOS_VK_VALIDATE=1` (the Khronos layer, when installed). Textures the CPU changes are found by a
+  guest memory), `HOS_VK_VALIDATE=1` (the Khronos layer, when installed), `HOS_VK_STATS=<s>` (where the back end's
+  time goes, and every frame whose back-end work took 10 ms or more), `HOS_VK_COND_CHECK=1` (each render condition read
+  again after a GPU wait: logs a difference), `HOS_VK_MAKERS=<n>` (maker threads; 0: every program on the submitting
+  thread). Programs are made ahead of their draws: each submit is scanned first and new programs are translated and
+  made on maker threads (`Makers` in `vk_replay.cpp`). A render condition (`SetRenderEnableConditional`, ~100 a frame
+  in the UI) waits for the GPU only when the work recorded before it may write its counters. Textures the CPU changes are found by a
   whole-storage hash every few frames (the font's glyph cache is written in place); ASTC is decoded on the CPU.
 - The settings menu (F1, a gamepad's Home): `host/hos_menu.c` is its model and input (tabs, rows, a binding waiting
   for its input, questions; `hos_menu.h` for all of it), `host/vk/vk_menu.cpp` draws it with Dear ImGui's draw lists

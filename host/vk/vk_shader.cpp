@@ -294,8 +294,13 @@ Translated translate(const std::vector<std::shared_ptr<const StageCode>>& stages
     // gl_Position invariant: the game draws a depth pre-pass and then its colour pass with depth EQUAL, which needs both
     // programs' positions bit for bit the same, as the console's compiler makes them; and float colour outputs without
     // NaN or infinity (one NaN texel spreads through the blur and bloom chains). Longshot's switches (mma_layout.h).
-    Shader::Backend::SPIRV::position_invariant = true;
-    Shader::Backend::SPIRV::frag_nan_guard = true;
+    // (set once: translations run on several threads)
+    static const bool switches = [] {
+        Shader::Backend::SPIRV::position_invariant = true;
+        Shader::Backend::SPIRV::frag_nan_guard = true;
+        return true;
+    }();
+    (void)switches;
     static const Shader::HostTranslateInfo host = host_info();
     std::vector<std::unique_ptr<Pools>> pools;
     std::vector<Shader::IR::Program> programs;
