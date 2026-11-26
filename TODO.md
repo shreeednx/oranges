@@ -1,6 +1,7 @@
 # Next tasks
 
-The finished work first ("Done:", with what was left over from each), then the open tasks by priority (1 first).
+The finished work first ("Done:", with what was left over from each), then the open bugs, then the open tasks by
+priority (1 first).
 `CLAUDE.md` has the background (boot status, debugging recipes).
 
 ## Done: services reached through `sm:` (the `olsc:u` abort)
@@ -581,6 +582,26 @@ Left over from it:
 - [ ] The program key is the code and the inputs, not the texture types the translation asked about: a program is
       translated for its first draw's textures (the views follow the program's types, so the picture stays
       consistent). A cache on disk would need those answers in its key.
+
+## Bugs (found by playing, 2026-11-26)
+
+Before the numbered tasks: each is small and a player meets it.
+
+- [ ] **Typing on the keyboard reaches the game as a USB keyboard, and that is buggy: remove it.** `nn_hid.c`'s
+      `GetKeyboardState` reports a keyboard that is always connected (`KeyboardAttribute` IsConnected), with every key
+      SDL sees held passed on as a HID usage (`hos_window.c` `read_input`: `in.keys`, `in.modifiers`), and
+      `GetKeyCode` turns them into characters. The game takes a USB keyboard as a text input (chat, names), so keys that
+      are also bound to Switch buttons (`hos_controls.c`) type as well. Fix: report no keyboard (attributes 0, no keys)
+      and drop `keys` / `modifiers` from `HosInput`. The bindings and the F1 menu read SDL's keyboard themselves and
+      stay. Then check that the name and the island name are still entered with the game's own on-screen keyboard
+      (pad only)
+- [ ] **`oranges make --progress json` (the GUI's build) ends with a Python fatal error after the link.** The build
+      succeeds (`done: ... (431 s)`, the port runs), then at exit: `Fatal Python error: _enter_buffered_busy: could not
+      acquire lock for <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly due to daemon threads`.
+      The cause: `make.py` `_watch_stdin`'s daemon thread is blocked in `sys.stdin.buffer.read1()` and holds the
+      BufferedReader's lock while the interpreter shuts down. Fix: read the raw descriptor (`os.read(0, 4096)`, no
+      buffer and no lock), or leave `main` with `os._exit` once the log is flushed. Check that the exit status is still
+      0, that the GUI shows the build as done, and that Cancel still works (Linux, and Windows under wine)
 
 ## 1. A Windows build (MinGW)
 
