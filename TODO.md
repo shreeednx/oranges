@@ -610,21 +610,16 @@ and version (3.0.3), as `oranges info` / `check` do, and nothing else about it. 
 game's name becomes "the game", in code, comments, strings and docs alike, and so do its characters' names (the
 prologue's shopkeepers and the like) and the short forms of its name.
 
-- [ ] Where it is named today (`git grep` outside `third_party/`, 2026-11-26): 20 files. The GUI
-      (`gui/oranges_setup.cpp`: the welcome text, the Start menu `.lnk`'s name and description, the `.desktop` file's
-      name, comment and file name `oranges-<short name>.desktop`); host/ comments (`nvn_native.c`, `nn_system.c`,
-      `nn_audio.c`, `nn_online.c`, `hos_mem.c`, `hos_ipc.c`, `vk/vk_shader.*`); oranges/ (`__init__.py`, `game.py`,
-      `hle.py`, `insn.py`, `kit.py`, `spin.py`, `drive.py`); `tests/test_insn.py`; `pyproject.toml`'s description;
-      `CLAUDE.md` and this file
-- [ ] The shortcuts get a neutral name ("oranges", or the title ID): the old `.desktop` file and `.lnk` are removed when
-      the new ones are written, so a player who made one before isn't left with two
-- [ ] The docs' example backup file name (it named the game, in CLAUDE.md's commands and game data rules)
-      becomes a neutral one (`game.nup`); `.gitignore` already covers `*.nup`
+- [x] The tree and the whole history (2026-11-26): every mention in files and commit messages reworded (the GUI's
+      welcome text, host/ and oranges/ comments and strings, the docs, `third_party/eden/PROVENANCE.md`), the docs'
+      example backup file is `game.nup`, and the history was rewritten so that no commit names it. Tests and ruff pass
+      and the Linux GUI builds; the Windows GUI was not rebuilt
+- [ ] The shortcuts have a neutral name now (`oranges.desktop`, `oranges.lnk`). Still open: whether to remove the ones an
+      earlier build wrote, so a player who made one isn't left with two (their file names named the game, so the code
+      must not spell them in plain text; this machine had no such `.desktop` file)
 - [ ] A test that fails when a tracked file outside `third_party/` names the game, so a new mention is caught (its
       pattern list mustn't name the game in plain text either: hashes of the words, or the names spelled out at run
       time)
-- [ ] Open question: the git history keeps the old mentions. Rewriting it is the user's call (no force-push without
-      asking)
 
 ## 1. A Windows build (MinGW)
 
