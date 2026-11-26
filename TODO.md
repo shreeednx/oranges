@@ -603,6 +603,29 @@ Before the numbered tasks: each is small and a player meets it.
       buffer and no lock), or leave `main` with `os._exit` once the log is flushed. Check that the exit status is still
       0, that the GUI shows the build as done, and that Cancel still works (Linux, and Windows under wine)
 
+## Don't name the game anywhere (2026-11-26)
+
+oranges never names the game it builds. The GUI shows the supported build only by its title ID (`01006F8002326000`)
+and version (3.0.3), as `oranges info` / `check` do, and nothing else about it. Everywhere else in the tree the
+game's name becomes "the game", in code, comments, strings and docs alike, and so do its characters' names (the
+prologue's shopkeepers and the like) and the short forms of its name.
+
+- [ ] Where it is named today (`git grep` outside `third_party/`, 2026-11-26): 20 files. The GUI
+      (`gui/oranges_setup.cpp`: the welcome text, the Start menu `.lnk`'s name and description, the `.desktop` file's
+      name, comment and file name `oranges-<short name>.desktop`); host/ comments (`nvn_native.c`, `nn_system.c`,
+      `nn_audio.c`, `nn_online.c`, `hos_mem.c`, `hos_ipc.c`, `vk/vk_shader.*`); oranges/ (`__init__.py`, `game.py`,
+      `hle.py`, `insn.py`, `kit.py`, `spin.py`, `drive.py`); `tests/test_insn.py`; `pyproject.toml`'s description;
+      `CLAUDE.md` and this file
+- [ ] The shortcuts get a neutral name ("oranges", or the title ID): the old `.desktop` file and `.lnk` are removed when
+      the new ones are written, so a player who made one before isn't left with two
+- [ ] The docs' example backup file name (it named the game, in CLAUDE.md's commands and game data rules)
+      becomes a neutral one (`game.nup`); `.gitignore` already covers `*.nup`
+- [ ] A test that fails when a tracked file outside `third_party/` names the game, so a new mention is caught (its
+      pattern list mustn't name the game in plain text either: hashes of the words, or the names spelled out at run
+      time)
+- [ ] Open question: the git history keeps the old mentions. Rewriting it is the user's call (no force-push without
+      asking)
+
 ## 1. A Windows build (MinGW)
 
 The target is a Windows x64 build of the same program, built with MinGW-w64 so that most of the POSIX code stays as it
