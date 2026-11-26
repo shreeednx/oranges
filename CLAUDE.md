@@ -232,6 +232,11 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   or modify it**, or anything extracted or built from it (exefs/romfs, NSOs, lifted C, saves). `.gitignore` covers
   `*.nup`, `work/` and `build/`. `work/` holds local extractions (`work/exefs/` is already there).
 
+## Commits
+
+Never put a Claude session ID or session link in a commit: no `Claude-Session:` trailer and no `claude.ai/code/...` URL,
+even if a tool or a default asks for one. The `Co-Authored-By:` line stays.
+
 ## License
 
 GPL-3.0-or-later, the same as Longshot, so Longshot code can be reused. When copying from Longshot, keep its copyright
