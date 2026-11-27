@@ -23,6 +23,7 @@ oranges builds). oranges is not affiliated with or endorsed by Nintendo or the g
 - [Usage: the GUI](#usage-the-gui)
 - [Usage: the command line](#usage-the-command-line)
 - [Playing](#playing)
+- [Patches to the game](#patches-to-the-game)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [License](#license)
@@ -285,6 +286,37 @@ file. Rebuilding the port touches neither. Back up your saves.
 
 When Steam starts the program, it opens an X11 window (XWayland) so that Steam Input applies the game's controller
 layout. Set `HOS_WAYLAND=1` to keep a native Wayland window.
+
+## Patches to the game
+
+oranges changes the game's own code in two places. Neither changes gameplay or anything you see, apart from loading
+faster. The patches are applied to the memory image while the port is built, before the code is translated to C. Your
+`.nup` and the extracted executables are not modified.
+
+| Patch | Where (in `main`) | What it changes | Why |
+| --- | --- | --- | --- |
+| Resource handler waits for its singleton | `+0x6d6594`, 4 instructions | The resource threads' message handler now also treats an object that exists but isn't initialized yet as not there, and tries again at the next message. | A race in the game. The console's timing hides it, but here file reads are near instant and it crashed about 1 boot in 10 when several copies ran at once. |
+| Faster play-report poll | `+0x3e26ecc`, 1 instruction | While loading or saving, the game checks every 3.9 ms (instead of every 0.5 s) whether its queued play report was taken. The 5 s timeout is unchanged. | A pure wait: about 7 s of every boot, and half a second at each later save step. |
+
+Both are on in every build; there is no switch to turn them off. Each one records the original instructions of the
+supported build, and the build stops with an error if they don't match.
+[oranges/patches.py](oranges/patches.py) has the full analysis. A new or changed patch takes effect after the port is
+lifted and built again.
+
+A patch is only added to fix a fault in the game that the console's timing hides and that no faithful behaviour of the
+reimplemented system can hide, or to remove a wait that only costs time.
+
+### Other differences from the console
+
+These are not patches to the game's logic, but the port doesn't run the original code unchanged either:
+
+- **System functions are replaced.** Many functions of the console's SDK that talk to the system (graphics, audio,
+  input, files, online services, ...) call oranges' own implementations in `host/`. The ones oranges doesn't
+  implement are stubs that report success and do nothing. This includes the movie decoder.
+- **Spin loops keep reading memory.** The translation adds compiler barriers
+  ([oranges/spin.py](oranges/spin.py)) so the C compiler doesn't turn a loop that waits for another thread into an
+  endless one. They add no instructions.
+- **Online features see an offline console**, and the system's fonts are replaced by a font from your computer.
 
 ## Troubleshooting
 

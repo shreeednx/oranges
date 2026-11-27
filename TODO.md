@@ -586,7 +586,8 @@ Left over from it:
 ## Done: a README
 
 `README.md` (2026-11-27): the vibecoded disclaimer, what a player and a developer need, the GUI and the command line,
-controls, saves and troubleshooting. Written from the code; the install commands were not tried on a fresh machine.
+controls, saves, the patches to the game (keep that section in step with `oranges/patches.py`) and
+troubleshooting. Written from the code; the install commands were not tried on a fresh machine.
 
 Left over from it:
 
