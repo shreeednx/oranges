@@ -583,6 +583,17 @@ Left over from it:
       translated for its first draw's textures (the views follow the program's types, so the picture stays
       consistent). A cache on disk would need those answers in its key.
 
+## Done: a README
+
+`README.md` (2026-11-27): the vibecoded disclaimer, what a player and a developer need, the GUI and the command line,
+controls, saves and troubleshooting. Written from the code; the install commands were not tried on a fresh machine.
+
+Left over from it:
+
+- [ ] Try the from-source steps on a clean system (the Arch package line, a fresh clone and `.venv`), and check that
+      the `git clone` URL (taken from the `origin` remote) is one others can reach
+- [ ] Keep its Status table current (Windows on real hardware, screenshots, published releases)
+
 ## Bugs (found by playing, 2026-11-26)
 
 Before the numbered tasks: each is small and a player meets it.
