@@ -42,6 +42,8 @@ WINEDEBUG=-all ORANGES_USER=Z:/abs/dir HOS_NO_WINDOW=1 wine work/build-windows/o
 .venv/bin/python -m oranges.wintools      # Windows' Python 3.14 + llvm-mingw's Windows release: ~/.local/opt/oranges-wintools
 #   (on Windows %LOCALAPPDATA%\oranges\wintools; under wine the build's default prefix is wine's
 #   %LOCALAPPDATA%\oranges\msys2-clang64, so the recipe below names ORANGES_MINGW_PREFIX)
+#   On Windows oranges finds wintools' llvm-mingw itself (oranges.mingw_dir; oranges.kit sets LONGSHOT_MINGW), and
+#   oranges.mingw leaves FFmpeg out unless the prefix already holds one made on Linux
 #   the pipeline on them, under wine (LONGSHOT_MINGW: the kit's clang++ for a64emit.dll; Z: paths throughout):
 #   WINEDEBUG=-all LONGSHOT_MINGW='Z:\<home>\.local\opt\oranges-wintools\llvm-mingw' wine ~/.local/opt/oranges-wintools/python/python.exe -m oranges lift --write --work 'Z:\...\work\wine-lift' --exefs 'Z:\...\work\exefs'
 #   ... ORANGES_MINGW='Z:\...\llvm-mingw' ORANGES_MINGW_PREFIX='Z:\<home>\.local\opt\msys2-clang64' ... -m oranges build --work 'Z:\...\work\wine-lift'

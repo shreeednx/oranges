@@ -16,6 +16,13 @@ import os
 import struct
 import sys
 
+from . import bundled, mingw_dir
+
+# (on Windows the kit's toolchain takes clang++, for the translator's a64emit.dll, from LONGSHOT_MINGW, else looks for
+# the MSVC target's: point it at llvm-mingw. A release names its own, bundled.apply)
+if os.name == "nt" and bundled.root() is None and (mingw_dir() / "bin" / "clang++.exe").is_file():
+    os.environ.setdefault("LONGSHOT_MINGW", str(mingw_dir()))
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KIT = os.path.join(ROOT, "third_party", "a64-kit")
 for _sub in ("lift", "tools", "hos", "rt"):

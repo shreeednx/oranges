@@ -8,7 +8,8 @@ ORANGES_MINGW_PREFIX=<prefix> (oranges.pkgconf reads <prefix>/lib/pkgconfig), or
 ~/.local/opt/msys2-clang64, on Windows %LOCALAPPDATA%\\oranges\\msys2-clang64.
 
 FFmpeg is not MSYS2's: theirs pulls in 124 packages (Python, llama.cpp, x265, ...), and the movie player needs three
-decoders. It is built from FFmpeg's release with llvm-mingw (ORANGES_MINGW, default /opt/llvm-mingw): libavcodec and
+decoders. It is built, on Linux only (on Windows it is left out, or copied from a prefix made on Linux), from
+FFmpeg's release with llvm-mingw (ORANGES_MINGW, default /opt/llvm-mingw): libavcodec and
 libavutil as DLLs, the VP8, VP9 and H.264 decoders and parsers only (nn_movie.c's), LGPL, with its x86 assembly (VP9
 is several times slower without), for which nasm is built from source first, for this machine.
 
@@ -33,7 +34,7 @@ import urllib.request
 from compression import zstd
 from pathlib import Path
 
-from . import tools_dir
+from . import mingw_dir, tools_dir
 
 REPO = "https://repo.msys2.org/mingw/clang64/"
 PREFIX = "mingw-w64-clang-x86_64-"
@@ -159,7 +160,7 @@ def build_ffmpeg(prefix: Path, say=print) -> None:
     """FFmpeg's libavcodec and libavutil for MinGW, into the prefix (nasm built first, for this machine)"""
     cache = prefix / ".cache"
     cache.mkdir(parents=True, exist_ok=True)
-    mingw = Path(os.environ.get("ORANGES_MINGW", "/opt/llvm-mingw")) / "bin"
+    mingw = mingw_dir() / "bin"
     if not shutil.which("x86_64-w64-mingw32-clang", path=str(mingw)) and not shutil.which("x86_64-w64-mingw32-clang"):
         raise SystemExit("x86_64-w64-mingw32-clang not found: set ORANGES_MINGW to llvm-mingw's folder")
     jobs = str(os.cpu_count() or 4)
@@ -197,6 +198,18 @@ def build_ffmpeg(prefix: Path, say=print) -> None:
         f.write("%s (built: libavcodec, libavutil; %s)\n" % (src.name, FFMPEG_DECODERS))
 
 
+def ffmpeg(prefix: Path, say=print) -> None:
+    """FFmpeg for the prefix: built here, except on Windows, whose Python cannot run its configure and make: there a
+    prefix's FFmpeg (copied from one made on Linux) is kept, else the build goes without"""
+    if os.name != "nt":
+        build_ffmpeg(prefix, say)
+    elif any((prefix / "bin").glob("avcodec-*.dll")):
+        say("FFmpeg: keeping the one in %s" % prefix)
+    else:
+        say("FFmpeg is left out: it can't be built on Windows, so the port skips the movies. For them, make this\n"
+            "folder on Linux (python -m oranges.mingw there) and copy its contents, without .cache, into %s" % prefix)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m oranges.mingw", description=__doc__.split("\n\n")[0])
     ap.add_argument("--prefix", default=os.environ.get("ORANGES_MINGW_PREFIX") or str(DEFAULT_DIR))
@@ -206,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     names = install(Path(args.prefix), args.packages or list(LIBRARIES))
     if not args.no_ffmpeg and not args.packages:
-        build_ffmpeg(Path(args.prefix))
+        ffmpeg(Path(args.prefix))
     print("%d packages in %s: build with ORANGES_MINGW_PREFIX=%s" % (len(names), args.prefix, args.prefix))
     return 0
 

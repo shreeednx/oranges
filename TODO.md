@@ -689,6 +689,16 @@ The differences live in `host/hos_port.h` / `hos_port.c`:
       `--define-prefix` left as they were). Recipe in CLAUDE.md
 - [ ] The same on Windows itself (the lift's and the build's times there; MSYS2's CLANG64 shell is the other way,
       untried)
+- [x] Tools found on Windows without environment variables (2026-11-27, from a first try in a Windows VM, where
+      `oranges.mingw` stopped looking for `/opt/llvm-mingw`): `oranges.mingw_dir` takes wintools' llvm-mingw,
+      `oranges.kit` hands it to the kit (`LONGSHOT_MINGW`), and `oranges.mingw` leaves FFmpeg out on Windows (its
+      configure and make can't run there) unless the prefix holds one. Checked under wine with the Windows Python: the
+      compilers found, `a64emit.dll` built, the setup GUI built. Not yet on Windows itself
+- [ ] FFmpeg for a build made only on Windows (prebuilt DLLs, or building it in an MSYS2 shell): without it the movies
+      are skipped. Check that the port gets past the opening movie without FFmpeg
+- [ ] A fresh Windows fails the downloads with `CERTIFICATE_VERIFY_FAILED` (seen from GitHub's asset server: Python
+      doesn't make Windows fetch a missing root). The README has the `curl.exe` workaround; the downloaders could fall
+      back to `curl.exe` (the SHA-256s are checked either way)
 - [x] Shipping, for players: a GUI subsystem build (no console window opens with it). Its log (`hos_log_open`) goes
       where stderr was sent (a redirect, a pipe, a terminal: MSYS2's, wine's), else to the command prompt it was
       started from (`AttachConsole`), else to `<user folder>\oranges.log` (`%APPDATA%\oranges`; the run before's kept

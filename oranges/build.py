@@ -14,7 +14,9 @@ are FP-exact (-ffp-contract=off) and LoopRotate is capped, which a64-kit measure
                    linked in and $ORIGIN as the program's library path
 
 The Windows build is cross-compiled with llvm-mingw (MinGW-w64 on clang, UCRT): x86_64-w64-mingw32-clang from PATH,
-else from ORANGES_MINGW (default /opt/llvm-mingw). It goes to <work>/build-windows/oranges.exe, with its own objects.
+else from ORANGES_MINGW (default /opt/llvm-mingw;
+on Windows the llvm-mingw `python -m oranges.wintools` fetched, when it is there). It goes to
+<work>/build-windows/oranges.exe, with its own objects.
 Its libraries (SDL3, the Vulkan loader, libopus, FFmpeg) come from a MinGW prefix: ORANGES_MINGW_PREFIX, else
 ~/.local/opt/msys2-clang64 (on Windows %LOCALAPPDATA%\\oranges\\msys2-clang64) when it exists (`python -m
 oranges.mingw` makes it), whose lib/pkgconfig files
@@ -36,7 +38,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from . import kit, pkgconf, tools_dir
+from . import kit, mingw_dir, pkgconf, tools_dir
 
 import toolchain  # noqa: E402,I001  (the kit's)
 
@@ -67,10 +69,10 @@ def windows() -> bool:
 
 
 def _tool(name: str) -> str:
-    """a compiler: from PATH, and for the Windows build also from ORANGES_MINGW's bin (default /opt/llvm-mingw)"""
+    """a compiler: from PATH, and for the Windows build also from llvm-mingw's bin (oranges.mingw_dir)"""
     path = shutil.which(name)
     if not path and windows():
-        path = shutil.which(name, path=str(Path(os.environ.get("ORANGES_MINGW", "/opt/llvm-mingw")) / "bin"))
+        path = shutil.which(name, path=str(mingw_dir() / "bin"))
     if not path:
         raise SystemExit("%s not found (set %s%s)" % (
             name, "CXX" if "++" in name else "CC", ", or ORANGES_MINGW to llvm-mingw's folder" if windows() else ""))

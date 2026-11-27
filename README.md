@@ -127,8 +127,36 @@ built from source) into `~/.local/opt/msys2-clang64`:
 .venv/bin/python -m oranges.mingw
 ```
 
-Building on Windows itself is meant to work (`python -m oranges.wintools` fetches a Python and llvm-mingw for it), but
-it has only been tried under wine. See [CLAUDE.md](CLAUDE.md) for those commands.
+### On Windows
+
+**The build has only been tried under wine, not completed on real Windows.** You need Python 3.14 or newer and git. In
+PowerShell, in the checkout, fetch the tools (a Python to build with and llvm-mingw, into
+`%LOCALAPPDATA%\oranges\wintools`) and then the libraries (into `%LOCALAPPDATA%\oranges\msys2-clang64`):
+
+```powershell
+python -m oranges.wintools
+```
+
+```powershell
+python -m oranges.mingw
+```
+
+Then build the port with the fetched Python, and start `work\build-windows\oranges.exe`:
+
+```powershell
+& "$env:LOCALAPPDATA\oranges\wintools\python\python.exe" -m oranges make C:\path\to\game.nup --dir work
+```
+
+oranges finds the fetched llvm-mingw and libraries by itself; `ORANGES_MINGW` and `ORANGES_MINGW_PREFIX` choose others.
+
+**Movies:** FFmpeg can't be built on Windows, so `oranges.mingw` leaves it out there and the port skips the movies. To
+include them, run `python -m oranges.mingw` on Linux, then copy the contents of `~/.local/opt/msys2-clang64` (without
+its `.cache` folder) into `%LOCALAPPDATA%\oranges\msys2-clang64` before building.
+
+**A certificate error while downloading** (`CERTIFICATE_VERIFY_FAILED`) can happen on a fresh Windows, which installs
+root certificates only when Windows programs need them. Connect to the failing server once with
+`curl.exe -sSI https://<server>`, then run the command again. For GitHub downloads the server is
+`release-assets.githubusercontent.com`.
 
 ## Usage: the GUI
 
@@ -368,7 +396,8 @@ libraries (this also needs `cmake`, `make`, `wayland-scanner` for SDL3's Wayland
 .venv/bin/python -m oranges.release linux
 ```
 
-For Windows, it needs llvm-mingw as above, plus the two kits:
+For Windows, run these on Windows, or on Linux with llvm-mingw as above (FFmpeg as described under
+[On Windows](#on-windows)):
 
 ```bash
 .venv/bin/python -m oranges.wintools
