@@ -614,9 +614,6 @@ prologue's shopkeepers and the like) and the short forms of its name.
       welcome text, host/ and oranges/ comments and strings, the docs, `third_party/eden/PROVENANCE.md`), the docs'
       example backup file is `game.nup`, and the history was rewritten so that no commit names it. Tests and ruff pass
       and the Linux GUI builds; the Windows GUI was not rebuilt
-- [ ] The shortcuts have a neutral name now (`oranges.desktop`, `oranges.lnk`). Still open: whether to remove the ones an
-      earlier build wrote, so a player who made one isn't left with two (their file names named the game, so the code
-      must not spell them in plain text; this machine had no such `.desktop` file)
 - [ ] A test that fails when a tracked file outside `third_party/` names the game, so a new mention is caught (its
       pattern list mustn't name the game in plain text either: hashes of the words, or the names spelled out at run
       time)
