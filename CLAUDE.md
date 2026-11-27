@@ -204,7 +204,8 @@ in `work/build/obj` (one `.key` stamp beside each object) and runs as many compi
   `HOS_AUDIO_DUMP=<wav>` also writes what plays; AudioOut is mixed into its output) and `hos_sound.c` its sound
   device (SDL3: the default output, on when there is a window; `HOS_AUDIO=0/1` overrides; the stream's frequency ratio follows the host/device clock
   drift, frames from a mixer catching up after a stall are dropped), `nn_system.c` nn::time / oe / account / vi / pl / ngc,
-  `nn_hid.c` input (from `hos_window.c`), `nn_online.c` the online and wireless services as an offline
+  `nn_hid.c` input (from `hos_window.c`; no USB keyboard is reported: the game would type bound keys as text),
+  `nn_online.c` the online and wireless services as an offline
   console (nifm, bcat, friends, pctl, prepo, aoc, album, ec, err, ldn, nn::socket), `nn_nfp.c` amiibo (a reader that
   never sees a tag), `nn_codec.c` the hardware Opus decoder (libopus, linked when pkg-config finds it: build.py's
   `OPTIONAL_LIBRARIES` defines `HOS_HAVE_OPUS`), `nn_diag.c` nn::diag / nn::ro, `nn_movie.c` subsdk0's `movie::Decoder` (stagefright's MediaCodec underneath): video

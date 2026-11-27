@@ -9,8 +9,8 @@
 
    Input. hos_input() is the merged state nn_hid.c reads: the keyboard and the first gamepad as Npad No.1 (a Pro
    Controller) through the bindings (hos_controls.c: the defaults, a gamepad's buttons by position as on a Nintendo
-   pad, are listed there), the mouse as the console's USB mouse and, while its left button is down, as one finger on
-   the touch screen (the menu's Mouse as touch screen), and the keyboard as the console's USB keyboard too.
+   pad, are listed there), and the mouse as the console's USB mouse and, while its left button is down, as one finger
+   on the touch screen (the menu's Mouse as touch screen). The game sees no USB keyboard (nn_hid.c).
    F1 (or a gamepad's Home, or Select + Start on any gamepad: Steam keeps Home for itself) opens the settings menu
    (hos_menu.c, drawn by host/vk): while it is open the game gets no input at all, and what was held when it closes
    stays away from the game until it is let go. Select + Start held together never reach the game. The menu's
@@ -469,20 +469,6 @@ static uint64_t pad_held(const int32_t axes[4]) {
 }
 static int hold_off;   /* the menu closed with something held: the game sees nothing until it is all let go */
 
-/* nn::hid KeyboardModifier bits */
-static uint32_t modifiers(SDL_Keymod m) {
-    uint32_t r = 0;
-    if (m & SDL_KMOD_CTRL) r |= 1u << 0;
-    if (m & SDL_KMOD_SHIFT) r |= 1u << 1;
-    if (m & SDL_KMOD_LALT) r |= 1u << 2;
-    if (m & SDL_KMOD_RALT) r |= 1u << 3;
-    if (m & SDL_KMOD_GUI) r |= 1u << 4;
-    if (m & SDL_KMOD_CAPS) r |= 1u << 8;
-    if (m & SDL_KMOD_SCROLL) r |= 1u << 9;
-    if (m & SDL_KMOD_NUM) r |= 1u << 10;
-    return r;
-}
-
 /* the mouse in the console's 1280x720 screen (the picture letterboxed into the window), and its buttons */
 /* where the Vulkan present last put the picture (hos_window_picture): x, y, w, h of sw x sh pixels */
 static pthread_mutex_t picture_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -523,10 +509,6 @@ static void read_input(int32_t wheel) {
     int32_t axes[4];
     pad_axes(axes);
     in.buttons = hos_controls_eval(k, nkeys, pad_held(axes), axes, in.stick);
-    /* the keyboard as a keyboard: HID usage ids are SDL's scancodes */
-    for (int sc = 0; sc < 256; sc++)
-        if (k[sc]) in.keys[sc / 8] |= (uint8_t)(1u << (sc % 8));
-    in.modifiers = modifiers(SDL_GetModState());
     /* the mouse, in the console's 1280x720 screen */
     float x, y;
     const SDL_MouseButtonFlags mb = mouse_console(&x, &y);

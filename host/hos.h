@@ -170,8 +170,6 @@ typedef struct {
     int mouse_in;                  /* the pointer is over the picture */
     int touch;                     /* one finger on the touch screen, at touch_x, touch_y (1280x720) */
     int32_t touch_x, touch_y;
-    uint32_t modifiers;            /* nn::hid KeyboardModifier bits */
-    uint8_t keys[32];              /* keys down, a bit per HID usage id */
 } HosInput;
 void hos_input(HosInput *out);     /* the input now: the window's, and HOS_INPUT_SCRIPT's */
 void hos_rumble(int motor, float amplitude);   /* a gamepad's motor (0 low, 1 high frequency): 0..1 */

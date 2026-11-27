@@ -1,8 +1,9 @@
-/* nn::hid: controllers, touch screen, mouse, keyboard and motion, HLE'd at the API level.
+/* nn::hid: controllers, touch screen, mouse and motion, HLE'd at the API level.
 
-   One Pro Controller (Npad No.1, full key) is connected, a USB mouse and keyboard too, and the touch screen is there.
-   What they do is the window's (hos_window.c: hos_input, the keyboard and a gamepad as the pad, the mouse, its left
-   button as a finger) and HOS_INPUT_SCRIPT's. Every state carries a sampling number that goes up with each read, as
+   One Pro Controller (Npad No.1, full key) is connected, a USB mouse too, and the touch screen is there. No USB
+   keyboard is: the game takes one as a text input, so keys bound to the pad's buttons typed as well. What the others
+   do is the window's (hos_window.c: hos_input, the keyboard and a gamepad as the pad, the mouse, its left button as a
+   finger) and HOS_INPUT_SCRIPT's. Every state carries a sampling number that goes up with each read, as
    the console's do (the game drops states it has seen). The Npads' states are a real history, as the console's: the
    input sampled every 5 ms (at each read, for the periods since the last), GetNpadStates the latest of them (the game
    reads 16 at a time, for every Npad each frame; before, each state of a read held the input of the moment, and the
@@ -124,7 +125,7 @@ HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_2
     RET(0);
 }
 
-/* ---- touch screen, mouse, keyboard --------------------------------------------------------------------------------
+/* ---- touch screen, mouse ------------------------------------------------------------------------------------------
    The touch screen's states are a history too, sampled every 4 ms: one finger (id 0) while the input touches, with
    TouchAttribute Start (bit 0) on its first sample and, the sample after it lifts, one more state at its last place
    with End (bit 1), as the console reports a finger. (Before, every state of a read held the touch of the moment with
@@ -213,28 +214,17 @@ HLE(_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi) {
     }
     RET(count);
 }
+/* ---- keyboard: none connected ------------------------------------------------------------------------------------- */
 HLE(_ZN2nn3hid18InitializeKeyboardEv) { (void)c; }
+/* attributes 0 (not connected), no modifiers, no keys */
 HLE(_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE) {
     FIRST_READ("the keyboard");
-    HosInput in;
-    hos_input(&in);
     memset(GP(ARG(0)), 0, 0x30);
     G64(ARG(0)) = (uint64_t)next_sampling();
-    G32(ARG(0) + 8) = in.modifiers;
-    G32(ARG(0) + 12) = 1;   /* KeyboardAttribute: IsConnected */
-    memcpy(GP(ARG(0) + 16), in.keys, 32);
 }
-/* GetKeyCode(u16* out, int usage, KeyboardModifierSet, KeyboardLayout): the character of a key, US layout (any
-   layout asked), or 0 */
+/* GetKeyCode(u16* out, int usage, KeyboardModifierSet, KeyboardLayout): no character for any key */
 HLE(_ZN2nn3hid10GetKeyCodeEPtiNS_4util10BitFlagSetILi32ENS0_16KeyboardModifierEEENS2_7BitPackIjNS0_14KeyboardLayoutEEE) {
-    static const char plain[] = "1234567890\n\x1b\b\t -=[]\\#;'`,./", shifted[] = "!@#$%^&*()\n\x1b\b\t _+{}|~:\"~<>?";
-    const int usage = (int)ARG(1);
-    const uint32_t mods = (uint32_t)ARG(2);
-    const int shift = (mods >> 1) & 1, caps = (mods >> 8) & 1;
-    uint16_t code = 0;
-    if (usage >= 4 && usage <= 29) code = (uint16_t)((shift ^ caps ? 'A' : 'a') + usage - 4);
-    else if (usage >= 30 && usage < 30 + (int)sizeof plain - 1) code = (uint8_t)(shift ? shifted : plain)[usage - 30];
-    if (ARG(0)) *(uint16_t *)GP(ARG(0)) = code;
+    if (ARG(0)) *(uint16_t *)GP(ARG(0)) = 0;
 }
 
 /* ---- motion: a pad lying still ------------------------------------------------------------------------------------ */

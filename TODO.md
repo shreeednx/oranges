@@ -587,14 +587,14 @@ Left over from it:
 
 Before the numbered tasks: each is small and a player meets it.
 
-- [ ] **Typing on the keyboard reaches the game as a USB keyboard, and that is buggy: remove it.** `nn_hid.c`'s
-      `GetKeyboardState` reports a keyboard that is always connected (`KeyboardAttribute` IsConnected), with every key
-      SDL sees held passed on as a HID usage (`hos_window.c` `read_input`: `in.keys`, `in.modifiers`), and
-      `GetKeyCode` turns them into characters. The game takes a USB keyboard as a text input (chat, names), so keys that
-      are also bound to Switch buttons (`hos_controls.c`) type as well. Fix: report no keyboard (attributes 0, no keys)
-      and drop `keys` / `modifiers` from `HosInput`. The bindings and the F1 menu read SDL's keyboard themselves and
-      stay. Then check that the name and the island name are still entered with the game's own on-screen keyboard
-      (pad only)
+- [x] **Typing on the keyboard reached the game as a USB keyboard** (2026-11-27). The game takes a USB keyboard as a
+      text input (chat, names), so keys bound to Switch buttons typed as well. `nn_hid.c`'s `GetKeyboardState` now
+      reports no keyboard (attributes 0, no modifiers, no keys), `GetKeyCode` no character, and `HosInput` has no
+      `keys` / `modifiers`. Both HLEs stay, so no lift is needed. The bindings and the F1 menu read SDL's keyboard as
+      before. Checked on a headless new game with only pad presses: the player's name is entered with the game's own
+      on-screen keyboard and used in the dialogue after it, 29.9 fps up to the flight's announcement
+- [ ] Left over: the island name (the campfire party, far into the prologue) not entered again since that change, nor
+      physical typing tried by hand in the window
 - [ ] **`oranges make --progress json` (the GUI's build) ends with a Python fatal error after the link.** The build
       succeeds (`done: ... (431 s)`, the port runs), then at exit: `Fatal Python error: _enter_buffered_busy: could not
       acquire lock for <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly due to daemon threads`.
