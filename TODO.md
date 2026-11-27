@@ -68,7 +68,7 @@ Left over from it:
       movie player, probably; the opening movie plays without calling them)
 - [ ] The ldn Initialize result (2203-0022) is yuzu's ResultDisabled, not on switchbrew's list. Check it.
 - [ ] Amiibo: port Longshot's tag library (`host/nn_nfp.c` there: the player's own dumps) once there is input.
-- [ ] Screenshots (`nn::album::SaveScreenshot`): write them to a folder as PNG.
+- Screenshots (`nn::album::SaveScreenshot`) are task 3 now.
 - [ ] Why the game stalls when the bcat mount fails is not understood (a real console may fail it too, without a
       network). Look again if another service's failure stalls it the same way.
 
@@ -537,7 +537,7 @@ fixture: copy it to `<dir>/saves/01006F8002326000/device` and run with `ORANGES_
 Left over from it:
 
 - [ ] Other user files by the same rules when they come: a shader cache on disk (a future idea) in
-      `$XDG_CACHE_HOME/oranges/`, screenshots (`nn::album`, a leftover above) in the data folder.
+      `$XDG_CACHE_HOME/oranges/`, screenshots (task 3) in the data folder.
 - [ ] Deleting `work/user/save` once the moved save has been played on is the player's call (nothing reads it again
       while the new folder holds a save).
 
@@ -789,7 +789,23 @@ Why here: it is what oranges is meant to be (a player builds their own port, as 
 for its Windows half: the Windows build itself (done under wine), and next the toolchain and libraries as files to
 ship rather than this machine's `/opt/llvm-mingw` and `~/.local/opt/msys2-clang64`.
 
-## 3. Clean-ups and checks
+## 3. Screenshots
+
+A player can't take one: on the console the Capture button is the system's job, and the game's own saves
+(`nn::album`, `host/nn_online.c`) are logged and dropped. Only test runs have them (`HOS_CONTROL`'s `SHOT`,
+`HOS_SCREENSHOT`, `HOS_VK_SHOTS`: BMP files, `host/vk/vk_device.cpp`).
+
+- [ ] Capture: a bindable key and gamepad input (`hos_controls.c`; "Share / Capture", SDL's `misc1`, as the gamepad
+      default) that saves the next presented picture, at the picture's own size, without the F1 menu
+- [ ] `nn::album::SaveScreenshot` and `SaveAndShareScreenshot` (saved, never posted): write the game's image the same
+      way (new HLE bodies only; the symbols are hooked already). Find out where the game calls them
+- [ ] PNG files with dated names, in a `screenshots` folder in the user folder (`ORANGES_USER`'s rules); the path in
+      the log
+- [ ] Check on Linux and Windows (under wine), in a window and headless
+
+Why here: a player expects it, and the renderer already reads the picture back.
+
+## 4. Clean-ups and checks
 
 - [ ] `host/nvn_native.c`: the game's threads share control memory between command buffers. The grace period
       (`RETIRE_NS`) fixes stale handles. Check that memory stays bounded on long runs.
@@ -801,7 +817,7 @@ ship rather than this machine's `/opt/llvm-mingw` and `~/.local/opt/msys2-clang6
 
 Why here: none of these blocks the game; take them on when one starts to matter (memory on long runs first).
 
-## 4. The renderer's gaps
+## 5. The renderer's gaps
 
 The leftovers under "Done: a renderer" above: indirect draws and the other unreplayed commands when the game first
 uses them (logged once), then performance ("Done: the renderer's time measured": the per-draw cost) and memory.
